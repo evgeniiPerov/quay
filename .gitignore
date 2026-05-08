@@ -1,0 +1,53 @@
+# --- Personal overrides (per-user, never committed) ---
+# Rule: anything matching `*.local.*` or `*.local` is your private override.
+AGENTS.local.md
+CLAUDE.local.md
+.agents/**/*.local.md
+.agents/**/*.local.json
+.claude/settings.local.json
+.claude/**/*.local.*
+
+# Optional CLAUDE.md symlink for legacy Claude Code workflows.
+# If you `ln -s AGENTS.md CLAUDE.md`, don't commit the symlink.
+CLAUDE.md
+
+# --- Rust / Cargo (apps/cli/) ---
+target/
+**/target/
+Cargo.lock.bak
+*.rs.bk
+# Cargo.lock IS committed for the binary workspace (apps/cli/) — do not ignore it.
+
+# Proptest regressions — these ARE committed; do not ignore.
+# (Listed here only as a reminder for reviewers.)
+# proptest-regressions/
+
+# Insta snapshot pending files (review before committing)
+*.snap.new
+.insta/
+
+# --- Node / pnpm (apps/web/, future packages/) ---
+node_modules/
+.pnpm-store/
+.next/
+.turbo/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+docs/superpowers

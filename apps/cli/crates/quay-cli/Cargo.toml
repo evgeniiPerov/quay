@@ -1,0 +1,13 @@
+[package]
+name = "quay-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quay-core = { path = "../quay-core" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true

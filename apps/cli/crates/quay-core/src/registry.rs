@@ -1,0 +1,119 @@
+use crate::error::{QuayError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Registry {
+    pub hub: String,
+    pub generated_at: String,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    pub skills: BTreeMap<String, RegistryEntry>,
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryEntry {
+    pub version: String,
+    pub description: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub path: String,
+    pub sha: String,
+    pub files: Vec<String>,
+}
+
+impl Registry {
+    pub fn parse(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|e| QuayError::InvalidRegistry {
+            reason: e.to_string(),
+        })
+    }
+
+    pub fn entry(&self, name: &str) -> Option<&RegistryEntry> {
+        self.skills.get(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"{
+        "hub": "my-org-skills",
+        "generated_at": "2026-05-08T10:39:00Z",
+        "schema_version": 1,
+        "skills": {
+            "csv-parse": {
+                "version": "1.2.0",
+                "description": "Parse CSV with auto-delimiter detection",
+                "tags": ["data", "parsing", "backend"],
+                "category": "backend",
+                "path": "skills/csv-parse",
+                "sha": "abc123def",
+                "files": ["SKILL.md", "resources/delimiters.md"]
+            }
+        }
+    }"#;
+
+    #[test]
+    fn parses_sample() {
+        let r = Registry::parse(SAMPLE).unwrap();
+        assert_eq!(r.hub, "my-org-skills");
+        assert_eq!(r.schema_version, 1);
+        let e = r.entry("csv-parse").unwrap();
+        assert_eq!(e.version, "1.2.0");
+        assert_eq!(e.files.len(), 2);
+        assert_eq!(e.tags, vec!["data", "parsing", "backend"]);
+        assert_eq!(e.category.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn missing_skill_returns_none() {
+        let r = Registry::parse(SAMPLE).unwrap();
+        assert!(r.entry("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        let err = Registry::parse("{ not json").unwrap_err();
+        assert!(matches!(err, QuayError::InvalidRegistry { .. }));
+    }
+
+    #[test]
+    fn schema_version_defaults_to_1() {
+        let no_version = r#"{
+            "hub": "x",
+            "generated_at": "2026-05-08T10:39:00Z",
+            "skills": {}
+        }"#;
+        let r = Registry::parse(no_version).unwrap();
+        assert_eq!(r.schema_version, 1);
+    }
+
+    #[test]
+    fn category_and_tags_default_when_omitted() {
+        let minimal = r#"{
+            "hub": "x",
+            "generated_at": "2026-05-08T10:39:00Z",
+            "skills": {
+                "x": {
+                    "version": "0.1.0",
+                    "description": "y",
+                    "path": "skills/x",
+                    "sha": "0",
+                    "files": ["SKILL.md"]
+                }
+            }
+        }"#;
+        let r = Registry::parse(minimal).unwrap();
+        let e = r.entry("x").unwrap();
+        assert_eq!(e.category, None);
+        assert!(e.tags.is_empty());
+    }
+}
