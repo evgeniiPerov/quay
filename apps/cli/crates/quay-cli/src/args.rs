@@ -94,6 +94,35 @@ pub enum Command {
         #[command(subcommand)]
         action: ProfileAction,
     },
+    /// Apply or verify mirrors from `[install].mirrors` config.
+    Link {
+        #[command(subcommand)]
+        action: Option<LinkAction>,
+        /// Overwrite existing entries even if they conflict with quay's expected layout.
+        #[arg(long, global = true)]
+        force: bool,
+    },
+    /// Launch the interactive TUI.
+    Tui {
+        /// Probe the config and exit without launching the TUI.
+        /// Exit code 0: onboarding not needed. Exit code 2: onboarding needed.
+        #[arg(long, hide = true)]
+        check_config_only: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LinkAction {
+    /// Verify mirrors are intact; exit non-zero if drifted.
+    Check,
+    /// Add a new mirror to the project config and apply it for every installed skill.
+    Add {
+        path: PathBuf,
+        #[arg(long, default_value = "auto")]
+        strategy: String,
+    },
+    /// Remove a mirror from the project config (does not delete the mirror dir).
+    Remove { path: PathBuf },
 }
 
 /// Version bump strategy for `quay push`.

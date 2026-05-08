@@ -11,3 +11,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tui-textarea.workspace = true
+nucleo-matcher.workspace = true
+
+[dev-dependencies]
+assert_fs.workspace = true

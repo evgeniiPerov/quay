@@ -88,18 +88,20 @@ See [`docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md`](docs/sup
 
 ## Status
 
-Plans 1, 1.5, 2, 2.5, 3, and 4 are **implemented**. The CLI provides:
+Plans 1–6.75 are **implemented**. The CLI provides:
 - `init`, `remote add/list/remove` — project setup
 - `profile list/add/remove/use/current/show/rename` — multi-org identities
 - `add`, `list`, `remove`, `info` — single-skill lifecycle
 - `search`, `outdated`, `update`, `sync` — discovery and reproducibility
 - `create`, `validate`, `push` — contribute path (PR-based, via `git` + `gh` CLIs)
+- `link`, `link check/add/remove` — multi-tool mirrors
+- `tui` — interactive Dashboard / Browse / Search / Installed / Settings (Profiles / Remotes / Install tabs) + Create/Push (Screen 5, hybrid TUI form + `$EDITOR`) + first-run onboarding gate + profile switcher modal
 
 All commands honor `--profile`, `--remote`, and `--json`.
 
-Test status: 108 tests passing (1 ignored env-var test) in `apps/cli/`, 0 clippy warnings, release build produces a CLI that ignores the `QUAY_GITHUB_BASE_URL` test seam.
+Test status: 195 tests passing (3 ignored env-var/editor tests) in `apps/cli/`, 0 clippy warnings, release build produces a CLI that ignores the `QUAY_GITHUB_BASE_URL` test seam.
 
-Plans 5–7 (mirroring `quay link`, TUI, additional providers, distribution) remain to be implemented. See `docs/superpowers/plans/`.
+Plan 7 (additional providers, distribution, live remote test-connection) remains.
 
 **Active design doc:** [`docs/superpowers/specs/2026-05-08-quay-cli-design.md`](docs/superpowers/specs/2026-05-08-quay-cli-design.md)
 

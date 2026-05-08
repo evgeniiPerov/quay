@@ -44,6 +44,19 @@ pub enum QuayError {
         "ambiguous profile — multiple profiles exist; pass --profile=<name> or set active_profile"
     )]
     AmbiguousProfile,
+    #[error("mirror conflict at {path}: {reason}. Re-run with --force to overwrite.")]
+    MirrorConflict { path: String, reason: String },
+    #[error("mirror strategy {strategy} not supported on this platform")]
+    UnsupportedStrategy { strategy: String },
+    #[error("mirror integrity check failed: {0}")]
+    MirrorCheckFailed(String),
+    /// The caller passed an argument value that fails a domain constraint (e.g.
+    /// a skill name that is not kebab-case).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    /// The resource the caller tried to create already exists on the filesystem.
+    #[error("{0} already exists")]
+    AlreadyExists(String),
 }
 
 pub type Result<T> = std::result::Result<T, QuayError>;

@@ -1,8 +1,8 @@
 #[cfg(debug_assertions)]
 use quay_core::GithubRawFetcherWithBase;
 use quay_core::{
-    outdated, Config, GithubRawFetcher, Lockfile, OutdatedEntry, RegistryFetcher, SkillFileFetcher,
-    SkillManager,
+    apply_all, outdated, Config, GithubRawFetcher, Lockfile, MirrorAction, OutdatedEntry,
+    QuayError, RegistryFetcher, SkillFileFetcher, SkillManager,
 };
 use std::path::Path;
 
@@ -102,5 +102,46 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
             println!("updated {} from {} to {}", r.name, r.installed, r.available);
         }
     }
+
+    for r in &updated_rows {
+        apply_mirrors_after_install(cfg, project, &r.name, json);
+    }
     Ok(())
+}
+
+fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {
+    if cfg.install.mirrors.is_empty() {
+        return;
+    }
+    match apply_all(&cfg.install, project, skill, false) {
+        Ok(actions) => {
+            if json {
+                return;
+            }
+            for action in &actions {
+                match action {
+                    MirrorAction::Created { path, strategy } => {
+                        println!("  mirror: created {} ({:?})", path.display(), strategy);
+                    }
+                    MirrorAction::Replaced { path, strategy } => {
+                        println!("  mirror: replaced {} ({:?})", path.display(), strategy);
+                    }
+                    MirrorAction::NoOp => {}
+                }
+            }
+        }
+        Err(QuayError::MirrorConflict { path, reason }) => {
+            if !json {
+                eprintln!(
+                    "warning: mirror not applied at {}: {}. Run `quay link --force` to resolve.",
+                    path, reason
+                );
+            }
+        }
+        Err(e) => {
+            if !json {
+                eprintln!("warning: mirror apply failed: {}", e);
+            }
+        }
+    }
 }

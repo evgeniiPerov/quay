@@ -66,7 +66,11 @@ impl PrOpener for GhCliOpener {
         let origin_url = String::from_utf8_lossy(&origin_out.stdout)
             .trim()
             .to_string();
-        let is_github = origin_url.contains("github.com");
+        // Substring match covers github.com and GitHub Enterprise Cloud (*.github.com).
+        // On-prem GHE behind a fully custom domain won't match — use QUAY_PROVIDER=github
+        // as an escape hatch until the provider field is plumbed through (Plan 7).
+        let is_github = origin_url.contains("github.com")
+            || std::env::var("QUAY_PROVIDER").ok().as_deref() == Some("github");
 
         if !self.gh_available() || !is_github {
             // Fallback: produce the GitHub compare URL the user can open in a browser,

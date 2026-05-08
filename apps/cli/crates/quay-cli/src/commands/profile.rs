@@ -1,7 +1,8 @@
 //! Implementation of `quay profile <action>`.
 
 use crate::args::ProfileAction;
-use quay_core::{QuayError, UserConfigFile};
+use crate::config_io::{read_user_file, write_user_file};
+use quay_core::QuayError;
 use serde_json::json;
 use std::path::Path;
 
@@ -33,28 +34,6 @@ pub fn run(
         ProfileAction::Show { name } => show(name.as_deref(), user_config, json),
         ProfileAction::Rename { old, new } => rename(&old, &new, user_config, json),
     }
-}
-
-/// Read and migrate the user config file, returning an empty default when the
-/// path is absent or unspecified.
-pub(crate) fn read_user_file(user_config: Option<&Path>) -> Result<UserConfigFile, QuayError> {
-    let path = match user_config {
-        Some(p) => p,
-        None => return Ok(UserConfigFile::default()),
-    };
-    if !path.exists() {
-        return Ok(UserConfigFile::default());
-    }
-    let text = std::fs::read_to_string(path).map_err(|source| QuayError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let mut file: UserConfigFile = toml::from_str(&text).map_err(|e| QuayError::InvalidConfig {
-        path: path.display().to_string(),
-        reason: e.to_string(),
-    })?;
-    file.migrate_legacy_in_place();
-    Ok(file)
 }
 
 fn list(user_config: Option<&Path>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -132,23 +111,6 @@ fn current(
         println!("{}", name);
     }
     Ok(())
-}
-
-fn write_user_file(path: &Path, file: &UserConfigFile) -> Result<(), QuayError> {
-    let text = toml::to_string_pretty(file).map_err(|e| QuayError::InvalidConfig {
-        path: path.display().to_string(),
-        reason: e.to_string(),
-    })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    std::fs::write(path, text).map_err(|source| QuayError::Io {
-        path: path.display().to_string(),
-        source,
-    })
 }
 
 fn add(

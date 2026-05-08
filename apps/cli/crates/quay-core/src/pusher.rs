@@ -131,6 +131,9 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
 
         // 5. Make sure target dir exists in the hub clone (default to flat layout if new).
         let hub_skill_dir = hub_clone.join("skills").join(skill_name);
+        // Check before create_dir_all: if SKILL.md already exists, this is an update.
+        // The exists() call is safe on a non-existent path — returns false.
+        let is_new_skill = !hub_skill_dir.join("SKILL.md").exists();
         std::fs::create_dir_all(&hub_skill_dir).map_err(|source| QuayError::Io {
             path: hub_skill_dir.display().to_string(),
             source,
@@ -199,11 +202,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         let title = format!(
             "{}: {} {}",
             skill_name,
-            if branch.contains("0.1.0") {
-                "add"
-            } else {
-                "update"
-            },
+            if is_new_skill { "add" } else { "update" },
             manifest.version
         );
         let body = pr_body(skill_name, &manifest);
@@ -264,11 +263,17 @@ mod tests {
     use std::cell::RefCell;
 
     /// `FakeGit` records every call and serves a working clone of an empty repo for `clone()`.
+    ///
+    /// Set `seed_skill` to `Some((name, content))` to pre-populate
+    /// `<dest>/skills/<name>/SKILL.md` on every `clone()` call, simulating a
+    /// hub that already contains a previous version of the skill.
     struct FakeGit {
         clones: RefCell<Vec<(String, PathBuf)>>,
         branches: RefCell<Vec<(PathBuf, String)>>,
         commits: RefCell<Vec<(PathBuf, String)>>,
         pushes: RefCell<Vec<(PathBuf, String, String)>>,
+        /// If set, clone() seeds `<dest>/skills/<name>/SKILL.md` with this content.
+        seed_skill: Option<(String, String)>,
     }
 
     impl FakeGit {
@@ -278,6 +283,17 @@ mod tests {
                 branches: RefCell::new(Vec::new()),
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
+                seed_skill: None,
+            }
+        }
+
+        fn with_seed(name: impl Into<String>, content: impl Into<String>) -> Self {
+            Self {
+                clones: RefCell::new(Vec::new()),
+                branches: RefCell::new(Vec::new()),
+                commits: RefCell::new(Vec::new()),
+                pushes: RefCell::new(Vec::new()),
+                seed_skill: Some((name.into(), content.into())),
             }
         }
     }
@@ -288,6 +304,11 @@ mod tests {
                 .borrow_mut()
                 .push((url.into(), dest.to_path_buf()));
             std::fs::create_dir_all(dest).unwrap();
+            if let Some((skill_name, content)) = &self.seed_skill {
+                let skill_dir = dest.join("skills").join(skill_name);
+                std::fs::create_dir_all(&skill_dir).unwrap();
+                std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+            }
             Ok(())
         }
 
@@ -318,6 +339,22 @@ mod tests {
 
         fn remote_url(&self, _repo: &Path, _remote: &str) -> Result<String> {
             Ok("https://example.test/foo/bar.git".into())
+        }
+    }
+
+    /// Opener that captures the PR title so tests can assert on "add" vs "update".
+    #[derive(Default)]
+    struct TitleCapturingOpener {
+        pub title: RefCell<String>,
+    }
+
+    impl PrOpener for TitleCapturingOpener {
+        fn open_pr(&self, _repo: &Path, branch: &str, title: &str, _body: &str) -> Result<PrInfo> {
+            *self.title.borrow_mut() = title.to_string();
+            Ok(PrInfo {
+                url: format!("https://example.test/{}", branch),
+                auto_created: false,
+            })
         }
     }
 
@@ -438,6 +475,67 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, QuayError::SkillNotFound { .. }));
+    }
+
+    #[test]
+    fn push_marks_existing_skill_as_update_in_pr_title() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "csv-parse",
+            "---\nname: csv-parse\ndescription: Parse CSV.\nversion: 1.2.3\n---\nbody\n",
+        );
+        let cfg = make_config();
+        // Seed the hub clone with an existing SKILL.md so is_new_skill is false.
+        let git = FakeGit::with_seed(
+            "csv-parse",
+            "---\nname: csv-parse\ndescription: old.\nversion: 0.1.0\n---\nold\n",
+        );
+        let opener = TitleCapturingOpener::default();
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        pusher
+            .push("csv-parse", None, BumpKind::AsWritten, clone_root.path())
+            .unwrap();
+        let title = opener.title.borrow().clone();
+        assert!(
+            title.contains("update"),
+            "expected 'update', got: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn push_marks_new_skill_as_add_in_pr_title() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "csv-parse",
+            "---\nname: csv-parse\ndescription: Parse CSV.\nversion: 1.2.3\n---\nbody\n",
+        );
+        let cfg = make_config();
+        // No seed: hub has no existing skill, so is_new_skill is true.
+        let git = FakeGit::new();
+        let opener = TitleCapturingOpener::default();
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        pusher
+            .push("csv-parse", None, BumpKind::AsWritten, clone_root.path())
+            .unwrap();
+        let title = opener.title.borrow().clone();
+        assert!(title.contains("add"), "expected 'add', got: {}", title);
     }
 
     #[test]

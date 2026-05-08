@@ -36,8 +36,44 @@ Skills install to `.agents/skills/<name>/`. Lockfile at `.agents/skills.lock.jso
 | `quay validate <skill>` | Validate frontmatter offline (no network). |
 | `quay push <skill>` | Push the local skill to a hub via PR (`--bump=patch\|minor\|major\|as-written`). |
 | `quay profile list/current/add/remove/use/show/rename` | Manage multi-org profiles (identity + remotes per profile). |
+| `quay link [--force]` | Apply mirrors from `[install].mirrors` (auto-runs after `add`/`update`). |
+| `quay link check` | Verify mirrors intact (CI exit code). |
+| `quay link add <path> --strategy=auto\|symlink\|junction\|copy` | Add a mirror destination. |
+| `quay link remove <path>` | Remove a mirror entry (does not delete the mirror directory). |
+| `quay tui` | Launch the interactive TUI (Dashboard / Browse / Search / Installed). |
 
 All commands support `--json` for machine-readable output. Use `--profile=<name>` to override the active profile for one invocation, or set `QUAY_PROFILE=<name>` in the environment.
+
+## Mirroring
+
+Quay installs each skill once at `.agents/skills/<name>/`. Add mirrors so the same skill appears under tool-specific paths (`.claude/skills/`, `.codex/skills/`, etc.) without duplicating storage:
+
+```toml
+# .quay/config.toml
+[install]
+canonical = ".agents/skills"
+mirrors = [
+  { path = ".claude/skills", strategy = "auto" },
+  { path = ".codex/skills",  strategy = "auto" },
+]
+```
+
+`auto` resolves to symlink on Unix, junction on Windows, copy on unsupported platforms. After every `quay add` / `quay update` the mirrors are refreshed. Run `quay link --check` in CI to fail builds when a mirror has drifted.
+
+## TUI
+
+`quay tui` opens an interactive interface across five screens plus a global profile-switcher modal.
+
+| Key | Action |
+|-----|--------|
+| `1` / `2` / `3` / `4` | Jump to Dashboard / Browse / Search / Installed |
+| `,` | Open Settings (Profiles / Remotes / Install tabs; Tab to switch) |
+| `p` | Profile switcher modal (global) |
+| `b` / `s` / `i` | (Dashboard only) shortcuts to Browse / Search / Installed |
+| `↑` / `↓` or `j` / `k` | Move selection |
+| `q` | Quit (anywhere) |
+
+Settings persists every change directly through the same atomic-write path the CLI uses (`config_io::write_user_file` / `write_project_file`). Create/Push and the first-run onboarding form remain on the roadmap (Plan 6.75).
 
 ## Test
 

@@ -2,6 +2,8 @@
 
 pub mod args;
 pub mod commands;
+pub mod config_io;
+pub mod tui;
 
 use args::{Cli, Command};
 use clap::Parser;
@@ -116,6 +118,17 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Profile { action } => {
             commands::profile::run(action, &project, user_config.as_deref(), cli.json)?;
+        }
+        Command::Link { action, force } => {
+            commands::link::run(action, force, &project, user_config.as_deref(), cli.json)?;
+        }
+        Command::Tui { check_config_only } => {
+            commands::tui::run(
+                &project,
+                user_config.as_deref(),
+                cli.profile.as_deref(),
+                check_config_only,
+            )?;
         }
     }
     Ok(())

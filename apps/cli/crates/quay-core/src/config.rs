@@ -31,6 +31,27 @@ pub struct RemoteConfig {
     pub provider: Option<String>,
 }
 
+/// Persisted metadata about the quay installation (e.g. whether first-run
+/// onboarding has been completed). Absent or default values are omitted from
+/// disk so that existing config files continue to round-trip cleanly.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaSection {
+    /// Set to `true` once the user has completed (or explicitly skipped) the
+    /// first-run onboarding screen.
+    #[serde(default, skip_serializing_if = "is_default_false")]
+    pub onboarded: bool,
+}
+
+fn is_default_false(b: &bool) -> bool {
+    !*b
+}
+
+impl MetaSection {
+    fn is_default(&self) -> bool {
+        !self.onboarded
+    }
+}
+
 /// On-disk shape of the user config file. Supports both the legacy flat layout
 /// (Plan 1 — `[user]` + top-level `[remotes.*]`) and the new profile-aware
 /// layout (`active_profile` + `[profiles.<name>]`). Old-shape files
@@ -38,6 +59,9 @@ pub struct RemoteConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserConfigFile {
+    /// Installation metadata; omitted from disk when all values are default.
+    #[serde(default, skip_serializing_if = "MetaSection::is_default")]
+    pub meta: MetaSection,
     pub active_profile: Option<String>,
     pub profiles: BTreeMap<String, ProfileFile>,
     /// Legacy flat fields, retained for backward compatibility.
@@ -92,16 +116,39 @@ impl UserConfigFile {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MirrorStrategy {
+    Symlink,
+    Junction,
+    Copy,
+    #[default]
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirrorConfig {
+    /// Mirror destination directory, e.g. `.claude/skills`.
+    pub path: PathBuf,
+    /// How to project canonical content into the mirror. Defaults to `auto`.
+    #[serde(default)]
+    pub strategy: MirrorStrategy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallConfig {
     #[serde(default = "default_canonical")]
     pub canonical: PathBuf,
+    /// Optional mirror destinations.
+    #[serde(default)]
+    pub mirrors: Vec<MirrorConfig>,
 }
 
 impl Default for InstallConfig {
     fn default() -> Self {
         Self {
             canonical: default_canonical(),
+            mirrors: Vec::new(),
         }
     }
 }
@@ -665,5 +712,84 @@ mod tests {
             std::env::remove_var("QUAY_PROFILE");
         }
         assert_eq!(cfg.user.email.as_deref(), Some("e@home"));
+    }
+
+    #[test]
+    fn install_with_mirrors_parses() {
+        let toml = r#"
+            [install]
+            canonical = ".agents/skills"
+            mirrors = [
+              { path = ".claude/skills", strategy = "auto" },
+              { path = ".codex/skills",  strategy = "copy" },
+            ]
+        "#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.install.mirrors.len(), 2);
+        assert_eq!(cfg.install.mirrors[0].path, PathBuf::from(".claude/skills"));
+        assert_eq!(cfg.install.mirrors[0].strategy, MirrorStrategy::Auto);
+        assert_eq!(cfg.install.mirrors[1].strategy, MirrorStrategy::Copy);
+    }
+
+    #[test]
+    fn install_without_mirrors_defaults_to_empty() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.install.mirrors.is_empty());
+    }
+
+    #[test]
+    fn mirror_strategy_default_is_auto_when_omitted() {
+        let toml = r#"
+            [install]
+            mirrors = [{ path = ".claude/skills" }]
+        "#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.install.mirrors[0].strategy, MirrorStrategy::Auto);
+    }
+
+    #[test]
+    fn mirror_config_round_trips() {
+        let cfg = InstallConfig {
+            canonical: PathBuf::from(".agents/skills"),
+            mirrors: vec![MirrorConfig {
+                path: PathBuf::from(".claude/skills"),
+                strategy: MirrorStrategy::Symlink,
+            }],
+        };
+        let serialized = toml::to_string(&cfg).unwrap();
+        let parsed: InstallConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn loads_pre_meta_config() {
+        let toml = r#"
+            active_profile = "personal"
+            [profiles.personal.user]
+            email = "x@y.com"
+        "#;
+        let file: UserConfigFile = toml::from_str(toml).unwrap();
+        assert!(!file.meta.onboarded);
+        assert_eq!(file.profiles.len(), 1);
+    }
+
+    #[test]
+    fn round_trip_omits_default_meta() {
+        let file = UserConfigFile {
+            meta: MetaSection::default(),
+            ..Default::default()
+        };
+        let s = toml::to_string(&file).unwrap();
+        assert!(!s.contains("[meta]"));
+    }
+
+    #[test]
+    fn round_trip_emits_onboarded_marker() {
+        let file = UserConfigFile {
+            meta: MetaSection { onboarded: true },
+            ..Default::default()
+        };
+        let s = toml::to_string(&file).unwrap();
+        assert!(s.contains("onboarded = true"));
     }
 }
