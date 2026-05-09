@@ -88,22 +88,36 @@ See [`docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md`](docs/sup
 
 ## Status
 
-Plans 1–6.75 are **implemented**. The CLI provides:
+Plans 1–7a + 6.85 + 8 are **implemented**. The CLI provides:
 - `init`, `remote add/list/remove` — project setup
+- `remote test <name>` — live test-connection probe (registry.json fetch via git)
+- `remote add ... --provider <kind>` — explicit provider override (github, githubenterprise, gitlab, bitbucket, azuredevops)
 - `profile list/add/remove/use/current/show/rename` — multi-org identities
 - `add`, `list`, `remove`, `info` — single-skill lifecycle
 - `search`, `outdated`, `update`, `sync` — discovery and reproducibility
-- `create`, `validate`, `push` — contribute path (PR-based, via `git` + `gh` CLIs)
+- `create`, `validate [--strict]`, `push`, `scan` — author + contribute path (PR-based, via `git` + `gh` CLIs)
+  - `scan` discovers local skills under `.agents/skills/` in any of three formats — Frontmatter (canonical YAML), SlashCommand (`# /<name>` H1), Freestyle (any markdown) — and reports each skill's status (`local`, `installed`, `installed-modified`, `pushed-local`) by cross-referencing the lockfile and `.quay/push-log.json`.
+  - `validate` is soft by default (warnings to stderr, exit 0); pass `--strict` to fail on missing frontmatter / required fields.
+  - `push` accepts skills in any of the three formats. Frontmatter skills with `--bump` are re-emitted with the new version; SlashCommand / Freestyle skills are written to the hub byte-identically. Bumping a non-Frontmatter skill is rejected with a clear error.
 - `link`, `link check/add/remove` — multi-tool mirrors
 - `tui` — interactive Dashboard / Browse / Search / Installed / Settings (Profiles / Remotes / Install tabs) + Create/Push (Screen 5, hybrid TUI form + `$EDITOR`) + first-run onboarding gate + profile switcher modal
+  - Settings → Remotes `t` keybind probes connection live; add/edit modal has provider picker
+  - Create/Push Done panel `[o]` opens PR URL in system browser (xdg-open / open / cmd /c start)
+  - Bracketed paste enabled (Plan 6.85): Ctrl+V / Shift+Insert / middle-click pastes into any focused text input across Onboarding, Settings (Profiles/Remotes/Install) modals, and Create/Push form. CR/LF stripped from paste.
+  - Forms migrated to `ratatui-form` 0.1.1 (Plan 6.85): Onboarding (Step 1 + Step 2), Settings → Profiles modal, Settings → Remotes modal (provider picker is a Select), and Create/Push frontmatter form share a unified dark `FormStyle` with built-in Tab/Shift+Tab navigation, `Required`/`Pattern` validation, and per-field error reporting on submit.
+  - Dashboard "Local skills" panel (Plan 8): scans `.agents/skills/` on screen entry, lists every discovered skill with a status badge (`◌ local`, `◉ installed vX`, `⚠ modified vX`, `↑ pushed-local`). Keybinds: `[r]` rescan, `[j]/[k]` navigate, `[u]` push selected.
+  - Onboarding gate fixed (Plan 8): now driven by `profiles.is_empty()` alone — users who skipped onboarding once (writing `meta.onboarded = true` with no profiles) get onboarding back on next launch instead of being stuck on a barren Dashboard.
 
 All commands honor `--profile`, `--remote`, and `--json`.
 
-Test status: 195 tests passing (3 ignored env-var/editor tests) in `apps/cli/`, 0 clippy warnings, release build produces a CLI that ignores the `QUAY_GITHUB_BASE_URL` test seam.
+Test status: 287 tests passing (4 ignored env-var/editor/network tests) in `apps/cli/`, 0 clippy warnings, release build succeeds.
 
-Plan 7 (additional providers, distribution, live remote test-connection) remains.
+Plan 7b (cargo-dist packaging, GitHub Releases, Homebrew tap) remains, deferred until UX is solid.
 
 **Active design doc:** [`docs/superpowers/specs/2026-05-08-quay-cli-design.md`](docs/superpowers/specs/2026-05-08-quay-cli-design.md)
+
+### Breaking changes (Plan 7a)
+- `QUAY_PROVIDER` environment variable is no longer honored. Set `provider = "<kind>"` in the remote's TOML entry, or run `quay remote edit <name> --provider <kind>` (TUI: Settings → Remotes → `e`). Valid kinds: `github`, `githubenterprise`, `gitlab`, `bitbucket`, `azuredevops`.
 
 ## Decisions Locked
 

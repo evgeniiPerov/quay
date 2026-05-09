@@ -51,3 +51,6 @@ Thumbs.db
 !.env.example
 
 docs/superpowers
+
+# Local-only push intent log; not synced.
+.quay/push-log.json
