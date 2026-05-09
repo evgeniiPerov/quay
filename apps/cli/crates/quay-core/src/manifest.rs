@@ -1,4 +1,5 @@
 use crate::error::{QuayError, Result};
+use crate::scanner::SkillFormat;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +19,13 @@ pub struct SkillManifest {
     pub license: Option<String>,
     #[serde(default)]
     pub quay: QuayMeta,
+    /// New in Plan 8. Defaults to `Frontmatter` when reading old manifests.
+    #[serde(default = "default_source_format")]
+    pub source_format: SkillFormat,
+}
+
+fn default_source_format() -> SkillFormat {
+    SkillFormat::Frontmatter
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,5 +125,31 @@ mod tests {
         let bad = "---\nname: foo\ndescription: x\nversion: not-a-version\n---\nbody\n";
         let err = parse_skill(bad, "test").unwrap_err();
         assert!(format!("{}", err).contains("semver"));
+    }
+
+    #[test]
+    fn manifest_reads_old_yaml_without_source_format_as_frontmatter() {
+        let yaml = "name: x\ndescription: y\nversion: 0.1.0\n";
+        let m: SkillManifest = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(m.source_format, SkillFormat::Frontmatter);
+    }
+
+    #[test]
+    fn manifest_round_trips_source_format_slash_command() {
+        let m = SkillManifest {
+            name: "x".into(),
+            description: "y".into(),
+            version: "0.1.0".into(),
+            category: None,
+            tags: vec![],
+            author: None,
+            license: None,
+            quay: Default::default(),
+            source_format: SkillFormat::SlashCommand,
+        };
+        let yaml = serde_yaml::to_string(&m).unwrap();
+        assert!(yaml.contains("source_format: slash_command"));
+        let parsed: SkillManifest = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.source_format, SkillFormat::SlashCommand);
     }
 }

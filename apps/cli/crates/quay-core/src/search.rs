@@ -124,6 +124,7 @@ mod tests {
             path: "skills/x".into(),
             sha: "0".into(),
             files: vec!["SKILL.md".into()],
+            source_format: crate::scanner::SkillFormat::Frontmatter,
         }
     }
 
@@ -135,6 +136,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         cfg
@@ -250,6 +252,7 @@ mod tests {
                 url: "https://github.com/x/y.git".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         let reg = make_registry(&[("a", make_entry("1.0.0", "x", &[], None))]);
@@ -296,6 +299,7 @@ mod tests {
                 url: "https://github.com/z/z.git".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         cfg.remotes.insert(
@@ -304,6 +308,7 @@ mod tests {
                 url: "https://github.com/a/a.git".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         let reg = make_registry(&[

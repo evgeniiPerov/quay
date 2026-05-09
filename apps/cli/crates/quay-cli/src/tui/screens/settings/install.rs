@@ -43,6 +43,19 @@ pub enum FormField {
     Strategy,
 }
 
+/// Insert a pasted string into the focused text field of the add modal.
+///
+/// Silently dropped if the modal is not open.
+pub fn handle_paste(state: &mut InstallState, s: &str) {
+    let safe: String = s.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    if state.mode == Mode::Adding {
+        match state.form.focused {
+            FormField::Path => state.form.path.push_str(&safe),
+            FormField::Strategy => state.form.strategy.push_str(&safe),
+        }
+    }
+}
+
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
     match app.settings.install.mode {
         Mode::Browsing => handle_browsing(app, code),

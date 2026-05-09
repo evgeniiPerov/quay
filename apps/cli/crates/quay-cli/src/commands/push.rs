@@ -1,7 +1,7 @@
 //! Implementation of `quay push <skill>`.
 
 use crate::args::BumpArg;
-use quay_core::{BumpKind, Config, GhCliOpener, GitShellClient, QuayError, SkillPusher};
+use quay_core::{BumpKind, Config, GitShellClient, QuayError, SkillPusher};
 use serde_json::json;
 use std::path::Path;
 
@@ -17,9 +17,12 @@ pub struct PushOutcome {
     /// Semver version string that was written to the hub.
     pub version: String,
     /// URL of the PR that was opened (or a hint URL for manual creation).
+    /// Empty for direct-mode pushes.
     pub pr_url: String,
     /// `true` when the PR was created automatically by `gh pr create`.
     pub pr_auto_created: bool,
+    /// SHA of the new commit on the hub. Always populated.
+    pub commit_sha: String,
 }
 
 /// Push a local skill to a hub via PR without any output side-effects.
@@ -30,6 +33,7 @@ pub fn push_skill(
     skill: &str,
     remote: Option<&str>,
     bump: BumpKind,
+    push_mode: Option<quay_core::config::PushMode>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -39,7 +43,31 @@ pub fn push_skill(
     ensure_remotes_configured_core(&cfg)?;
 
     let git = GitShellClient;
-    let opener = GhCliOpener;
+
+    // Resolve the target remote URL so we can select the correct provider.
+    // This mirrors the remote-resolution logic inside SkillPusher::push; if the
+    // --remote flag was given we use that, otherwise we use the default remote.
+    let remote_url_for_provider = {
+        let remote_name = match remote {
+            Some(name) => name.to_string(),
+            None => cfg
+                .default_remote()
+                .map(|(n, _)| n.clone())
+                .ok_or_else(|| {
+                    QuayError::ConfigValidation("no default remote — pass --remote=<name>".into())
+                })?,
+        };
+        let r = cfg
+            .remotes
+            .get(&remote_name)
+            .ok_or_else(|| QuayError::RemoteUnknown(remote_name.clone()))?;
+        (r.url.clone(), r.provider)
+    };
+    // provider_for_remote returns Box<dyn Provider>, which implements PrOpener
+    // via the explicit impl in quay_core::provider.
+    let opener =
+        quay_core::provider_for_remote(&remote_url_for_provider.0, remote_url_for_provider.1);
+
     let clone_root = std::env::temp_dir().join(format!("quay-push-{}", std::process::id()));
     std::fs::create_dir_all(&clone_root).map_err(|source| QuayError::Io {
         path: clone_root.display().to_string(),
@@ -53,7 +81,7 @@ pub fn push_skill(
         project_root: project.to_path_buf(),
         author: None,
     };
-    let result = pusher.push(skill, remote, bump, &clone_root)?;
+    let result = pusher.push(skill, remote, bump, &clone_root, push_mode)?;
 
     // Best-effort cleanup of the temp clone tree.
     let _ = std::fs::remove_dir_all(&clone_root);
@@ -63,8 +91,14 @@ pub fn push_skill(
         remote: result.remote,
         branch: result.branch,
         version: result.version,
-        pr_url: result.pr.url,
-        pr_auto_created: result.pr.auto_created,
+        pr_url: result
+            .pr
+            .as_ref()
+            .map(|p| p.url.as_str())
+            .unwrap_or("")
+            .to_string(),
+        pr_auto_created: result.pr.as_ref().map(|p| p.auto_created).unwrap_or(false),
+        commit_sha: result.commit_sha,
     })
 }
 
@@ -79,10 +113,12 @@ fn ensure_remotes_configured_core(cfg: &Config) -> Result<(), QuayError> {
 }
 
 /// Push a local skill to a hub via PR.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     skill: &str,
     remote: Option<&str>,
     bump: BumpArg,
+    push_mode: Option<quay_core::config::PushMode>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -95,7 +131,15 @@ pub fn run(
         BumpArg::AsWritten => BumpKind::AsWritten,
     };
 
-    let outcome = push_skill(skill, remote, bump_kind, profile, project, user_config)?;
+    let outcome = push_skill(
+        skill,
+        remote,
+        bump_kind,
+        push_mode,
+        profile,
+        project,
+        user_config,
+    )?;
 
     if json {
         println!(

@@ -6,8 +6,10 @@
 use crate::config::Config;
 use crate::error::{QuayError, Result};
 use crate::git::GitClient;
-use crate::manifest::{parse_skill, SkillManifest};
+use crate::manifest::SkillManifest;
 use crate::provider::{PrInfo, PrOpener};
+use crate::push_log::{PushLog, PushRecord};
+use crate::scanner::{parse_skill_metadata, SkillFormat};
 use semver::Version;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +29,10 @@ pub struct PushResult {
     pub remote: String,
     pub branch: String,
     pub version: String,
-    pub pr: PrInfo,
+    /// `Some(...)` for PR-mode pushes, `None` for direct pushes.
+    pub pr: Option<PrInfo>,
+    /// SHA of the new commit on the hub.  Always populated regardless of mode.
+    pub commit_sha: String,
 }
 
 /// Drives the local-skill → hub-PR pipeline.
@@ -57,6 +62,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         target_remote: Option<&str>,
         bump: BumpKind,
         clone_dest_root: &Path,
+        push_mode_override: Option<crate::config::PushMode>,
     ) -> Result<PushResult> {
         // 1. Resolve target remote.
         let remote_name = match target_remote {
@@ -86,16 +92,43 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             });
         }
         let local_md_path = local_skill_dir.join("SKILL.md");
-        let md_text = std::fs::read_to_string(&local_md_path).map_err(|source| QuayError::Io {
+        let raw = std::fs::read_to_string(&local_md_path).map_err(|source| QuayError::Io {
             path: local_md_path.display().to_string(),
             source,
         })?;
-        let (mut manifest, body) = parse_skill(&md_text, &local_md_path.display().to_string())?;
+        let meta = parse_skill_metadata(&raw, &local_md_path);
+
+        // Build a SkillManifest from lenient meta. Push uses this to populate registry.json
+        // and to format the PR body. The on-disk skill file is untouched (raw bytes through)
+        // EXCEPT for Frontmatter format with a bump request, which rewrites the version line
+        // in-place — see the bump branch below.
+        let mut manifest = SkillManifest {
+            name: meta.name.clone(),
+            description: meta.description.clone(),
+            version: meta.version.clone(),
+            category: None,
+            tags: meta.tags.clone(),
+            author: None,
+            license: None,
+            quay: Default::default(),
+            source_format: meta.format,
+        };
 
         // 3. Apply version bump (in memory; written on commit).
         match bump {
             BumpKind::AsWritten => {}
             BumpKind::Patch | BumpKind::Minor | BumpKind::Major => {
+                if !matches!(meta.format, SkillFormat::Frontmatter) {
+                    return Err(QuayError::ConfigValidation(format!(
+                        "cannot apply --bump to a {} skill — version bumps require YAML frontmatter; \
+                         leave bump as-written or convert the skill to canonical format first",
+                        match meta.format {
+                            SkillFormat::SlashCommand => "slash-command",
+                            SkillFormat::Freestyle => "freestyle",
+                            SkillFormat::Frontmatter => unreachable!(),
+                        }
+                    )));
+                }
                 let mut v = Version::parse(&manifest.version).map_err(|e| {
                     QuayError::InvalidFrontmatter {
                         path: local_md_path.display().to_string(),
@@ -139,21 +172,30 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             source,
         })?;
 
-        // 6. Write the (possibly bumped) manifest + body back to disk in the hub clone.
-        let new_md = format!(
-            "---\n{}\n---\n{}",
-            serde_yaml::to_string(&manifest)
-                .map_err(|e| QuayError::InvalidFrontmatter {
+        // 6. Write the file. For Frontmatter + bump, we re-emit normalized YAML frontmatter
+        // so the on-hub file's version matches the bumped version. For all other cases
+        // (Frontmatter without bump, SlashCommand, Freestyle), we copy raw bytes through.
+        let bytes_to_write: Vec<u8> = if matches!(meta.format, SkillFormat::Frontmatter)
+            && !matches!(bump, BumpKind::AsWritten)
+        {
+            // Re-emit only the frontmatter; preserve the body verbatim.
+            let body = strip_frontmatter(&raw).unwrap_or("");
+            let yaml =
+                serde_yaml::to_string(&manifest).map_err(|e| QuayError::InvalidFrontmatter {
                     path: hub_skill_dir.display().to_string(),
                     reason: format!("could not serialize frontmatter: {}", e),
-                })?
-                .trim_end(),
-            body
-        );
-        std::fs::write(hub_skill_dir.join("SKILL.md"), new_md).map_err(|source| QuayError::Io {
-            path: hub_skill_dir.display().to_string(),
-            source,
+                })?;
+            format!("---\n{}\n---\n{}", yaml.trim_end(), body).into_bytes()
+        } else {
+            raw.as_bytes().to_vec()
+        };
+        std::fs::write(hub_skill_dir.join("SKILL.md"), &bytes_to_write).map_err(|source| {
+            QuayError::Io {
+                path: hub_skill_dir.display().to_string(),
+                source,
+            }
         })?;
+        let skill_md_sha = sha256_of_bytes(&bytes_to_write);
 
         // 7. Copy any extra files alongside SKILL.md from local.
         for entry in std::fs::read_dir(&local_skill_dir).map_err(|source| QuayError::Io {
@@ -179,14 +221,73 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             // Subdirectories (resources/, scripts/) are not yet supported here — flag for Plan 4.
         }
 
-        // 8. Branch / commit / push.
+        // 7.5. Update registry.json so consumers (`quay search`, Browse,
+        // `quay add`) can find this skill. Best-effort: a malformed existing
+        // registry.json is replaced with a fresh one.
+        update_hub_registry(
+            &hub_clone,
+            &remote_name,
+            skill_name,
+            &manifest,
+            &skill_md_sha,
+        )?;
+
+        // 8 & 9. Mode-aware branch + commit + push (+ optional PR).
+        use crate::config::PushMode;
+        let effective_mode = push_mode_override.unwrap_or(remote_cfg.push_mode);
+        let result = match effective_mode {
+            PushMode::Pr => self.finish_push_pr(
+                &remote_name,
+                skill_name,
+                is_new_skill,
+                &manifest,
+                &hub_clone,
+            )?,
+            PushMode::Direct => {
+                self.finish_push_direct(&remote_name, skill_name, &manifest, &hub_clone)?
+            }
+        };
+
+        // Best-effort push-log append — note pr_url is "" for direct.
+        if let Err(e) = PushLog::append(
+            &self.project_root,
+            PushRecord {
+                name: skill_name.to_string(),
+                remote: result.remote.clone(),
+                branch: result.branch.clone(),
+                pr_url: result
+                    .pr
+                    .as_ref()
+                    .map(|p| p.url.clone())
+                    .unwrap_or_default(),
+                pushed_at: chrono::Utc::now().to_rfc3339(),
+                commit_sha: Some(result.commit_sha.clone()),
+            },
+        ) {
+            eprintln!(
+                "warning: failed to write .quay/push-log.json: {}; push succeeded",
+                e
+            );
+        }
+
+        Ok(result)
+    }
+
+    fn finish_push_pr(
+        &self,
+        remote_name: &str,
+        skill_name: &str,
+        is_new_skill: bool,
+        manifest: &SkillManifest,
+        hub_clone: &Path,
+    ) -> Result<PushResult> {
         let branch = format!("quay/{}-{}", skill_name, manifest.version);
-        self.git.checkout_new_branch(&hub_clone, &branch)?;
-        self.git.add_all(&hub_clone)?;
+        self.git.checkout_new_branch(hub_clone, &branch)?;
+        self.git.add_all(hub_clone)?;
         let (author_name, author_email) = self.author_identity()?;
         let did_commit = self.git.commit(
-            &hub_clone,
-            &commit_message(skill_name, &manifest),
+            hub_clone,
+            &commit_message(skill_name, manifest),
             &author_name,
             &author_email,
         )?;
@@ -196,23 +297,68 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
                 skill_name
             )));
         }
-        self.git.push(&hub_clone, "origin", &branch)?;
+        self.git.push(hub_clone, "origin", &branch)?;
+        let commit_sha = self.git.head_sha(hub_clone)?;
 
-        // 9. Open PR.
         let title = format!(
             "{}: {} {}",
             skill_name,
             if is_new_skill { "add" } else { "update" },
             manifest.version
         );
-        let body = pr_body(skill_name, &manifest);
-        let pr = self.opener.open_pr(&hub_clone, &branch, &title, &body)?;
+        let body = pr_body(skill_name, manifest);
+        let pr = self.opener.open_pr(hub_clone, &branch, &title, &body)?;
 
         Ok(PushResult {
-            remote: remote_name,
+            remote: remote_name.to_string(),
             branch,
-            version: manifest.version,
-            pr,
+            version: manifest.version.clone(),
+            pr: Some(pr),
+            commit_sha,
+        })
+    }
+
+    fn finish_push_direct(
+        &self,
+        remote_name: &str,
+        skill_name: &str,
+        manifest: &SkillManifest,
+        hub_clone: &Path,
+    ) -> Result<PushResult> {
+        // The freshly-cloned repo is already on its default branch — read it back.
+        let default_branch = self.git.current_branch(hub_clone)?;
+
+        self.git.add_all(hub_clone)?;
+        let (author_name, author_email) = self.author_identity()?;
+        let did_commit = self.git.commit(
+            hub_clone,
+            &commit_message(skill_name, manifest),
+            &author_name,
+            &author_email,
+        )?;
+        if !did_commit {
+            return Err(QuayError::ConfigValidation(format!(
+                "no changes to push for {} (working tree was clean after copy)",
+                skill_name
+            )));
+        }
+
+        self.git
+            .push(hub_clone, "origin", &default_branch)
+            .map_err(|e| {
+                QuayError::ConfigValidation(format!(
+                    "direct push to '{}' failed: {}; if the branch is protected, set this remote's push_mode = pr",
+                    default_branch, e
+                ))
+            })?;
+        let commit_sha = self.git.head_sha(hub_clone)?;
+
+        Ok(PushResult {
+            remote: remote_name.to_string(),
+            branch: default_branch,
+            version: manifest.version.clone(),
+            pr: None,
+            commit_sha,
         })
     }
 
@@ -240,6 +386,74 @@ fn commit_message(skill_name: &str, manifest: &SkillManifest) -> String {
         "{} {} via quay\n\n{}",
         skill_name, manifest.version, manifest.description
     )
+}
+
+/// If `raw` starts with a `---\n…\n---\n` YAML frontmatter block, return
+/// just the body that follows it. Otherwise return `None`.
+fn strip_frontmatter(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim_start_matches('\u{feff}');
+    let rest = trimmed.strip_prefix("---\n")?;
+    rest.split_once("\n---\n").map(|(_yaml, body)| body)
+}
+
+fn sha256_of_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+/// Read `<hub_clone>/registry.json` (or start fresh if missing/malformed),
+/// add or update the entry for `skill_name` from `manifest` + `sha`, then
+/// write it back.
+fn update_hub_registry(
+    hub_clone: &Path,
+    hub_name: &str,
+    skill_name: &str,
+    manifest: &SkillManifest,
+    skill_md_sha: &str,
+) -> Result<()> {
+    use crate::registry::{Registry, RegistryEntry};
+    use std::collections::BTreeMap;
+
+    let path = hub_clone.join("registry.json");
+    let mut registry = if let Ok(text) = std::fs::read_to_string(&path) {
+        Registry::parse(&text).unwrap_or_else(|_| Registry {
+            hub: hub_name.to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            schema_version: 1,
+            skills: BTreeMap::new(),
+        })
+    } else {
+        Registry {
+            hub: hub_name.to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            schema_version: 1,
+            skills: BTreeMap::new(),
+        }
+    };
+
+    let entry = RegistryEntry {
+        version: manifest.version.clone(),
+        description: manifest.description.clone(),
+        category: manifest.category.clone(),
+        tags: manifest.tags.clone(),
+        path: format!("skills/{}", skill_name),
+        sha: skill_md_sha.to_string(),
+        files: vec!["SKILL.md".to_string()],
+        source_format: manifest.source_format,
+    };
+    registry.skills.insert(skill_name.to_string(), entry);
+    registry.generated_at = chrono::Utc::now().to_rfc3339();
+
+    let body = serde_json::to_string_pretty(&registry).map_err(|e| QuayError::InvalidRegistry {
+        reason: format!("serialise registry: {}", e),
+    })?;
+    std::fs::write(&path, body).map_err(|source| QuayError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
 }
 
 fn pr_body(skill_name: &str, manifest: &SkillManifest) -> String {
@@ -274,6 +488,14 @@ mod tests {
         pushes: RefCell<Vec<(PathBuf, String, String)>>,
         /// If set, clone() seeds `<dest>/skills/<name>/SKILL.md` with this content.
         seed_skill: Option<(String, String)>,
+        /// If set, the next `push()` call returns this error message and clears the flag.
+        push_failure: RefCell<Option<String>>,
+    }
+
+    impl Default for FakeGit {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl FakeGit {
@@ -284,6 +506,7 @@ mod tests {
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
                 seed_skill: None,
+                push_failure: RefCell::new(None),
             }
         }
 
@@ -294,7 +517,29 @@ mod tests {
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
                 seed_skill: Some((name.into(), content.into())),
+                push_failure: RefCell::new(None),
             }
+        }
+
+        /// Constructs a `FakeGit` that causes the next `push()` call to fail with
+        /// the given message.
+        fn with_push_failure(message: &str) -> Self {
+            Self {
+                clones: RefCell::new(Vec::new()),
+                branches: RefCell::new(Vec::new()),
+                commits: RefCell::new(Vec::new()),
+                pushes: RefCell::new(Vec::new()),
+                seed_skill: None,
+                push_failure: RefCell::new(Some(message.to_string())),
+            }
+        }
+
+        /// Returns the branch name from the last recorded `push()` call, if any.
+        fn last_pushed_branch(&self) -> Option<String> {
+            self.pushes
+                .borrow()
+                .last()
+                .map(|(_, _, branch)| branch.clone())
         }
     }
 
@@ -334,11 +579,22 @@ mod tests {
             self.pushes
                 .borrow_mut()
                 .push((repo.to_path_buf(), remote.into(), branch.into()));
+            if let Some(msg) = self.push_failure.borrow_mut().take() {
+                return Err(QuayError::ConfigValidation(msg));
+            }
             Ok("https://example.test/foo/bar.git".into())
         }
 
         fn remote_url(&self, _repo: &Path, _remote: &str) -> Result<String> {
             Ok("https://example.test/foo/bar.git".into())
+        }
+
+        fn current_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("main".to_string())
+        }
+
+        fn head_sha(&self, _repo: &Path) -> Result<String> {
+            Ok("0000000000000000000000000000000000000000".to_string())
         }
     }
 
@@ -374,6 +630,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         cfg
@@ -400,12 +657,18 @@ mod tests {
             author: None,
         };
         let result = pusher
-            .push("csv-parse", None, BumpKind::AsWritten, clone_root.path())
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+            )
             .unwrap();
         assert_eq!(result.remote, "h");
         assert_eq!(result.branch, "quay/csv-parse-0.1.0");
         assert_eq!(result.version, "0.1.0");
-        assert!(result.pr.url.contains("csv-parse"));
+        assert!(result.pr.as_ref().unwrap().url.contains("csv-parse"));
         // Verify the call sequence happened.
         assert_eq!(git.clones.borrow().len(), 1);
         assert_eq!(git.branches.borrow().len(), 1);
@@ -434,20 +697,20 @@ mod tests {
         };
 
         let r = pusher
-            .push("csv-parse", None, BumpKind::Patch, clone_root.path())
+            .push("csv-parse", None, BumpKind::Patch, clone_root.path(), None)
             .unwrap();
         assert_eq!(r.version, "1.2.4");
 
         // Need a fresh clone-root each call to avoid colliding hub-csv-parse dir.
         let cr2 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push("csv-parse", None, BumpKind::Minor, cr2.path())
+            .push("csv-parse", None, BumpKind::Minor, cr2.path(), None)
             .unwrap();
         assert_eq!(r.version, "1.3.0");
 
         let cr3 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push("csv-parse", None, BumpKind::Major, cr3.path())
+            .push("csv-parse", None, BumpKind::Major, cr3.path(), None)
             .unwrap();
         assert_eq!(r.version, "2.0.0");
     }
@@ -472,6 +735,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, QuayError::SkillNotFound { .. }));
@@ -501,7 +765,13 @@ mod tests {
             author: None,
         };
         pusher
-            .push("csv-parse", None, BumpKind::AsWritten, clone_root.path())
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+            )
             .unwrap();
         let title = opener.title.borrow().clone();
         assert!(
@@ -532,7 +802,13 @@ mod tests {
             author: None,
         };
         pusher
-            .push("csv-parse", None, BumpKind::AsWritten, clone_root.path())
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+            )
             .unwrap();
         let title = opener.title.borrow().clone();
         assert!(title.contains("add"), "expected 'add', got: {}", title);
@@ -551,6 +827,7 @@ mod tests {
                 url: "u".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         make_local_skill(
@@ -568,8 +845,312 @@ mod tests {
             author: None,
         };
         let err = pusher
-            .push("x", None, BumpKind::AsWritten, clone_root.path())
+            .push("x", None, BumpKind::AsWritten, clone_root.path(), None)
             .unwrap_err();
         assert!(matches!(err, QuayError::ConfigValidation(_)));
+    }
+
+    #[test]
+    fn push_works_on_skill_without_frontmatter() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        let freestyle_body = "## Notes\n\nThis is a freestyle skill with no frontmatter.\n";
+        make_local_skill(project.path(), "free-skill", freestyle_body);
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+
+        // 1. Push returns Ok.
+        let result = pusher
+            .push(
+                "free-skill",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.remote, "h");
+        assert!(result.pr.as_ref().unwrap().url.contains("free-skill"));
+
+        // 2. .quay/push-log.json exists with one record matching the skill name.
+        let log = PushLog::load(project.path()).unwrap();
+        assert_eq!(log.records.len(), 1);
+        assert_eq!(log.records[0].name, "free-skill");
+        assert_eq!(log.records[0].pr_url, result.pr.as_ref().unwrap().url);
+
+        // 3. The file written into the hub clone equals the raw bytes (no frontmatter
+        //    re-emission, since bump=AsWritten and format=Freestyle).
+        let hub_skill_md = clone_root
+            .path()
+            .join("hub-free-skill/skills/free-skill/SKILL.md");
+        let written = std::fs::read_to_string(&hub_skill_md).unwrap();
+        assert_eq!(written, freestyle_body);
+    }
+
+    #[test]
+    fn push_errors_on_bump_for_non_frontmatter_skill() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "slash-skill",
+            "# /slash-skill\n\nDoes something.\n",
+        );
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        let err = pusher
+            .push(
+                "slash-skill",
+                None,
+                BumpKind::Patch,
+                clone_root.path(),
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, QuayError::ConfigValidation(_)));
+    }
+
+    #[test]
+    fn push_writes_push_log_after_frontmatter_skill() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "csv-parse",
+            "---\nname: csv-parse\ndescription: Parse CSV.\nversion: 0.1.0\n---\nbody\n",
+        );
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        let result = pusher
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+            )
+            .unwrap();
+
+        let log = PushLog::load(project.path()).unwrap();
+        assert_eq!(log.records.len(), 1);
+        assert_eq!(log.records[0].name, "csv-parse");
+        assert_eq!(log.records[0].remote, "h");
+        assert_eq!(log.records[0].pr_url, result.pr.as_ref().unwrap().url);
+    }
+
+    // ── direct-mode tests ────────────────────────────────────────────────────
+
+    use crate::config::PushMode;
+
+    /// A `PrOpener` that panics if invoked — proves direct mode never opens a PR.
+    struct PanickingPrOpener;
+
+    impl PrOpener for PanickingPrOpener {
+        fn open_pr(
+            &self,
+            _repo: &Path,
+            _branch: &str,
+            _title: &str,
+            _body: &str,
+        ) -> Result<PrInfo> {
+            panic!("direct mode must not open a PR");
+        }
+    }
+
+    fn make_direct_config() -> crate::config::Config {
+        let mut cfg = crate::config::Config::default();
+        cfg.user.email = Some("dev@example.com".into());
+        cfg.remotes.insert(
+            "hub".into(),
+            crate::config::RemoteConfig {
+                url: "git@example:o/r.git".into(),
+                default: true,
+                provider: None,
+                push_mode: PushMode::Direct,
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn direct_mode_pushes_to_default_branch_and_skips_pr() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        let cfg = make_direct_config();
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let result = pusher
+            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .unwrap();
+
+        assert!(result.pr.is_none(), "direct mode must not produce a PR");
+        assert_eq!(
+            result.branch, "main",
+            "FakeGit::current_branch returns 'main'"
+        );
+        assert_eq!(result.commit_sha.len(), 40);
+        assert_eq!(
+            git.last_pushed_branch().as_deref(),
+            Some("main"),
+            "push() must target the default branch"
+        );
+    }
+
+    #[test]
+    fn direct_mode_records_commit_sha_in_push_log() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        let cfg = make_direct_config();
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let _ = pusher
+            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .unwrap();
+
+        let log = crate::push_log::PushLog::load(project.path()).unwrap();
+        assert_eq!(log.records.len(), 1);
+        assert!(
+            log.records[0].pr_url.is_empty(),
+            "direct mode pr_url must be empty"
+        );
+        assert!(
+            log.records[0].commit_sha.is_some(),
+            "commit_sha must be recorded"
+        );
+    }
+
+    #[test]
+    fn push_mode_override_some_direct_overrides_pr_remote_default() {
+        let project = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join(".agents/skills/foo")).unwrap();
+        std::fs::write(
+            project.path().join(".agents/skills/foo/SKILL.md"),
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.user.email = Some("dev@example.com".into());
+        cfg.remotes.insert(
+            "hub".into(),
+            crate::config::RemoteConfig {
+                url: "git@example:o/r.git".into(),
+                default: true,
+                provider: None,
+                push_mode: crate::config::PushMode::Pr, // remote default is PR
+            },
+        );
+
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let result = pusher
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                Some(crate::config::PushMode::Direct),
+            )
+            .unwrap();
+        assert!(
+            result.pr.is_none(),
+            "override Direct must skip PR even when remote default is Pr"
+        );
+    }
+
+    #[test]
+    fn direct_mode_surfaces_protected_branch_error() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        let cfg = make_direct_config();
+        let git = FakeGit::with_push_failure(
+            "remote: error: GH006: Protected branch update failed for refs/heads/main",
+        );
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            author: None,
+        };
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let err = pusher
+            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("direct push"),
+            "expected 'direct push' in error: {msg}"
+        );
+        assert!(
+            msg.contains("push_mode = pr"),
+            "expected 'push_mode = pr' hint in error: {msg}"
+        );
     }
 }

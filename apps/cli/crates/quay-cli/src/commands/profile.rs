@@ -152,6 +152,7 @@ fn add(
                 url: rurl,
                 default: true,
                 provider: None,
+                push_mode: quay_core::PushMode::default(),
             },
         );
     }

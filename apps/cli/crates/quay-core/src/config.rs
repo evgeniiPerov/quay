@@ -1,7 +1,20 @@
 use crate::error::{QuayError, Result};
+use crate::provider::ProviderKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// How `quay push` delivers a skill to the hub.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushMode {
+    /// Open a pull request against the hub's default branch (the historical default).
+    #[default]
+    Pr,
+    /// Commit on the hub's default branch locally and `git push` it directly.
+    /// No PR; provider CLI is not invoked. Works on any git server.
+    Direct,
+}
 
 /// Merged configuration after combining user-level and project-level files.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,8 +40,14 @@ pub struct RemoteConfig {
     pub url: String,
     #[serde(default)]
     pub default: bool,
+    /// Explicit provider override.  When `None`, the provider is auto-detected
+    /// from the URL by [`crate::provider::detect_kind_from_url`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+    /// How `quay push` delivers a skill to the hub. New in Plan 9.
+    /// Defaults to `Pr` when reading old configs.
     #[serde(default)]
-    pub provider: Option<String>,
+    pub push_mode: PushMode,
 }
 
 /// Persisted metadata about the quay installation (e.g. whether first-run
@@ -384,6 +403,7 @@ mod tests {
                     url: "u".into(),
                     default: true,
                     provider: None,
+                    push_mode: PushMode::default(),
                 },
             )]),
             ..Default::default()
@@ -399,6 +419,7 @@ mod tests {
                     url: "p".into(),
                     default: false,
                     provider: None,
+                    push_mode: PushMode::default(),
                 },
             )]),
             ..Default::default()
@@ -426,6 +447,7 @@ mod tests {
                     url: "https://x/y.git".into(),
                     default: true,
                     provider: None,
+                    push_mode: PushMode::default(),
                 },
             )]),
             install: InstallConfig::default(),
@@ -445,6 +467,7 @@ mod tests {
                         url: "x".into(),
                         default: false,
                         provider: None,
+                        push_mode: PushMode::default(),
                     },
                 ),
                 (
@@ -453,6 +476,7 @@ mod tests {
                         url: "y".into(),
                         default: true,
                         provider: None,
+                        push_mode: PushMode::default(),
                     },
                 ),
             ]),
@@ -759,6 +783,63 @@ mod tests {
         let serialized = toml::to_string(&cfg).unwrap();
         let parsed: InstallConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn loads_pre_7a_remote_without_provider() {
+        let toml = r#"url = "git@github.com:o/r.git"
+default = true
+"#;
+        let r: RemoteConfig = toml::from_str(toml).unwrap();
+        assert!(r.provider.is_none());
+        assert!(r.default);
+    }
+
+    #[test]
+    fn round_trip_omits_default_provider() {
+        let r = RemoteConfig {
+            url: "git@x:o/r.git".into(),
+            default: false,
+            provider: None,
+            push_mode: PushMode::default(),
+        };
+        let s = toml::to_string(&r).unwrap();
+        assert!(!s.contains("provider"));
+    }
+
+    #[test]
+    fn round_trip_emits_explicit_provider() {
+        let r = RemoteConfig {
+            url: "git@x:o/r.git".into(),
+            default: false,
+            provider: Some(ProviderKind::GitLab),
+            push_mode: PushMode::default(),
+        };
+        let s = toml::to_string(&r).unwrap();
+        assert!(s.contains("provider = \"gitlab\""));
+    }
+
+    #[test]
+    fn remote_without_push_mode_defaults_to_pr() {
+        let toml = r#"
+            url = "git@example.com:o/r.git"
+        "#;
+        let r: RemoteConfig = ::toml::from_str(toml).unwrap();
+        assert_eq!(r.push_mode, PushMode::Pr);
+    }
+
+    #[test]
+    fn remote_round_trips_explicit_push_mode_direct() {
+        let r = RemoteConfig {
+            url: "git@example.com:o/r.git".into(),
+            default: false,
+            provider: None,
+            push_mode: PushMode::Direct,
+        };
+        let s = ::toml::to_string(&r).unwrap();
+        assert!(s.contains("push_mode = \"direct\""));
+        let parsed: RemoteConfig = ::toml::from_str(&s).unwrap();
+        assert_eq!(parsed.push_mode, PushMode::Direct);
     }
 
     #[test]

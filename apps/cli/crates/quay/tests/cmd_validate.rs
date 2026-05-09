@@ -63,7 +63,7 @@ fn validate_fails_for_bad_frontmatter() {
     .unwrap();
     Command::cargo_bin("quay")
         .unwrap()
-        .args(["--project", p, "validate", "broken"])
+        .args(["--project", p, "validate", "--strict", "broken"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("semver"));

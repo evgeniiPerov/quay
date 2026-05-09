@@ -4,7 +4,7 @@ pub mod install;
 pub mod profiles;
 pub mod remotes;
 
-use crate::tui::app::{App, ScreenAction, SettingsTab};
+use crate::tui::app::{App, ScreenAction, SettingsState, SettingsTab};
 use crate::tui::theme;
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -12,7 +12,32 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+/// Route a pasted string to whichever settings tab currently has focus.
+pub fn handle_paste(settings: &mut SettingsState, s: &str) {
+    match settings.tab {
+        SettingsTab::Profiles => profiles::handle_paste(&mut settings.profiles, s),
+        SettingsTab::Remotes => remotes::handle_paste(&mut settings.remotes, s),
+        SettingsTab::Install => install::handle_paste(&mut settings.install, s),
+    }
+}
+
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
+    // When a form modal is open inside the active tab, forward all keys
+    // (including Tab/BackTab) directly to that tab.  The form needs Tab for
+    // field navigation and BackTab for reverse navigation.
+    let modal_open = match app.settings.tab {
+        SettingsTab::Profiles => profiles::has_active_modal(&app.settings.profiles),
+        SettingsTab::Remotes => remotes::has_active_modal(&app.settings.remotes),
+        SettingsTab::Install => false,
+    };
+    if modal_open {
+        return match app.settings.tab {
+            SettingsTab::Profiles => profiles::handle_key(app, code),
+            SettingsTab::Remotes => remotes::handle_key(app, code),
+            SettingsTab::Install => install::handle_key(app, code),
+        };
+    }
+
     // Tab cycling at the screen level; tabs handle remaining keys.
     match code {
         KeyCode::Tab => {

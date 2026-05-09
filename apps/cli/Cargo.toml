@@ -31,3 +31,4 @@ ratatui = { version = "0.29", default-features = false, features = ["crossterm"]
 crossterm = "0.28"
 tui-textarea = "0.7"
 nucleo-matcher = "0.3"
+ratatui-form = "=0.1.1"

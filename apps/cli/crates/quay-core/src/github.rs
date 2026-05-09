@@ -62,10 +62,20 @@ impl GithubRawFetcher {
         git_ref: &str,
         path: &str,
     ) -> Result<Vec<u8>> {
-        let url = format!("{}/{}/{}/{}/{}", base, owner, repo, git_ref, path);
+        // Cache-bust the CDN: `raw.githubusercontent.com` caches up to ~5
+        // minutes per (owner, repo, ref, path), and a fresh `registry.json`
+        // pushed seconds ago can otherwise return stale bytes. Appending a
+        // unique query string forces a fresh fetch without hurting clean
+        // first-time loads.
+        let cb = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let url = format!("{}/{}/{}/{}/{}?_cb={}", base, owner, repo, git_ref, path, cb);
         let resp = self
             .client
             .get(&url)
+            .header("Cache-Control", "no-cache")
             .send()
             .map_err(QuayError::Network)?
             .error_for_status()

@@ -6,6 +6,7 @@
 //! the crossterm dance.
 
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
@@ -20,6 +21,9 @@ use std::{io::stdout, path::Path, process::Command};
 /// Returns `Ok(())` if the editor exits with a zero status.  Returns
 /// `Err(...)` for I/O failures or a non-zero editor exit status.
 pub fn run_editor(path: &Path) -> std::io::Result<()> {
+    // Disable bracketed paste before suspending — the external editor manages
+    // its own terminal state.
+    let _ = execute!(stdout(), DisableBracketedPaste);
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
 
@@ -28,6 +32,8 @@ pub fn run_editor(path: &Path) -> std::io::Result<()> {
 
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
+    // Re-enable bracketed paste now that the TUI is back in control.
+    let _ = execute!(stdout(), EnableBracketedPaste);
 
     if !status.success() {
         return Err(std::io::Error::other(format!(

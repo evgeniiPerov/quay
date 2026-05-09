@@ -77,6 +77,26 @@ impl Lockfile {
         Ok(lock)
     }
 
+    /// Returns the recorded sha256 of a skill's primary file (the entry whose
+    /// path ends in `SKILL.md`), or `None` if the skill is not in the lockfile.
+    pub fn skill_primary_sha(&self, name: &str) -> Option<&str> {
+        let entry = self.skills.get(name)?;
+        entry
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("SKILL.md"))
+            .or_else(|| entry.files.first())
+            .map(|f| f.sha256.as_str())
+    }
+
+    /// Returns the recorded `(remote, version)` pair for an installed skill, or
+    /// `None` if the skill is not in the lockfile.
+    pub fn skill_remote_version(&self, name: &str) -> Option<(&str, &str)> {
+        self.skills
+            .get(name)
+            .map(|s| (s.remote.as_str(), s.version.as_str()))
+    }
+
     /// Atomic write: serialize to a temp file in the same directory, then rename.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -171,5 +191,32 @@ mod tests {
         let path = dir.child("nested/deeper/skills.lock.json");
         Lockfile::default().save(path.path()).unwrap();
         assert!(path.path().exists());
+    }
+
+    #[test]
+    fn skill_primary_sha_finds_skill_md_entry() {
+        let mut lock = Lockfile::default();
+        lock.skills.insert(
+            "foo".into(),
+            LockedSkill {
+                remote: "r".into(),
+                version: "1.0".into(),
+                sha: "deadbeef".into(),
+                path: "skills/foo".into(),
+                files: vec![
+                    LockedFile {
+                        path: "skills/foo/extra.md".into(),
+                        sha256: "111".into(),
+                    },
+                    LockedFile {
+                        path: "skills/foo/SKILL.md".into(),
+                        sha256: "222".into(),
+                    },
+                ],
+                installed_at: "2026-05-09T00:00:00Z".into(),
+            },
+        );
+        assert_eq!(lock.skill_primary_sha("foo"), Some("222"));
+        assert_eq!(lock.skill_primary_sha("missing"), None);
     }
 }

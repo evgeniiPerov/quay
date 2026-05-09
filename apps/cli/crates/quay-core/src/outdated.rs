@@ -123,6 +123,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         cfg
@@ -143,6 +144,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "abc".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         }

@@ -334,6 +334,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -351,6 +352,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "deadbeef".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -405,6 +407,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         let reg = Registry {
@@ -421,6 +424,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "deadbeef".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -450,6 +454,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -468,6 +473,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "old-sha".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -498,6 +504,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "new-sha".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -531,6 +538,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         let reg = crate::registry::Registry {
@@ -547,6 +555,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "x".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -593,6 +602,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -611,6 +621,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -648,6 +659,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -667,6 +679,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -706,6 +719,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -724,6 +738,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -754,6 +769,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -772,6 +788,7 @@ mod tests {
                     path: "skills/csv-parse".into(),
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };
@@ -803,6 +820,7 @@ mod tests {
                 url: "https://github.com/x/y.git".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         cfg.remotes.insert(
@@ -811,6 +829,7 @@ mod tests {
                 url: "https://github.com/p/q.git".into(),
                 default: false,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
         let entry = crate::registry::RegistryEntry {
@@ -821,6 +840,7 @@ mod tests {
             path: "skills/csv-parse".into(),
             sha: "abc".into(),
             files: vec!["SKILL.md".into()],
+            source_format: crate::scanner::SkillFormat::Frontmatter,
         };
         // Same skill name appears in both registries served by the fake.
         let reg = crate::registry::Registry {
@@ -881,6 +901,7 @@ mod tests {
                 url: "https://github.com/foo/bar.git".into(),
                 default: true,
                 provider: None,
+                push_mode: crate::config::PushMode::default(),
             },
         );
 
@@ -900,6 +921,7 @@ mod tests {
                     path: "skills/backend/csv-parse".into(),
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
+                    source_format: crate::scanner::SkillFormat::Frontmatter,
                 },
             )]),
         };

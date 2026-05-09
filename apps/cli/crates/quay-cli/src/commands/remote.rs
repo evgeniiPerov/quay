@@ -1,5 +1,5 @@
 use crate::args::RemoteAction;
-use quay_core::{Config, QuayError, RemoteConfig};
+use quay_core::{Config, ConnectionStatus, QuayError, RemoteConfig};
 use serde_json::json;
 use std::path::Path;
 
@@ -14,10 +14,18 @@ fn load_project(project: &Path) -> Result<Config, Box<dyn std::error::Error>> {
 pub fn run(
     action: RemoteAction,
     project: &Path,
+    user_config: Option<&Path>,
+    profile: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        RemoteAction::Add { name, url, default } => {
+        RemoteAction::Add {
+            name,
+            url,
+            default,
+            provider,
+            push_mode,
+        } => {
             let mut cfg = load_project(project)?;
             if cfg.remotes.contains_key(&name) {
                 return Err(QuayError::RemoteExists(name).into());
@@ -27,12 +35,14 @@ pub fn run(
                     r.default = false;
                 }
             }
+            let kind: Option<quay_core::ProviderKind> = provider.map(Into::into);
             cfg.remotes.insert(
                 name.clone(),
                 RemoteConfig {
                     url,
                     default,
-                    provider: None,
+                    provider: kind,
+                    push_mode: push_mode.map(Into::into).unwrap_or_default(),
                 },
             );
             cfg.write(&project_config_path(project))?;
@@ -45,8 +55,84 @@ pub fn run(
                 println!("added remote {}", name);
             }
         }
+        RemoteAction::Test { name } => {
+            let project_config = project_config_path(project);
+            let cfg = Config::load_resolved(
+                user_config,
+                Some(project_config.as_path()).filter(|p| p.exists()),
+                profile,
+            )?;
+            let remote = cfg
+                .remotes
+                .get(&name)
+                .ok_or_else(|| QuayError::ConfigValidation(format!("remote '{}' not found", name)))?
+                .clone();
+            let provider = quay_core::provider_for_remote(&remote.url, remote.provider);
+            let status = provider.test_connection(&remote.url)?;
+            if json {
+                let (kind, message, size) = match &status {
+                    ConnectionStatus::Ok {
+                        registry_size_bytes,
+                    } => ("ok", String::new(), Some(*registry_size_bytes)),
+                    ConnectionStatus::AuthFailed(m) => ("auth_failed", m.clone(), None),
+                    ConnectionStatus::Unreachable(m) => ("unreachable", m.clone(), None),
+                    ConnectionStatus::NoRegistry(m) => ("no_registry", m.clone(), None),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "name": name,
+                        "url": remote.url,
+                        "status": kind,
+                        "message": message,
+                        "registry_size_bytes": size,
+                    }))?
+                );
+            } else {
+                match &status {
+                    ConnectionStatus::Ok {
+                        registry_size_bytes,
+                    } => {
+                        println!(
+                            "\u{2713} {} ({}) \u{2014} registry.json {} bytes",
+                            name, remote.url, registry_size_bytes
+                        );
+                    }
+                    ConnectionStatus::AuthFailed(msg) => {
+                        eprintln!(
+                            "\u{2717} {} ({}) \u{2014} auth failed: {}",
+                            name, remote.url, msg
+                        );
+                    }
+                    ConnectionStatus::Unreachable(msg) => {
+                        eprintln!(
+                            "\u{2717} {} ({}) \u{2014} unreachable: {}",
+                            name, remote.url, msg
+                        );
+                    }
+                    ConnectionStatus::NoRegistry(msg) => {
+                        eprintln!(
+                            "\u{2717} {} ({}) \u{2014} no registry: {}",
+                            name, remote.url, msg
+                        );
+                    }
+                }
+                if !matches!(status, ConnectionStatus::Ok { .. }) {
+                    std::process::exit(1);
+                }
+            }
+        }
         RemoteAction::List => {
-            let cfg = load_project(project)?;
+            // Merge user-level + project-level so users see all remotes
+            // available to them (the active profile's remotes from
+            // ~/.config/quay/config.toml plus any project overrides).
+            let project_config = project_config_path(project);
+            let project_path_arg = if project_config.exists() {
+                Some(project_config.as_path())
+            } else {
+                None
+            };
+            let cfg = Config::load_resolved(user_config, project_path_arg, profile)?;
             if json {
                 let arr: Vec<_> = cfg
                     .remotes
@@ -83,4 +169,130 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::{ProviderKindArg, RemoteAction};
+    use assert_fs::TempDir;
+    use std::fs;
+
+    fn init_project(dir: &TempDir) {
+        // Create a minimal .quay/config.toml so Config::read succeeds.
+        let quay_dir = dir.path().join(".quay");
+        fs::create_dir_all(&quay_dir).unwrap();
+        fs::write(quay_dir.join("config.toml"), "").unwrap();
+    }
+
+    #[test]
+    fn add_persists_provider_field() {
+        let dir = TempDir::new().unwrap();
+        init_project(&dir);
+
+        run(
+            RemoteAction::Add {
+                name: "hub".to_string(),
+                url: "https://gitlab.com/org/skills.git".to_string(),
+                default: false,
+                provider: Some(ProviderKindArg::Gitlab),
+                push_mode: None,
+            },
+            dir.path(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let toml_text = fs::read_to_string(dir.path().join(".quay/config.toml")).unwrap();
+        assert!(
+            toml_text.contains("provider = \"gitlab\""),
+            "expected provider field in TOML, got:\n{}",
+            toml_text
+        );
+    }
+
+    #[test]
+    fn add_without_provider_omits_field() {
+        let dir = TempDir::new().unwrap();
+        init_project(&dir);
+
+        run(
+            RemoteAction::Add {
+                name: "hub".to_string(),
+                url: "https://github.com/org/skills.git".to_string(),
+                default: false,
+                provider: None,
+                push_mode: None,
+            },
+            dir.path(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let toml_text = fs::read_to_string(dir.path().join(".quay/config.toml")).unwrap();
+        assert!(
+            !toml_text.contains("provider"),
+            "expected no provider field in TOML, got:\n{}",
+            toml_text
+        );
+    }
+
+    #[test]
+    fn add_with_push_mode_direct_persists_field() {
+        let dir = TempDir::new().unwrap();
+        init_project(&dir);
+
+        run(
+            RemoteAction::Add {
+                name: "hub".to_string(),
+                url: "git@example.com:o/r.git".to_string(),
+                default: false,
+                provider: None,
+                push_mode: Some(crate::args::PushModeArg::Direct),
+            },
+            dir.path(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let toml_text = fs::read_to_string(dir.path().join(".quay/config.toml")).unwrap();
+        assert!(
+            toml_text.contains("push_mode = \"direct\""),
+            "expected push_mode = direct in TOML, got:\n{}",
+            toml_text
+        );
+    }
+
+    #[test]
+    fn add_without_push_mode_defaults_to_pr_in_struct() {
+        let dir = TempDir::new().unwrap();
+        init_project(&dir);
+
+        run(
+            RemoteAction::Add {
+                name: "hub".to_string(),
+                url: "git@example.com:o/r.git".to_string(),
+                default: false,
+                provider: None,
+                push_mode: None,
+            },
+            dir.path(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let cfg = quay_core::Config::read(&dir.path().join(".quay/config.toml")).unwrap();
+        assert_eq!(
+            cfg.remotes.get("hub").unwrap().push_mode,
+            quay_core::PushMode::Pr
+        );
+    }
 }

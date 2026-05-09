@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -78,9 +78,25 @@ pub enum Command {
         #[arg(long)]
         author: Option<String>,
     },
-    /// Validate a local skill's frontmatter (offline, no network)
-    Validate { skill: String },
-    /// Push a local skill to a hub via PR
+    /// Discover local skills under `.agents/skills/` and report their sync status.
+    Scan {
+        /// Override the install canonical root (default: `<project>/.agents/skills`).
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+        /// Emit JSON instead of a human table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a local skill's frontmatter (offline, no network).
+    Validate {
+        skill: String,
+        /// Treat missing frontmatter or required fields as errors (exit 1).
+        /// Default: prints warnings to stderr, exits 0 (lenient/soft mode).
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Push a local skill to a hub via PR (or directly, if --push-mode=direct
+    /// or the remote's TOML says so).
     Push {
         skill: String,
         #[arg(long)]
@@ -88,11 +104,27 @@ pub enum Command {
         /// Bump kind: patch | minor | major | as-written. Default: as-written.
         #[arg(long, value_parser = parse_bump, default_value = "as-written")]
         bump: BumpArg,
+        /// Override the remote's `push_mode` setting for this invocation.
+        /// Values: pr, direct.
+        #[arg(long, value_enum)]
+        push_mode: Option<PushModeArg>,
     },
     /// Manage user profiles (multi-org identities + remote bundles)
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
+    },
+    /// Rebuild a hub's `registry.json` from disk truth and push it back.
+    ///
+    /// Clones the remote, walks `skills/<name>/SKILL.md`, regenerates
+    /// `registry.json` containing every discovered skill, then commits and
+    /// pushes (PR or direct per the remote's `push_mode`).
+    RebuildRegistry {
+        /// Remote name. Uses the default remote when omitted.
+        remote: Option<String>,
+        /// Override the remote's `push_mode` for this invocation.
+        #[arg(long, value_enum)]
+        push_mode: Option<PushModeArg>,
     },
     /// Apply or verify mirrors from `[install].mirrors` config.
     Link {
@@ -147,6 +179,22 @@ fn parse_bump(s: &str) -> std::result::Result<BumpArg, String> {
     }
 }
 
+/// Push-mode override for `quay push --push-mode`.
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum PushModeArg {
+    Pr,
+    Direct,
+}
+
+impl From<PushModeArg> for quay_core::config::PushMode {
+    fn from(p: PushModeArg) -> Self {
+        match p {
+            PushModeArg::Pr => quay_core::config::PushMode::Pr,
+            PushModeArg::Direct => quay_core::config::PushMode::Direct,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ProfileAction {
     /// List all profiles, marking the active one.
@@ -176,6 +224,30 @@ pub enum ProfileAction {
     Rename { old: String, new: String },
 }
 
+/// Provider kind for explicit remote provider override.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ProviderKindArg {
+    Github,
+    Githubenterprise,
+    Gitlab,
+    Bitbucket,
+    Azuredevops,
+}
+
+impl From<ProviderKindArg> for quay_core::ProviderKind {
+    fn from(a: ProviderKindArg) -> Self {
+        use quay_core::ProviderKind as K;
+        match a {
+            ProviderKindArg::Github => K::GitHub,
+            ProviderKindArg::Githubenterprise => K::GitHubEnterprise,
+            ProviderKindArg::Gitlab => K::GitLab,
+            ProviderKindArg::Bitbucket => K::Bitbucket,
+            ProviderKindArg::Azuredevops => K::AzureDevOps,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RemoteAction {
     /// Add a new remote
@@ -184,6 +256,17 @@ pub enum RemoteAction {
         url: String,
         #[arg(long)]
         default: bool,
+        /// Explicitly set the provider kind (auto-detected from URL if omitted).
+        #[arg(long, value_enum)]
+        provider: Option<ProviderKindArg>,
+        /// Push mode for this remote: pr (default) or direct.
+        #[arg(long, value_enum)]
+        push_mode: Option<PushModeArg>,
+    },
+    /// Test connectivity to a configured remote
+    Test {
+        /// Name of the remote to test
+        name: String,
     },
     /// List configured remotes
     List,

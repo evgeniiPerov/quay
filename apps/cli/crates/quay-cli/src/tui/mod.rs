@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod editor;
+pub mod form_theme;
 pub mod screens;
 pub mod theme;
 pub mod widgets;
@@ -10,7 +11,11 @@ use crate::commands;
 use crate::config_io;
 use crate::tui::app::{App, BlockingAction, Screen, ScreenAction};
 use crate::tui::screens::onboarding::OnboardingState;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
+use crossterm::event::KeyCode as KCode;
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -47,11 +52,13 @@ pub fn run(mut app: App) -> TuiResult<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = event_loop(&mut terminal, &mut app);
 
+    let _ = execute!(terminal.backend_mut(), DisableBracketedPaste);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -85,27 +92,44 @@ fn event_loop<B: ratatui::backend::Backend>(
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::ZERO);
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                let action = handle_key(app, key.code, &mut pending_g);
-                if let ScreenAction::SwitchTo(s) = &action {
-                    app.switch_to(*s);
-                    if *s == Screen::Search {
-                        screens::search::ensure_loaded(app);
+            match event::read()? {
+                Event::Key(key) => {
+                    let action = handle_key(app, key.code, &mut pending_g);
+                    if let ScreenAction::SwitchTo(s) = &action {
+                        app.switch_to(*s);
+                        if *s == Screen::Search || *s == Screen::Browse {
+                            // Browse and Search share the same fetched skill list
+                            // (browse filters it by selected remote in its preview).
+                            screens::search::ensure_loaded(app);
+                        }
+                        if *s == Screen::Browse {
+                            // Populate `app.browse` items + initial selection so
+                            // key handlers can read it (render's local clone is
+                            // not enough for the [a] install path).
+                            screens::browse::ensure_loaded_into_app(app);
+                        }
+                        if *s == Screen::CreatePush {
+                            // Reset the create/push state machine to a fresh form.
+                            app.create_push = screens::create_push::CreatePushState::Form(
+                                screens::create_push::build_create_form_from_app(app),
+                            );
+                        }
+                    } else if let ScreenAction::Quit = &action {
+                        app.should_quit = true;
                     }
-                    if *s == Screen::CreatePush {
-                        // Reset the create/push state machine to a fresh form.
-                        app.create_push = screens::create_push::CreatePushState::Form(
-                            screens::create_push::FormFields::from_app(app),
-                        );
-                    }
-                } else if let ScreenAction::Quit = &action {
-                    app.should_quit = true;
                 }
+                Event::Paste(s) => {
+                    app.handle_paste(&s);
+                }
+                _ => {}
             }
         }
         if last_tick.elapsed() >= tick_rate {
             // Tick: advance any animated state.
             app.create_push.tick();
+            if app.settings.remotes.testing_idx.is_some() {
+                app.settings.remotes.spinner.advance();
+            }
             last_tick = Instant::now();
         }
 
@@ -131,6 +155,64 @@ fn event_loop<B: ratatui::backend::Backend>(
 /// Execute a blocking action synchronously and update the app state.
 fn run_blocking_action(action: BlockingAction, app: &mut App) {
     match action {
+        BlockingAction::TestConnection {
+            url,
+            kind,
+            remote_idx,
+        } => {
+            let provider = quay_core::provider_for_remote(&url, kind);
+            let status = provider
+                .test_connection(&url)
+                .unwrap_or_else(|e| quay_core::ConnectionStatus::Unreachable(e.to_string()));
+            app.settings.remotes.testing_idx = None;
+            app.settings.remotes.last_results.insert(remote_idx, status);
+        }
+        BlockingAction::Add { skill, remote } => {
+            // Run `quay add` against the configured remote, then refresh
+            // both the lockfile (so `quay list` and Dashboard `Installed`
+            // panel see the new entry) and the local-skills scan (so the
+            // badge graduates from `local`/`pushed-direct` to `installed`).
+            use quay_core::{Config, GithubRawFetcher, SkillManager};
+            let project_config = app.project_root.join(".quay/config.toml");
+            let project_path_arg = if project_config.exists() {
+                Some(project_config.as_path())
+            } else {
+                None
+            };
+            let cfg_res = Config::load_resolved(
+                app.user_config_path.as_deref(),
+                project_path_arg,
+                None,
+            );
+            let cfg = match cfg_res {
+                Ok(c) => c,
+                Err(e) => {
+                    app.set_status(format!("install failed: {e}"));
+                    return;
+                }
+            };
+            let branch =
+                std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
+            let f = GithubRawFetcher::new(branch);
+            let mgr = SkillManager::new(&cfg, &f, &f, app.project_root.clone());
+            match mgr.add(&skill, remote.as_deref()) {
+                Ok(locked) => {
+                    if let Ok(lock) = quay_core::Lockfile::load_or_default(
+                        &app.project_root.join(".quay/lockfile.json"),
+                    ) {
+                        app.lock = lock;
+                    }
+                    app.reload_local_skills();
+                    app.set_status(format!(
+                        "installed {} v{} from {}",
+                        skill, locked.version, locked.remote
+                    ));
+                }
+                Err(e) => {
+                    app.set_status(format!("install failed: {e}"));
+                }
+            }
+        }
         BlockingAction::Push {
             skill,
             remote,
@@ -140,20 +222,24 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
                 &skill,
                 remote.as_deref(),
                 bump,
-                None,
+                None, // push_mode: use remote default
+                None, // profile
                 &app.project_root,
                 app.user_config_path.as_deref(),
             );
             match result {
                 Ok(outcome) => {
                     app.create_push = screens::create_push::CreatePushState::Done(outcome);
+                    // Refresh local-skills badges so Dashboard reflects the new
+                    // push-log entry without the user having to press [r].
+                    app.reload_local_skills();
                 }
                 Err(e) => {
                     // Move the current Pushing state into a Failed wrapper.
                     // We need to extract the current state to use as the "prior" state.
                     // The Pushing state is already set; we wrap it in Failed.
                     let placeholder = screens::create_push::CreatePushState::Form(
-                        screens::create_push::FormFields::with_remotes(&[]),
+                        screens::create_push::build_create_form(&[]),
                     );
                     let pushing_state = std::mem::replace(&mut app.create_push, placeholder);
                     app.create_push = screens::create_push::CreatePushState::Failed {
@@ -166,10 +252,50 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
     }
 }
 
+/// Translate a pasted string into synthetic [`KeyEvent`]s that form handlers
+/// can accept as plain typed characters.
+///
+/// Filters out `\r` and `\n` — newlines in a paste would otherwise trigger
+/// Enter (form submit), which is never what the user wants when pasting a URL.
+pub fn paste_to_key_events(s: &str) -> Vec<KeyEvent> {
+    s.chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .map(|c| KeyEvent {
+            code: KCode::Char(c),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+        .collect()
+}
+
 pub fn handle_key(app: &mut App, code: KeyCode, pending_g: &mut bool) -> ScreenAction {
     if app.modal.is_some() {
         screens::modal_profile_switcher::handle_key(app, code);
         return ScreenAction::Stay;
+    }
+
+    // When a text input is focused (Onboarding form, Create/Push form, or a
+    // Settings add/edit modal), every keystroke must reach the form verbatim.
+    // Otherwise typing `evgenii` is impossible — `g` triggers the chord
+    // prefix, `p` opens the profile switcher, `q` quits, etc.
+    //
+    // Esc is intentionally NOT special-cased here — the focused screen's
+    // own handler treats Esc as form-cancel / back, which is the same
+    // behaviour we want.
+    if app.has_focused_text_input() {
+        *pending_g = false;
+        return match app.current_screen {
+            Screen::Onboarding => screens::onboarding::handle_key(app, code),
+            Screen::CreatePush => screens::create_push::handle_key(app, code),
+            Screen::Settings => screens::settings::handle_key(app, code),
+            // The matches! in has_focused_text_input never returns true
+            // for these — but the compiler needs an exhaustive match.
+            Screen::Dashboard => screens::dashboard::handle_key(app, code),
+            Screen::Browse => screens::browse::handle_key(app, code),
+            Screen::Search => screens::search::handle_key(app, code),
+            Screen::Installed => screens::installed::handle_key(app, code),
+        };
     }
 
     // Handle the `g`-prefix chord table.
@@ -243,6 +369,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::tui::app::App;
+    use crossterm::event::KeyCode as KCode;
     use quay_core::{Config, Lockfile};
 
     fn fixture_app() -> App {
@@ -252,6 +379,38 @@ mod tests {
             std::path::PathBuf::from("/tmp"),
             None,
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // paste_to_key_events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn paste_to_key_events_drops_newlines() {
+        let events = paste_to_key_events("a\nb\rc");
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| matches!(e.code, KCode::Char(_))));
+    }
+
+    #[test]
+    fn paste_to_key_events_preserves_other_chars() {
+        let events = paste_to_key_events("git@github.com:o/r.git");
+        let s: String = events
+            .iter()
+            .filter_map(|e| {
+                if let KCode::Char(c) = e.code {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(s, "git@github.com:o/r.git");
+    }
+
+    #[test]
+    fn paste_to_key_events_handles_empty() {
+        assert!(paste_to_key_events("").is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -302,15 +461,21 @@ mod tests {
         );
     }
 
+    /// `onboarded = true` with no profiles still routes to onboarding.
+    ///
+    /// This was the bug: the old gate used `!onboarded && profiles.is_empty()`,
+    /// so a user who hit "skip" once (setting `onboarded=true`, no profiles)
+    /// was permanently locked out of profile creation. The new gate uses
+    /// `profiles.is_empty()` alone.
     #[test]
-    fn dashboard_when_skipped_marker_present() {
+    fn onboarding_when_skipped_marker_but_no_profiles() {
         let dir = assert_fs::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[meta]\nonboarded = true\n").unwrap();
         let initial = decide_initial_screen(Some(&path));
         assert!(
-            matches!(initial, Screen::Dashboard),
-            "expected Dashboard, got {:?}",
+            matches!(initial, Screen::Onboarding),
+            "expected Onboarding, got {:?}",
             initial
         );
     }

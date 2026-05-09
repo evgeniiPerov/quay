@@ -1,4 +1,5 @@
 use crate::error::{QuayError, Result};
+use crate::scanner::SkillFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -26,6 +27,13 @@ pub struct RegistryEntry {
     pub path: String,
     pub sha: String,
     pub files: Vec<String>,
+    /// New in Plan 8. Defaults to `Frontmatter` when reading old registry.json.
+    #[serde(default = "default_entry_source_format")]
+    pub source_format: SkillFormat,
+}
+
+fn default_entry_source_format() -> SkillFormat {
+    SkillFormat::Frontmatter
 }
 
 impl Registry {
@@ -115,5 +123,52 @@ mod tests {
         let e = r.entry("x").unwrap();
         assert_eq!(e.category, None);
         assert!(e.tags.is_empty());
+    }
+
+    #[test]
+    fn registry_entry_reads_old_json_without_source_format_as_frontmatter() {
+        let json = r#"{
+            "hub": "old-hub",
+            "generated_at": "2026-05-08T10:39:00Z",
+            "skills": {
+                "foo": {
+                    "version": "1.0.0",
+                    "description": "old",
+                    "path": "skills/foo",
+                    "sha": "deadbeef",
+                    "files": ["SKILL.md"]
+                }
+            }
+        }"#;
+        let registry = Registry::parse(json).unwrap();
+        let entry = registry.entry("foo").unwrap();
+        assert_eq!(
+            entry.source_format,
+            crate::scanner::SkillFormat::Frontmatter
+        );
+    }
+
+    #[test]
+    fn registry_entry_round_trips_explicit_source_format() {
+        let json = r#"{
+            "hub": "new-hub",
+            "generated_at": "2026-05-09T10:39:00Z",
+            "skills": {
+                "foo": {
+                    "version": "1.0.0",
+                    "description": "new",
+                    "path": "skills/foo",
+                    "sha": "deadbeef",
+                    "files": ["SKILL.md"],
+                    "source_format": "slash_command"
+                }
+            }
+        }"#;
+        let registry = Registry::parse(json).unwrap();
+        let entry = registry.entry("foo").unwrap();
+        assert_eq!(
+            entry.source_format,
+            crate::scanner::SkillFormat::SlashCommand
+        );
     }
 }

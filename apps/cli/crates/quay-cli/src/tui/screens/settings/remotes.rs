@@ -2,55 +2,202 @@
 //! config file.
 
 use crate::config_io::{read_user_file, write_user_file};
-use crate::tui::app::{App, ScreenAction};
+use crate::tui::app::{App, BlockingAction, ScreenAction};
+use crate::tui::screens::widgets::spinner::Spinner;
 use crate::tui::theme;
-use crossterm::event::KeyCode;
-use quay_core::RemoteConfig;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use quay_core::{ConnectionStatus, ProviderKind, RemoteConfig};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+use ratatui_form::{Form, FormResult};
+use std::collections::HashMap;
 
-#[derive(Debug, Default)]
+// ── State structs ─────────────────────────────────────────────────────────────
+
 pub struct RemotesState {
     pub list_state: ListState,
-    pub mode: Mode,
-    pub form: Form,
+    pub modal: ModalState,
+    /// Index of the remote currently being tested (spinner shown).
+    pub testing_idx: Option<usize>,
+    /// Per-row test results, keyed by row index.
+    pub last_results: HashMap<usize, ConnectionStatus>,
+    /// Spinner driven by the 250 ms tick clock while `testing_idx.is_some()`.
+    pub spinner: Spinner,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub enum Mode {
+impl Default for RemotesState {
+    fn default() -> Self {
+        Self {
+            list_state: ListState::default(),
+            modal: ModalState::Closed,
+            testing_idx: None,
+            last_results: HashMap::new(),
+            spinner: Spinner::default(),
+        }
+    }
+}
+
+/// `Form` does not implement `Debug`, so we implement it manually.
+impl std::fmt::Debug for RemotesState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemotesState")
+            .field("list_state", &self.list_state)
+            .field("modal", &self.modal)
+            .field("testing_idx", &self.testing_idx)
+            .field("spinner", &self.spinner)
+            .finish()
+    }
+}
+
+/// Modal state for the add/edit remote form.
+#[derive(Default)]
+pub enum ModalState {
+    /// No modal open.
     #[default]
-    Browsing,
-    Adding,
-    ConfirmingDelete {
-        name: String,
+    Closed,
+    /// Add or edit a remote.  `editing` is `Some(name)` when editing an
+    /// existing remote, `None` when adding a new one.
+    ///
+    /// The `Form` is boxed to avoid a large enum variant (clippy::large_enum_variant).
+    AddOrEdit {
+        editing: Option<String>,
+        form: Box<Form>,
     },
-    TestStub {
-        name: String,
-    },
+    /// Confirm deletion of the named remote.
+    ConfirmDelete(String),
 }
 
-#[derive(Debug, Default)]
-pub struct Form {
-    pub name: String,
-    pub url: String,
-    pub focused: FormField,
+/// `Form` does not implement `Debug`, so we implement it manually.
+impl std::fmt::Debug for ModalState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModalState::Closed => write!(f, "Closed"),
+            ModalState::AddOrEdit { editing, .. } => f
+                .debug_struct("AddOrEdit")
+                .field("editing", editing)
+                .field("form", &"Form(...)")
+                .finish(),
+            ModalState::ConfirmDelete(name) => f.debug_tuple("ConfirmDelete").field(name).finish(),
+        }
+    }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum FormField {
-    #[default]
-    Name,
-    Url,
+/// Returns true when the remotes tab has a form modal open.
+pub fn has_active_modal(state: &RemotesState) -> bool {
+    !matches!(state.modal, ModalState::Closed)
 }
+
+// ── Provider helpers ──────────────────────────────────────────────────────────
+
+fn provider_kind_to_str(k: ProviderKind) -> &'static str {
+    match k {
+        ProviderKind::GitHub => "github",
+        ProviderKind::GitHubEnterprise => "githubenterprise",
+        ProviderKind::GitLab => "gitlab",
+        ProviderKind::Bitbucket => "bitbucket",
+        ProviderKind::AzureDevOps => "azuredevops",
+    }
+}
+
+fn provider_str_to_kind(s: &str) -> Option<ProviderKind> {
+    match s {
+        "auto" => None,
+        "github" => Some(ProviderKind::GitHub),
+        "githubenterprise" => Some(ProviderKind::GitHubEnterprise),
+        "gitlab" => Some(ProviderKind::GitLab),
+        "bitbucket" => Some(ProviderKind::Bitbucket),
+        "azuredevops" => Some(ProviderKind::AzureDevOps),
+        _ => None,
+    }
+}
+
+// ── Form builder ──────────────────────────────────────────────────────────────
+
+fn build_remote_modal_form(
+    initial_remote: Option<&RemoteConfig>,
+    initial_name: Option<&str>,
+) -> Form {
+    let name_initial = initial_name.unwrap_or("");
+    let url_initial = initial_remote.map(|r| r.url.as_str()).unwrap_or("");
+    let provider_initial = initial_remote
+        .and_then(|r| r.provider)
+        .map(provider_kind_to_str)
+        .unwrap_or("auto");
+    let default_initial = initial_remote.map(|r| r.default).unwrap_or(false);
+    let push_mode_initial = match initial_remote.map(|r| r.push_mode).unwrap_or_default() {
+        quay_core::PushMode::Pr => "pr",
+        quay_core::PushMode::Direct => "direct",
+    };
+
+    Form::builder()
+        .title(if initial_remote.is_some() {
+            "Edit remote"
+        } else {
+            "Add remote"
+        })
+        .style(crate::tui::form_theme::dark())
+        .text("name", "Name")
+        .required()
+        .initial_value(name_initial)
+        .done()
+        .text("url", "Git URL")
+        .required()
+        .initial_value(url_initial)
+        .done()
+        .select("provider", "Provider")
+        .options(vec![
+            ("auto", "Auto-detect"),
+            ("github", "GitHub"),
+            ("githubenterprise", "GitHub Enterprise"),
+            ("gitlab", "GitLab"),
+            ("bitbucket", "Bitbucket"),
+            ("azuredevops", "Azure DevOps"),
+        ])
+        .initial_value(provider_initial)
+        .done()
+        .select("push_mode", "Push mode")
+        .options(vec![
+            ("pr", "Open PR (default)"),
+            ("direct", "Direct git push"),
+        ])
+        .initial_value(push_mode_initial)
+        .done()
+        .checkbox("default", "Default remote")
+        .checked(default_initial)
+        .done()
+        .build()
+}
+
+fn push_mode_str_to_kind(s: &str) -> quay_core::PushMode {
+    match s {
+        "direct" => quay_core::PushMode::Direct,
+        _ => quay_core::PushMode::Pr,
+    }
+}
+
+// ── Paste handler ─────────────────────────────────────────────────────────────
+
+/// Forward pasted text into the form when the add/edit modal is open.
+///
+/// Silently dropped when no form modal is open.
+pub fn handle_paste(state: &mut RemotesState, s: &str) {
+    if let ModalState::AddOrEdit { form, .. } = &mut state.modal {
+        let events = crate::tui::paste_to_key_events(s);
+        for ev in events {
+            form.handle_input(ev);
+        }
+    }
+}
+
+// ── Key handlers ──────────────────────────────────────────────────────────────
 
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
-    match app.settings.remotes.mode {
-        Mode::Browsing => handle_browsing(app, code),
-        Mode::Adding => handle_form(app, code),
-        Mode::ConfirmingDelete { .. } => handle_confirm(app, code),
-        Mode::TestStub { .. } => handle_test_stub(app, code),
+    match &app.settings.remotes.modal {
+        ModalState::Closed => handle_browsing(app, code),
+        ModalState::AddOrEdit { .. } => handle_form(app, code),
+        ModalState::ConfirmDelete(_) => handle_confirm(app, code),
     }
 }
 
@@ -72,12 +219,23 @@ fn handle_browsing(app: &mut App, code: KeyCode) -> ScreenAction {
                 .select(Some(i.saturating_sub(1)));
         }
         KeyCode::Char('a') => {
-            app.settings.remotes.form = Form::default();
-            app.settings.remotes.mode = Mode::Adding;
+            app.settings.remotes.modal = ModalState::AddOrEdit {
+                editing: None,
+                form: Box::new(build_remote_modal_form(None, None)),
+            };
+        }
+        KeyCode::Char('e') => {
+            if let Some(name) = selected_name(app) {
+                let remote = selected_remote(app);
+                app.settings.remotes.modal = ModalState::AddOrEdit {
+                    editing: Some(name.clone()),
+                    form: Box::new(build_remote_modal_form(remote.as_ref(), Some(&name))),
+                };
+            }
         }
         KeyCode::Char('d') => {
             if let Some(name) = selected_name(app) {
-                app.settings.remotes.mode = Mode::ConfirmingDelete { name };
+                app.settings.remotes.modal = ModalState::ConfirmDelete(name);
             }
         }
         KeyCode::Char('s') => {
@@ -90,86 +248,100 @@ fn handle_browsing(app: &mut App, code: KeyCode) -> ScreenAction {
             }
         }
         KeyCode::Char('t') => {
-            if let Some(name) = selected_name(app) {
-                app.settings.remotes.mode = Mode::TestStub { name };
-            }
+            on_test_connection(app);
         }
         _ => {}
     }
     ScreenAction::Stay
 }
 
+/// Queue a live test-connection blocking action for the currently selected row.
+fn on_test_connection(app: &mut App) {
+    let idx = app.settings.remotes.list_state.selected().unwrap_or(0);
+    let (url, kind) = match selected_remote(app) {
+        Some(r) => (r.url.clone(), r.provider),
+        None => return,
+    };
+    app.settings.remotes.testing_idx = Some(idx);
+    app.settings.remotes.last_results.remove(&idx);
+    app.defer_blocking_action(BlockingAction::TestConnection {
+        url,
+        kind,
+        remote_idx: idx,
+    });
+}
+
 fn handle_form(app: &mut App, code: KeyCode) -> ScreenAction {
-    match code {
-        KeyCode::Esc => {
-            app.settings.remotes.mode = Mode::Browsing;
-        }
-        KeyCode::Tab => {
-            app.settings.remotes.form.focused = match app.settings.remotes.form.focused {
-                FormField::Name => FormField::Url,
-                FormField::Url => FormField::Name,
-            };
-        }
-        KeyCode::Enter => match submit_add(app) {
-            Ok(_) => {
-                app.set_status("remote added");
-                app.settings.remotes.mode = Mode::Browsing;
-            }
-            Err(e) => app.set_status(format!("error: {}", e)),
-        },
-        KeyCode::Backspace => {
-            let f = &mut app.settings.remotes.form;
-            match f.focused {
-                FormField::Name => {
-                    f.name.pop();
+    // Intercept Esc before delegating to the form so we can close the modal.
+    if code == KeyCode::Esc {
+        app.settings.remotes.modal = ModalState::Closed;
+        return ScreenAction::Stay;
+    }
+
+    // Translate BackTab → Tab + SHIFT (ratatui-form checks modifiers).
+    let (key_code, modifiers) = if code == KeyCode::BackTab {
+        (KeyCode::Tab, KeyModifiers::SHIFT)
+    } else {
+        (code, KeyModifiers::NONE)
+    };
+    let key_event = KeyEvent {
+        code: key_code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+
+    if let ModalState::AddOrEdit { form, editing } = &mut app.settings.remotes.modal {
+        form.handle_input(key_event);
+
+        if matches!(form.result(), FormResult::Submitted) {
+            let json = form.to_json();
+            let name = json["name"].as_str().unwrap_or("").trim().to_string();
+            let url = json["url"].as_str().unwrap_or("").trim().to_string();
+            let provider = provider_str_to_kind(json["provider"].as_str().unwrap_or("auto"));
+            let push_mode = push_mode_str_to_kind(json["push_mode"].as_str().unwrap_or("pr"));
+            let default = json["default"].as_bool().unwrap_or(false);
+            let editing_name = editing.clone();
+
+            match submit_remote(app, &name, &url, provider, push_mode, default, editing_name.as_deref()) {
+                Ok(msg) => {
+                    app.set_status(msg);
+                    app.settings.remotes.modal = ModalState::Closed;
                 }
-                FormField::Url => {
-                    f.url.pop();
-                }
+                Err(e) => app.set_status(format!("error: {}", e)),
             }
+        } else if matches!(form.result(), FormResult::Cancelled) {
+            app.settings.remotes.modal = ModalState::Closed;
         }
-        KeyCode::Char(c) => {
-            let f = &mut app.settings.remotes.form;
-            match f.focused {
-                FormField::Name => f.name.push(c),
-                FormField::Url => f.url.push(c),
-            }
-        }
-        _ => {}
     }
     ScreenAction::Stay
 }
 
 fn handle_confirm(app: &mut App, code: KeyCode) -> ScreenAction {
-    let name = match &app.settings.remotes.mode {
-        Mode::ConfirmingDelete { name } => name.clone(),
+    let name = match &app.settings.remotes.modal {
+        ModalState::ConfirmDelete(name) => name.clone(),
         _ => return ScreenAction::Stay,
     };
     match code {
         KeyCode::Char('y') | KeyCode::Enter => match submit_delete(app, &name) {
             Ok(_) => {
                 app.set_status(format!("removed remote '{}'", name));
-                app.settings.remotes.mode = Mode::Browsing;
+                app.settings.remotes.modal = ModalState::Closed;
             }
             Err(e) => {
                 app.set_status(format!("error: {}", e));
-                app.settings.remotes.mode = Mode::Browsing;
+                app.settings.remotes.modal = ModalState::Closed;
             }
         },
         KeyCode::Esc | KeyCode::Char('n') => {
-            app.settings.remotes.mode = Mode::Browsing;
+            app.settings.remotes.modal = ModalState::Closed;
         }
         _ => {}
     }
     ScreenAction::Stay
 }
 
-fn handle_test_stub(app: &mut App, code: KeyCode) -> ScreenAction {
-    if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(_)) {
-        app.settings.remotes.mode = Mode::Browsing;
-    }
-    ScreenAction::Stay
-}
+// ── Data helpers ──────────────────────────────────────────────────────────────
 
 fn active_profile_name(app: &App) -> Option<String> {
     let path = app.user_config_path.as_deref()?;
@@ -198,7 +370,27 @@ fn selected_name(app: &App) -> Option<String> {
     p.remotes.keys().nth(i).cloned()
 }
 
-fn submit_add(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+/// Return a clone of the selected remote's config, or `None`.
+fn selected_remote(app: &App) -> Option<RemoteConfig> {
+    let path = app.user_config_path.as_deref()?;
+    let file = read_user_file(Some(path)).ok()?;
+    let active = file.active_profile.clone()?;
+    let p = file.profiles.get(&active)?;
+    let i = app.settings.remotes.list_state.selected().unwrap_or(0);
+    let key = p.remotes.keys().nth(i)?;
+    p.remotes.get(key).cloned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_remote(
+    app: &mut App,
+    name: &str,
+    url: &str,
+    provider: Option<ProviderKind>,
+    push_mode: quay_core::PushMode,
+    default: bool,
+    editing: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let path = app
         .user_config_path
         .as_deref()
@@ -209,24 +401,40 @@ fn submit_add(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .profiles
         .get_mut(&active)
         .ok_or("active profile missing")?;
-    let name = app.settings.remotes.form.name.trim().to_string();
-    let url = app.settings.remotes.form.url.trim().to_string();
-    if name.is_empty() || url.is_empty() {
-        return Err("name and url required".into());
+
+    if let Some(old_name) = editing {
+        // Edit existing: remove old, insert updated.
+        if name != old_name && p.remotes.contains_key(name) {
+            return Err(format!("remote '{}' already exists", name).into());
+        }
+        let mut remote = p
+            .remotes
+            .remove(old_name)
+            .ok_or(format!("remote '{}' missing", old_name))?;
+        remote.url = url.to_string();
+        remote.provider = provider;
+        remote.push_mode = push_mode;
+        remote.default = default;
+        p.remotes.insert(name.to_string(), remote);
+        write_user_file(path, &file)?;
+        Ok("remote updated".to_string())
+    } else {
+        // Add new remote.
+        if p.remotes.contains_key(name) {
+            return Err(format!("remote '{}' already exists", name).into());
+        }
+        p.remotes.insert(
+            name.to_string(),
+            RemoteConfig {
+                url: url.to_string(),
+                default: p.remotes.is_empty() || default,
+                provider,
+                push_mode,
+            },
+        );
+        write_user_file(path, &file)?;
+        Ok("remote added".to_string())
     }
-    if p.remotes.contains_key(&name) {
-        return Err(format!("remote '{}' already exists", name).into());
-    }
-    p.remotes.insert(
-        name,
-        RemoteConfig {
-            url,
-            default: p.remotes.is_empty(),
-            provider: None,
-        },
-    );
-    write_user_file(path, &file)?;
-    Ok(())
 }
 
 fn submit_delete(app: &mut App, name: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -268,6 +476,8 @@ fn set_default(app: &mut App, name: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+// ── Render ────────────────────────────────────────────────────────────────────
+
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -281,15 +491,33 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Some(a) => format!(" Remotes — profile '{}' ", a),
         None => " Remotes — (no active profile) ".into(),
     };
+
+    let remotes = &app.settings.remotes;
     let items: Vec<ListItem> = active
         .as_deref()
         .and_then(|a| file.profiles.get(a))
         .map(|p| {
             p.remotes
                 .iter()
-                .map(|(name, r)| {
-                    let tag = if r.default { " [default]" } else { "" };
-                    ListItem::new(Line::from(format!("{}\t{}{}", name, r.url, tag)))
+                .enumerate()
+                .map(|(row_idx, (name, r))| {
+                    let trailing = if Some(row_idx) == remotes.testing_idx {
+                        remotes.spinner.frame().to_string()
+                    } else if let Some(status) = remotes.last_results.get(&row_idx) {
+                        match status {
+                            ConnectionStatus::Ok {
+                                registry_size_bytes,
+                            } => format!("✓ {} B", registry_size_bytes),
+                            ConnectionStatus::AuthFailed(_) => "✗ auth".into(),
+                            ConnectionStatus::Unreachable(_) => "✗ unreachable".into(),
+                            ConnectionStatus::NoRegistry(_) => "✗ no registry".into(),
+                        }
+                    } else if r.default {
+                        "[default]".into()
+                    } else {
+                        String::new()
+                    };
+                    ListItem::new(Line::from(format!("{}\t{}  {}", name, r.url, trailing)))
                 })
                 .collect()
         })
@@ -304,7 +532,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let hints = vec![
-        Line::from("[a] add  [d] delete"),
+        Line::from("[a] add  [e] edit  [d] delete"),
         Line::from("[s] set default  [t] test"),
         Line::from("[Tab] next tab  [q] quit"),
     ];
@@ -313,44 +541,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         cols[1],
     );
 
-    match &app.settings.remotes.mode {
-        Mode::Adding => render_form_modal(frame, area, "Add remote", &app.settings.remotes.form),
-        Mode::ConfirmingDelete { name } => render_confirm_modal(frame, area, name),
-        Mode::TestStub { name } => render_test_stub(frame, area, name),
-        Mode::Browsing => {}
+    match &app.settings.remotes.modal {
+        ModalState::AddOrEdit { form, .. } => {
+            let modal_area = centered_rect(area, 60, 60);
+            frame.render_widget(Clear, modal_area);
+            form.render(modal_area, frame.buffer_mut());
+        }
+        ModalState::ConfirmDelete(name) => render_confirm_modal(frame, area, name),
+        ModalState::Closed => {}
     }
-}
-
-fn render_form_modal(frame: &mut Frame, area: Rect, title: &str, form: &Form) {
-    let modal_area = centered_rect(area, 60, 30);
-    frame.render_widget(Clear, modal_area);
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-
-    let lines = vec![
-        Line::from(format!(
-            "{} name: {}",
-            if form.focused == FormField::Name {
-                "▶"
-            } else {
-                " "
-            },
-            form.name
-        )),
-        Line::from(format!(
-            "{} url:  {}",
-            if form.focused == FormField::Url {
-                "▶"
-            } else {
-                " "
-            },
-            form.url
-        )),
-        Line::from(""),
-        Line::from("Tab — switch field   Enter — save   Esc — cancel"),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_confirm_modal(frame: &mut Frame, area: Rect, name: &str) {
@@ -363,24 +562,6 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect, name: &str) {
         Line::from(format!("Delete remote '{}'?", name)),
         Line::from(""),
         Line::from("y / Enter — yes   n / Esc — no"),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_test_stub(frame: &mut Frame, area: Rect, name: &str) {
-    let modal_area = centered_rect(area, 50, 25);
-    frame.render_widget(Clear, modal_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Test connection ");
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-    let lines = vec![
-        Line::from(format!("Stub: would test '{}' here.", name)),
-        Line::from(""),
-        Line::from("Real network probing lands in Plan 7."),
-        Line::from(""),
-        Line::from("Press any key to dismiss."),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -403,6 +584,8 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         ])
         .split(popup_layout[1])[1]
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -427,6 +610,7 @@ mod tests {
                 url: "https://github.com/x/y.git".into(),
                 default: true,
                 provider: None,
+                push_mode: quay_core::PushMode::default(),
             },
         );
         file.profiles.insert("work".into(), p);
@@ -441,6 +625,186 @@ mod tests {
         a.current_screen = crate::tui::app::Screen::Settings;
         a.settings.tab = crate::tui::app::SettingsTab::Remotes;
         (a, dir)
+    }
+
+    // ── Paste handler tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn paste_inserts_into_url_field_when_adding() {
+        let (mut a, _dir) = fixture_app();
+        handle_key(&mut a, KeyCode::Char('a'));
+        assert!(matches!(
+            a.settings.remotes.modal,
+            ModalState::AddOrEdit { .. }
+        ));
+        // Tab from name to url.
+        handle_key(&mut a, KeyCode::Tab);
+        handle_paste(&mut a.settings.remotes, "git@github.com:org/skills.git");
+        if let ModalState::AddOrEdit { form, .. } = &a.settings.remotes.modal {
+            let json = form.to_json();
+            assert_eq!(
+                json["url"].as_str().unwrap_or(""),
+                "git@github.com:org/skills.git"
+            );
+        } else {
+            panic!("modal should still be open");
+        }
+    }
+
+    #[test]
+    fn paste_noop_when_modal_closed() {
+        let (mut a, _dir) = fixture_app();
+        assert!(matches!(a.settings.remotes.modal, ModalState::Closed));
+        handle_paste(&mut a.settings.remotes, "should-not-appear");
+    }
+
+    // ── Connection test tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn t_keybind_queues_blocking_action() {
+        let (mut a, _dir) = fixture_app();
+        a.settings.remotes.list_state.select(Some(0));
+        handle_key(&mut a, KeyCode::Char('t'));
+        assert_eq!(a.settings.remotes.testing_idx, Some(0));
+        assert!(
+            matches!(
+                a.next_blocking,
+                Some(BlockingAction::TestConnection { remote_idx: 0, .. })
+            ),
+            "expected TestConnection action queued"
+        );
+    }
+
+    #[test]
+    fn render_shows_spinner_during_testing() {
+        let (mut a, _dir) = fixture_app();
+        a.settings.remotes.testing_idx = Some(0);
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::tui::draw(f, &a)).unwrap();
+        let dump: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        assert!(
+            spinner_frames.iter().any(|g| dump.contains(g)),
+            "expected a spinner glyph in output; dump: {}",
+            dump
+        );
+    }
+
+    #[test]
+    fn render_shows_check_after_ok_result() {
+        let (mut a, _dir) = fixture_app();
+        a.settings.remotes.last_results.insert(
+            0,
+            ConnectionStatus::Ok {
+                registry_size_bytes: 4096,
+            },
+        );
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::tui::draw(f, &a)).unwrap();
+        let dump: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains('✓'), "expected ✓ in output; dump: {}", dump);
+    }
+
+    #[test]
+    fn render_shows_x_after_auth_failure() {
+        let (mut a, _dir) = fixture_app();
+        a.settings
+            .remotes
+            .last_results
+            .insert(0, ConnectionStatus::AuthFailed("denied".into()));
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::tui::draw(f, &a)).unwrap();
+        let dump: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains('✗'), "expected ✗ in output; dump: {}", dump);
+    }
+
+    // ── Modal save / provider tests ────────────────────────────────────────────
+
+    #[test]
+    fn modal_save_persists_provider_field() {
+        let (mut a, dir) = fixture_app();
+        // Open add modal.
+        handle_key(&mut a, KeyCode::Char('a'));
+
+        // Type name "hub2".
+        for c in "hub2".chars() {
+            handle_key(&mut a, KeyCode::Char(c));
+        }
+        // Tab to url.
+        handle_key(&mut a, KeyCode::Tab);
+        for c in "https://gitlab.com/o/r.git".chars() {
+            handle_key(&mut a, KeyCode::Char(c));
+        }
+        // Tab to provider select.
+        handle_key(&mut a, KeyCode::Tab);
+        // Down opens the dropdown.
+        handle_key(&mut a, KeyCode::Down);
+        // Down × 3 moves highlight: auto(0) → github(1) → githubenterprise(2) → gitlab(3).
+        handle_key(&mut a, KeyCode::Down);
+        handle_key(&mut a, KeyCode::Down);
+        handle_key(&mut a, KeyCode::Down);
+        // Enter selects the highlighted option (gitlab).
+        handle_key(&mut a, KeyCode::Enter);
+        // Verify provider via form.to_json.
+        if let ModalState::AddOrEdit { form, .. } = &a.settings.remotes.modal {
+            let json = form.to_json();
+            assert_eq!(
+                json["provider"].as_str().unwrap_or(""),
+                "gitlab",
+                "provider should be 'gitlab' after selection"
+            );
+        } else {
+            panic!("modal should still be open");
+        }
+        // Tab through push_mode, checkbox, then to Submit.
+        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab);
+        // Enter to submit.
+        handle_key(&mut a, KeyCode::Enter);
+
+        let written = std::fs::read_to_string(dir.child("user.toml").path()).unwrap();
+        assert!(
+            written.contains("provider = \"gitlab\""),
+            "expected provider field in written TOML; content: {}",
+            written
+        );
+    }
+
+    #[test]
+    fn modal_edit_loads_existing_provider() {
+        // Build form for an existing remote with Bitbucket provider.
+        let remote = RemoteConfig {
+            url: "https://bitbucket.org/x/y.git".into(),
+            default: false,
+            provider: Some(ProviderKind::Bitbucket),
+            push_mode: quay_core::PushMode::default(),
+        };
+        let form = build_remote_modal_form(Some(&remote), Some("my-remote"));
+        let json = form.to_json();
+        assert_eq!(
+            json["provider"].as_str().unwrap_or(""),
+            "bitbucket",
+            "form should be pre-populated with 'bitbucket'"
+        );
     }
 
     #[test]
@@ -466,10 +830,15 @@ mod tests {
         for c in "secondary".chars() {
             handle_key(&mut a, KeyCode::Char(c));
         }
-        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab); // → url
         for c in "https://x".chars() {
             handle_key(&mut a, KeyCode::Char(c));
         }
+        // Tab through provider, push_mode, default checkbox, then Submit.
+        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab);
+        handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Enter);
         let written = std::fs::read_to_string(dir.child("user.toml").path()).unwrap();
         assert!(written.contains("[profiles.work.remotes.secondary]"));

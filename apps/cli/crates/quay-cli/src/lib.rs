@@ -4,6 +4,7 @@ pub mod args;
 pub mod commands;
 pub mod config_io;
 pub mod tui;
+pub mod url_opener;
 
 use args::{Cli, Command};
 use clap::Parser;
@@ -28,7 +29,13 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Init => commands::init::run(&project, cli.json)?,
-        Command::Remote { action } => commands::remote::run(action, &project, cli.json)?,
+        Command::Remote { action } => commands::remote::run(
+            action,
+            &project,
+            user_config.as_deref(),
+            cli.profile.as_deref(),
+            cli.json,
+        )?,
         Command::Add { skill, remote } => {
             commands::add::run(
                 &skill,
@@ -100,16 +107,23 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 cli.json,
             )?;
         }
-        Command::Validate { skill } => commands::validate::run(&skill, &project, cli.json)?,
+        Command::Scan { root, json } => {
+            commands::scan::run(&project, root, json || cli.json)?;
+        }
+        Command::Validate { skill, strict } => {
+            commands::validate::run(&skill, &project, cli.json, strict)?;
+        }
         Command::Push {
             skill,
             remote,
             bump,
+            push_mode,
         } => {
             commands::push::run(
                 &skill,
                 remote.as_deref(),
                 bump,
+                push_mode.map(quay_core::config::PushMode::from),
                 cli.profile.as_deref(),
                 &project,
                 user_config.as_deref(),
@@ -118,6 +132,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Profile { action } => {
             commands::profile::run(action, &project, user_config.as_deref(), cli.json)?;
+        }
+        Command::RebuildRegistry { remote, push_mode } => {
+            commands::rebuild_registry::run(
+                remote.as_deref(),
+                push_mode.map(quay_core::config::PushMode::from),
+                &project,
+                user_config.as_deref(),
+                cli.profile.as_deref(),
+                cli.json,
+            )?;
         }
         Command::Link { action, force } => {
             commands::link::run(action, force, &project, user_config.as_deref(), cli.json)?;

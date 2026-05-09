@@ -29,6 +29,17 @@ pub enum BlockingAction {
         remote: Option<String>,
         bump: BumpKind,
     },
+    /// Install a skill from a remote hub into `.agents/skills/`.
+    Add {
+        skill: String,
+        remote: Option<String>,
+    },
+    /// Probe a remote for reachability, auth, and registry presence.
+    TestConnection {
+        url: String,
+        kind: Option<quay_core::ProviderKind>,
+        remote_idx: usize,
+    },
 }
 
 /// Top-level screen selection.
@@ -69,10 +80,15 @@ pub enum ScreenAction {
 }
 
 /// Returns `true` when the onboarding screen should be shown instead of the
-/// dashboard.  Fires for brand-new installs (no config file, or empty config)
-/// where `meta.onboarded` is false and no profiles exist.
+/// dashboard.
+///
+/// Driven by `profiles.is_empty()` alone — `meta.onboarded` exists only to
+/// suppress repeated skip prompts within onboarding itself, not as a hard gate.
+/// This means a user who skipped onboarding once (writing `onboarded = true`
+/// with no profiles) still gets onboarding on the next launch — exactly the
+/// recovery path the older two-condition gate was missing.
 pub fn should_show_onboarding(file: &UserConfigFile) -> bool {
-    !file.meta.onboarded && file.profiles.is_empty()
+    file.profiles.is_empty()
 }
 
 /// Internal helper used by [`App::new`].
@@ -123,6 +139,10 @@ pub struct App {
     /// transitioning to `Pushing`) is painted once before the blocking call
     /// freezes the event loop.
     pub next_blocking: Option<BlockingAction>,
+    /// Local skills discovered under `.agents/skills/` at startup.
+    pub local_skills: Vec<quay_core::scanner::LocalSkill>,
+    /// Index of the currently highlighted row in the Local skills panel.
+    pub local_selected: usize,
 }
 
 impl App {
@@ -134,13 +154,15 @@ impl App {
     ) -> Self {
         let mut search_textarea = TextArea::default();
         search_textarea.set_block(Block::default().borders(Borders::ALL).title(" search "));
+        let remotes: Vec<String> = cfg.remotes.keys().cloned().collect();
         let create_push = crate::tui::screens::create_push::CreatePushState::Form(
-            crate::tui::screens::create_push::FormFields::from_config_remotes(&cfg),
+            crate::tui::screens::create_push::build_create_form(&remotes),
         );
         let initial_screen = decide_initial_screen_from_file(
             user_config_path.as_deref(),
             config_io::read_user_file(user_config_path.as_deref()),
         );
+        let local_skills = Self::scan_local(&project_root);
         Self {
             cfg,
             lock,
@@ -158,6 +180,56 @@ impl App {
             create_push,
             onboarding: OnboardingState::default(),
             next_blocking: None,
+            local_skills,
+            local_selected: 0,
+        }
+    }
+
+    /// Scan local skills under `<project_root>/.agents/skills/`.
+    fn scan_local(project_root: &std::path::Path) -> Vec<quay_core::scanner::LocalSkill> {
+        let lockfile = quay_core::lockfile::Lockfile::load_or_default(
+            &project_root.join(".quay/lockfile.json"),
+        )
+        .unwrap_or_default();
+        let push_log = quay_core::push_log::PushLog::load(project_root).unwrap_or_default();
+        let scan_root = project_root.join(".agents/skills");
+        quay_core::scanner::scan_local_skills(&[scan_root], &lockfile, &push_log)
+    }
+
+    /// Re-run the local-skills scan (used by Dashboard `[r]` rescan and after a push).
+    pub fn reload_local_skills(&mut self) {
+        self.local_skills = Self::scan_local(&self.project_root);
+        if self.local_selected >= self.local_skills.len() {
+            self.local_selected = self.local_skills.len().saturating_sub(1);
+        }
+    }
+
+    /// Returns `true` when the focused screen has a text input that should
+    /// receive every keystroke verbatim (no global hotkey interception).
+    ///
+    /// Without this, typing `evgenii` in a profile-name field is impossible:
+    /// the global `g`-chord prefix and single-letter screen jumps eat
+    /// characters before the form sees them.
+    pub fn has_focused_text_input(&self) -> bool {
+        use crate::tui::screens::create_push::CreatePushState;
+        use crate::tui::screens::onboarding::OnboardingState;
+
+        match self.current_screen {
+            Screen::Onboarding => matches!(
+                self.onboarding,
+                OnboardingState::Profile { .. } | OnboardingState::Remote { .. }
+            ),
+            Screen::CreatePush => matches!(self.create_push, CreatePushState::Form(_)),
+            Screen::Settings => match self.settings.tab {
+                SettingsTab::Profiles => crate::tui::screens::settings::profiles::has_active_modal(
+                    &self.settings.profiles,
+                ),
+                SettingsTab::Remotes => {
+                    crate::tui::screens::settings::remotes::has_active_modal(&self.settings.remotes)
+                }
+                SettingsTab::Install => false,
+            },
+            _ => false,
         }
     }
 
@@ -177,5 +249,58 @@ impl App {
     /// not depend on ordering.
     pub fn defer_blocking_action(&mut self, action: BlockingAction) {
         self.next_blocking = Some(action);
+    }
+
+    /// Route a bracketed-paste string to the focused form-bearing screen.
+    ///
+    /// List screens (Dashboard, Browse, Search, Installed) silently drop the
+    /// paste.  Form-bearing screens (Onboarding, CreatePush, Settings) forward
+    /// the string to whichever text field currently has focus.
+    pub fn handle_paste(&mut self, s: &str) {
+        match self.current_screen {
+            Screen::Onboarding => {
+                crate::tui::screens::onboarding::handle_paste(&mut self.onboarding, s);
+            }
+            Screen::CreatePush => {
+                crate::tui::screens::create_push::handle_paste(&mut self.create_push, s);
+            }
+            Screen::Settings => {
+                crate::tui::screens::settings::handle_paste(&mut self.settings, s);
+            }
+            // List screens have no text inputs; paste is silently ignored.
+            Screen::Dashboard | Screen::Browse | Screen::Search | Screen::Installed => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quay_core::{MetaSection, ProfileFile, UserConfigFile};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn onboarding_due_when_profiles_empty_even_if_onboarded_true() {
+        let file = UserConfigFile {
+            meta: MetaSection { onboarded: true },
+            profiles: BTreeMap::new(),
+            ..Default::default()
+        };
+        assert!(
+            should_show_onboarding(&file),
+            "gate should fire when no profiles exist, regardless of onboarded flag"
+        );
+    }
+
+    #[test]
+    fn onboarding_not_due_when_profiles_present() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert("p".to_string(), ProfileFile::default());
+        let file = UserConfigFile {
+            meta: MetaSection { onboarded: true },
+            profiles,
+            ..Default::default()
+        };
+        assert!(!should_show_onboarding(&file));
     }
 }

@@ -32,6 +32,12 @@ pub trait GitClient {
     /// Read the URL of `origin` (or the named remote) — used to surface the right URL
     /// in user messages after a successful push.
     fn remote_url(&self, repo: &Path, remote: &str) -> Result<String>;
+
+    /// `git -C <repo> rev-parse --abbrev-ref HEAD` — returns the current branch name.
+    fn current_branch(&self, repo: &Path) -> Result<String>;
+
+    /// `git -C <repo> rev-parse HEAD` — returns the full 40-character SHA of HEAD.
+    fn head_sha(&self, repo: &Path) -> Result<String>;
 }
 
 /// Production [`GitClient`] that spawns the user's `git` binary.
@@ -148,6 +154,22 @@ impl GitClient for GitShellClient {
         let out = run(&mut cmd, &format!("git remote get-url {}", remote))?;
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
+
+    fn current_branch(&self, repo: &Path) -> Result<String> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"]);
+        let out = run(&mut cmd, "git rev-parse --abbrev-ref HEAD")?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn head_sha(&self, repo: &Path) -> Result<String> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(repo).args(["rev-parse", "HEAD"]);
+        let out = run(&mut cmd, "git rev-parse HEAD")?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
 }
 
 #[cfg(test)]
@@ -248,5 +270,87 @@ mod tests {
         // No add, no changes — commit should report "nothing to commit".
         let did = g.commit(work.path(), "noop", "T", "t@e").unwrap();
         assert!(!did);
+    }
+
+    #[test]
+    fn current_branch_reads_default_branch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["config", "user.email", "t@t"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["config", "user.name", "T"])
+            .output()
+            .unwrap();
+        std::fs::write(repo.join("a"), "x").unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+
+        let client = GitShellClient;
+        assert_eq!(client.current_branch(repo).unwrap(), "main");
+    }
+
+    #[test]
+    fn head_sha_returns_40_hex() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["config", "user.email", "t@t"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["config", "user.name", "T"])
+            .output()
+            .unwrap();
+        std::fs::write(repo.join("a"), "x").unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+
+        let client = GitShellClient;
+        let sha = client.head_sha(repo).unwrap();
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

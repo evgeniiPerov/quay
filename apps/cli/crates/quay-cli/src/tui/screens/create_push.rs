@@ -11,13 +11,14 @@ use crate::commands;
 use crate::tui::app::{App, BlockingAction, ScreenAction};
 use crate::tui::screens::widgets::spinner::Spinner;
 use crate::tui::theme;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use quay_core::BumpKind;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
+use ratatui_form::{Form, FormResult};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -62,160 +63,58 @@ impl BumpChoice {
     }
 }
 
-/// Focus position within the Create form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FormFocus {
-    #[default]
-    Name,
-    Description,
-    Tags,
-    Remote,
-    SaveButton,
-    CancelButton,
+// ---------------------------------------------------------------------------
+// Form builder
+// ---------------------------------------------------------------------------
+
+/// Build the Create Skill frontmatter form.
+///
+/// If `remotes` is non-empty, a `Select` field is appended for the target
+/// remote.  If it is empty, the select field is omitted.
+pub fn build_create_form(remotes: &[String]) -> Form {
+    let mut b = Form::builder()
+        .title("Create Skill")
+        .style(crate::tui::form_theme::dark())
+        .text("name", "Name")
+        .required()
+        .validator(Box::new(ratatui_form::Pattern::new(
+            r"^[a-z0-9-]+$",
+            "kebab-case only (lowercase letters, digits, hyphens)",
+        )))
+        .done()
+        .text("description", "Description")
+        .required()
+        .done()
+        .text("tags", "Tags (comma-separated)")
+        .done();
+    if !remotes.is_empty() {
+        let options: Vec<(&str, &str)> = remotes.iter().map(|s| (s.as_str(), s.as_str())).collect();
+        b = b
+            .select("remote", "Target remote")
+            .options(options)
+            .initial_value(remotes[0].as_str())
+            .done();
+    }
+    b.build()
 }
 
-impl FormFocus {
-    fn next(self) -> FormFocus {
-        match self {
-            FormFocus::Name => FormFocus::Description,
-            FormFocus::Description => FormFocus::Tags,
-            FormFocus::Tags => FormFocus::Remote,
-            FormFocus::Remote => FormFocus::SaveButton,
-            FormFocus::SaveButton => FormFocus::CancelButton,
-            FormFocus::CancelButton => FormFocus::Name,
-        }
-    }
-
-    fn prev(self) -> FormFocus {
-        match self {
-            FormFocus::Name => FormFocus::CancelButton,
-            FormFocus::Description => FormFocus::Name,
-            FormFocus::Tags => FormFocus::Description,
-            FormFocus::Remote => FormFocus::Tags,
-            FormFocus::SaveButton => FormFocus::Remote,
-            FormFocus::CancelButton => FormFocus::SaveButton,
-        }
-    }
+/// Build a fresh form pre-populated from the app's current config remotes.
+pub fn build_create_form_from_app(app: &App) -> Form {
+    let remotes: Vec<String> = app.cfg.remotes.keys().cloned().collect();
+    build_create_form(&remotes)
 }
 
-/// Inline form fields for the Create Skill form.
-#[derive(Debug, Clone)]
-pub struct FormFields {
-    pub name: String,
-    pub description: String,
-    /// Comma-separated tags entered as a single string.
-    pub tags: String,
-    /// Available remote names from the active config.
-    pub remotes: Vec<String>,
-    /// Index of the currently selected remote in `remotes`.
-    pub remote_idx: usize,
-    pub focus: FormFocus,
-}
-
-impl FormFields {
-    /// Create a form pre-populated with the given remote names.
-    pub fn with_remotes(remotes: &[&str]) -> Self {
-        Self {
-            name: String::new(),
-            description: String::new(),
-            tags: String::new(),
-            remotes: remotes.iter().map(|s| s.to_string()).collect(),
-            remote_idx: 0,
-            focus: FormFocus::Name,
-        }
-    }
-
-    /// Create a form from the app's current config remotes.
-    pub fn from_app(app: &App) -> Self {
-        Self::from_config_remotes(&app.cfg)
-    }
-
-    /// Create a form pre-populated from a [`quay_core::Config`]'s remotes.
-    pub fn from_config_remotes(cfg: &quay_core::Config) -> Self {
-        let remotes: Vec<String> = cfg.remotes.keys().cloned().collect();
-        let remote_idx = cfg
-            .default_remote()
-            .and_then(|(name, _)| remotes.iter().position(|r| r == name))
-            .unwrap_or(0);
-        Self {
-            name: String::new(),
-            description: String::new(),
-            tags: String::new(),
-            remotes,
-            remote_idx,
-            focus: FormFocus::Name,
-        }
-    }
-
-    /// Currently selected remote name, if any.
-    pub fn selected_remote(&self) -> Option<&str> {
-        self.remotes.get(self.remote_idx).map(|s| s.as_str())
-    }
-
-    /// Advance focus forward (Tab).
-    pub fn tab_forward(&mut self) {
-        self.focus = self.focus.next();
-    }
-
-    /// Advance focus backward (BackTab / Shift-Tab).
-    pub fn tab_back(&mut self) {
-        self.focus = self.focus.prev();
-    }
-
-    /// Handle a character typed into the currently focused text field.
-    fn push_char(&mut self, c: char) {
-        match self.focus {
-            FormFocus::Name => self.name.push(c),
-            FormFocus::Description => self.description.push(c),
-            FormFocus::Tags => self.tags.push(c),
-            FormFocus::Remote => {
-                // Cycle remote selection on left/right — handled separately.
-                // Ignore typed characters in the remote field.
-            }
-            FormFocus::SaveButton | FormFocus::CancelButton => {}
-        }
-    }
-
-    fn pop_char(&mut self) {
-        match self.focus {
-            FormFocus::Name => {
-                self.name.pop();
-            }
-            FormFocus::Description => {
-                self.description.pop();
-            }
-            FormFocus::Tags => {
-                self.tags.pop();
-            }
-            _ => {}
-        }
-    }
-
-    fn cycle_remote_next(&mut self) {
-        if !self.remotes.is_empty() {
-            self.remote_idx = (self.remote_idx + 1) % self.remotes.len();
-        }
-    }
-
-    fn cycle_remote_prev(&mut self) {
-        if !self.remotes.is_empty() {
-            if self.remote_idx == 0 {
-                self.remote_idx = self.remotes.len() - 1;
-            } else {
-                self.remote_idx -= 1;
-            }
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// State machine
+// ---------------------------------------------------------------------------
 
 /// Full state machine for Screen 5.
-#[derive(Debug)]
 pub enum CreatePushState {
-    /// Collecting frontmatter from the user.
-    Form(FormFields),
+    /// Collecting frontmatter from the user via `ratatui-form`.
+    Form(ratatui_form::Form),
     /// Scaffold is running (fast disk write — this state is mostly a visual
     /// marker; we transition through it synchronously before entering `Editing`).
-    ScaffoldRunning(FormFields),
+    ScaffoldRunning,
     /// `$EDITOR` is open for the skill body (TUI is suspended).
     Editing { skill: String, path: PathBuf },
     /// The editor has exited; waiting for the user to trigger validation.
@@ -253,11 +152,89 @@ pub enum CreatePushState {
     },
 }
 
+impl std::fmt::Debug for CreatePushState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreatePushState::Form(_) => write!(f, "Form(...)"),
+            CreatePushState::ScaffoldRunning => write!(f, "ScaffoldRunning"),
+            CreatePushState::Editing { skill, path } => f
+                .debug_struct("Editing")
+                .field("skill", skill)
+                .field("path", path)
+                .finish(),
+            CreatePushState::ReadyToValidate { skill, path } => f
+                .debug_struct("ReadyToValidate")
+                .field("skill", skill)
+                .field("path", path)
+                .finish(),
+            CreatePushState::Validating { skill, path } => f
+                .debug_struct("Validating")
+                .field("skill", skill)
+                .field("path", path)
+                .finish(),
+            CreatePushState::ValidateErrors {
+                skill,
+                path,
+                errors,
+            } => f
+                .debug_struct("ValidateErrors")
+                .field("skill", skill)
+                .field("path", path)
+                .field("errors", errors)
+                .finish(),
+            CreatePushState::ReadyToPush {
+                skill,
+                path,
+                remote,
+                bump,
+            } => f
+                .debug_struct("ReadyToPush")
+                .field("skill", skill)
+                .field("path", path)
+                .field("remote", remote)
+                .field("bump", bump)
+                .finish(),
+            CreatePushState::Pushing {
+                skill,
+                remote,
+                bump,
+                ..
+            } => f
+                .debug_struct("Pushing")
+                .field("skill", skill)
+                .field("remote", remote)
+                .field("bump", bump)
+                .finish(),
+            CreatePushState::Done(o) => write!(f, "Done({:?})", o),
+            CreatePushState::Failed { message, .. } => {
+                f.debug_struct("Failed").field("message", message).finish()
+            }
+        }
+    }
+}
+
 impl CreatePushState {
     /// Advance the spinner if we are in the `Pushing` state.
     pub fn tick(&mut self) {
         if let CreatePushState::Pushing { spinner, .. } = self {
             spinner.advance();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Paste handler
+// ---------------------------------------------------------------------------
+
+/// Insert a pasted string into the currently focused text field of the form.
+///
+/// Only the `Form` state accepts paste; all other states in the state machine
+/// (scaffold running, editing, validating, etc.) silently drop the paste.
+pub fn handle_paste(state: &mut CreatePushState, s: &str) {
+    if let CreatePushState::Form(form) = state {
+        let events = crate::tui::paste_to_key_events(s);
+        for ev in events {
+            form.handle_input(ev);
         }
     }
 }
@@ -274,7 +251,7 @@ impl CreatePushState {
 /// without aliasing `app.create_push`.  The state is moved back at the end.
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
     // Move state out to avoid aliasing.
-    let placeholder = CreatePushState::Form(FormFields::with_remotes(&[]));
+    let placeholder = CreatePushState::Form(build_create_form(&[]));
     let mut state = std::mem::replace(&mut app.create_push, placeholder);
 
     let action = handle_key_inner(&mut state, app, code);
@@ -285,8 +262,6 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
 }
 
 fn handle_key_inner(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> ScreenAction {
-    // Dispatch by taking a snapshot of the discriminant — avoids holding a
-    // borrow on `state` while we subsequently move into `state`.
     let discriminant = state_discriminant(state);
     match discriminant {
         StateKind::Form => handle_form(state, app, code),
@@ -295,7 +270,19 @@ fn handle_key_inner(state: &mut CreatePushState, app: &mut App, code: KeyCode) -
         StateKind::ReadyToPush => handle_ready_to_push(state, app, code),
         StateKind::Done => handle_done(state, app, code),
         StateKind::Failed => {
-            dismiss_failure(state);
+            // Any key dismisses the failure banner. If the prior state was
+            // Pushing (a transient state with no key handlers), unwrapping
+            // to it would leave the user stuck on a frozen spinner — instead
+            // bail back to the Dashboard so they can retry from there.
+            let was_after_pushing = matches!(
+                state,
+                CreatePushState::Failed { state: prior, .. }
+                    if matches!(**prior, CreatePushState::Pushing { .. })
+            );
+            dismiss_failure(state, app);
+            if was_after_pushing {
+                return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
+            }
             ScreenAction::Stay
         }
         StateKind::Other => ScreenAction::Stay,
@@ -327,62 +314,54 @@ fn state_discriminant(state: &CreatePushState) -> StateKind {
 }
 
 fn handle_form(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> ScreenAction {
-    let fields_focus = match state {
-        CreatePushState::Form(f) => f.focus,
-        _ => return ScreenAction::Stay,
+    // Intercept Esc before delegating to the form — Esc cancels to Dashboard.
+    if code == KeyCode::Esc {
+        return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
+    }
+
+    // Translate BackTab → Tab + SHIFT (ratatui-form checks modifiers).
+    let (key_code, modifiers) = if code == KeyCode::BackTab {
+        (KeyCode::Tab, KeyModifiers::SHIFT)
+    } else {
+        (code, KeyModifiers::NONE)
+    };
+    let key_event = KeyEvent {
+        code: key_code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
     };
 
-    match code {
-        KeyCode::Esc => {
-            return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
-        }
-        KeyCode::Tab => {
-            if let CreatePushState::Form(f) = state {
-                f.tab_forward();
-            }
-        }
-        KeyCode::BackTab => {
-            if let CreatePushState::Form(f) = state {
-                f.tab_back();
-            }
-        }
-        KeyCode::Left => {
-            if fields_focus == FormFocus::Remote {
-                if let CreatePushState::Form(f) = state {
-                    f.cycle_remote_prev();
+    if let CreatePushState::Form(form) = state {
+        form.handle_input(key_event);
+
+        match form.result() {
+            FormResult::Submitted => {
+                let json = form.to_json();
+                let name = json["name"].as_str().unwrap_or("").trim().to_string();
+                let _description = json["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let _tags = json["tags"].as_str().unwrap_or("").trim().to_string();
+                let _remote = json
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                if name.is_empty() {
+                    app.set_status("skill name is required");
+                    return ScreenAction::Stay;
                 }
+
+                on_save(state, app, &name);
             }
-        }
-        KeyCode::Right => {
-            if fields_focus == FormFocus::Remote {
-                if let CreatePushState::Form(f) = state {
-                    f.cycle_remote_next();
-                }
-            }
-        }
-        KeyCode::Backspace => {
-            if let CreatePushState::Form(f) = state {
-                f.pop_char();
-            }
-        }
-        KeyCode::Char(c) => match fields_focus {
-            FormFocus::SaveButton | FormFocus::CancelButton => {}
-            _ => {
-                if let CreatePushState::Form(f) = state {
-                    f.push_char(c);
-                }
-            }
-        },
-        KeyCode::Enter => match fields_focus {
-            FormFocus::CancelButton => {
+            FormResult::Cancelled => {
                 return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
             }
-            _ => {
-                on_save(state, app);
-                return ScreenAction::Stay;
-            }
-        },
-        _ => {}
+            FormResult::Active => {}
+        }
     }
     ScreenAction::Stay
 }
@@ -442,12 +421,32 @@ fn handle_ready_to_push(state: &mut CreatePushState, app: &mut App, code: KeyCod
     ScreenAction::Stay
 }
 
+// In tests, avoid actually spawning the system browser.
+#[cfg(not(test))]
+fn open_url(url: &str) -> std::io::Result<()> {
+    crate::url_opener::open_browser(url)
+}
+#[cfg(test)]
+fn open_url(url: &str) -> std::io::Result<()> {
+    crate::url_opener::open_browser_with(url, crate::url_opener::OpenStrategy::Stub)
+}
+
 fn handle_done(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> ScreenAction {
     match code {
         KeyCode::Char('o') => {
-            // Stub: URL-open not available in this plan.
             if let CreatePushState::Done(outcome) = state {
-                app.set_status(format!("PR open: {}", outcome.pr_url));
+                if outcome.pr_url.is_empty() {
+                    // Direct-mode push: no PR URL to open. Provider-specific commit URL is
+                    // out of scope for this plan — surface a helpful status instead.
+                    app.set_status("direct push: no PR URL (commit on hub default branch)");
+                } else {
+                    match open_url(&outcome.pr_url) {
+                        Ok(()) => app.set_status(format!("opened: {}", outcome.pr_url)),
+                        Err(e) => {
+                            app.set_status(format!("open failed: {} (url: {})", e, outcome.pr_url))
+                        }
+                    }
+                }
             }
         }
         KeyCode::Char('b') | KeyCode::Esc => {
@@ -462,21 +461,9 @@ fn handle_done(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> Scr
 // State transition helpers
 // ---------------------------------------------------------------------------
 
-fn on_save(state: &mut CreatePushState, app: &mut App) {
-    // Extract fields by cloning out of the Form variant.
-    let fields = match state {
-        CreatePushState::Form(f) => f.clone(),
-        _ => return,
-    };
-
-    let name = fields.name.trim().to_string();
-    if name.is_empty() {
-        app.set_status("skill name is required");
-        return;
-    }
-
+fn on_save(state: &mut CreatePushState, app: &mut App, name: &str) {
     match commands::create::scaffold(
-        &name,
+        name,
         None,
         app.cfg.user.email.as_deref(),
         &app.project_root,
@@ -493,7 +480,7 @@ fn on_save(state: &mut CreatePushState, app: &mut App) {
                 }
                 Err(e) => {
                     *state = CreatePushState::Failed {
-                        state: Box::new(CreatePushState::Form(fields)),
+                        state: Box::new(CreatePushState::Form(build_create_form_from_app(app))),
                         message: format!("editor: {}", e),
                     };
                 }
@@ -501,7 +488,7 @@ fn on_save(state: &mut CreatePushState, app: &mut App) {
         }
         Err(e) => {
             *state = CreatePushState::Failed {
-                state: Box::new(CreatePushState::Form(fields)),
+                state: Box::new(CreatePushState::Form(build_create_form_from_app(app))),
                 message: e.to_string(),
             };
         }
@@ -514,9 +501,12 @@ fn on_validate(state: &mut CreatePushState, app: &mut App) {
         _ => return,
     };
 
-    match commands::validate::validate_skill(&skill, &app.project_root) {
-        Ok(outcome) if outcome.errors.is_empty() => {
-            // Find the default remote from the app config.
+    match commands::validate::validate_skill(
+        &skill,
+        &app.project_root,
+        commands::validate::ValidateMode::Strict,
+    ) {
+        Ok(outcome) if outcome.warnings.is_empty() => {
             let remote = app.cfg.default_remote().map(|(name, _)| name.clone());
             *state = CreatePushState::ReadyToPush {
                 skill,
@@ -529,7 +519,7 @@ fn on_validate(state: &mut CreatePushState, app: &mut App) {
             *state = CreatePushState::ValidateErrors {
                 skill,
                 path,
-                errors: outcome.errors,
+                errors: outcome.warnings,
             };
         }
         Err(e) => {
@@ -613,10 +603,9 @@ fn on_push(state: &mut CreatePushState, app: &mut App) {
     });
 }
 
-fn dismiss_failure(state: &mut CreatePushState) {
+fn dismiss_failure(state: &mut CreatePushState, app: &mut App) {
     // Replace `state` with the boxed prior state.
-    // We need to take ownership using a placeholder.
-    let placeholder = CreatePushState::Form(FormFields::with_remotes(&[]));
+    let placeholder = CreatePushState::Form(build_create_form_from_app(app));
     let old = std::mem::replace(state, placeholder);
     if let CreatePushState::Failed { state: prior, .. } = old {
         *state = *prior;
@@ -630,8 +619,8 @@ fn dismiss_failure(state: &mut CreatePushState) {
 /// Render the entire Create/Push screen for the current `state`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect, state: &CreatePushState) {
     match state {
-        CreatePushState::Form(fields) => render_form(frame, area, fields),
-        CreatePushState::ScaffoldRunning(_) => {
+        CreatePushState::Form(form) => form.render(area, frame.buffer_mut()),
+        CreatePushState::ScaffoldRunning => {
             render_placeholder(frame, area, "Creating scaffold...");
         }
         CreatePushState::Editing { skill, .. } => {
@@ -668,129 +657,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect, state: &CreatePushState)
             render_failure_banner(frame, area, message);
         }
     }
-}
-
-fn render_form(frame: &mut Frame, area: Rect, fields: &FormFields) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(" Create Skill ", theme::accent()));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // header hint
-            Constraint::Length(2), // Name field
-            Constraint::Length(2), // Description
-            Constraint::Length(2), // Tags
-            Constraint::Length(2), // Remote
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // buttons
-            Constraint::Length(1), // footer
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Fill in the skill metadata, then press Enter to open $EDITOR for the body.",
-            theme::dim(),
-        )),
-        rows[0],
-    );
-
-    render_field(
-        frame,
-        rows[1],
-        "Name",
-        &fields.name,
-        fields.focus == FormFocus::Name,
-    );
-    render_field(
-        frame,
-        rows[2],
-        "Description",
-        &fields.description,
-        fields.focus == FormFocus::Description,
-    );
-    render_field(
-        frame,
-        rows[3],
-        "Tags (comma-separated)",
-        &fields.tags,
-        fields.focus == FormFocus::Tags,
-    );
-
-    let remote_label = if fields.remotes.is_empty() {
-        "(no remotes configured)".to_string()
-    } else {
-        fields
-            .remotes
-            .get(fields.remote_idx)
-            .cloned()
-            .unwrap_or_default()
-    };
-    render_field(
-        frame,
-        rows[4],
-        "Remote  ← →",
-        &remote_label,
-        fields.focus == FormFocus::Remote,
-    );
-
-    let save_style = if fields.focus == FormFocus::SaveButton {
-        theme::selected()
-    } else {
-        Style::default()
-    };
-    let cancel_style = if fields.focus == FormFocus::CancelButton {
-        theme::selected()
-    } else {
-        Style::default()
-    };
-    let buttons = Line::from(vec![
-        Span::styled(" [Enter] Save & open editor ", save_style),
-        Span::raw("   "),
-        Span::styled(" [Esc/Cancel] ", cancel_style),
-    ]);
-    frame.render_widget(Paragraph::new(buttons), rows[6]);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Tab / BackTab — cycle fields   Esc — cancel",
-            theme::dim(),
-        )),
-        rows[7],
-    );
-}
-
-fn render_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
-
-    let label_style = if focused {
-        theme::accent()
-    } else {
-        theme::dim()
-    };
-    let cursor = if focused { "▶ " } else { "  " };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(cursor, label_style),
-            Span::styled(label, label_style),
-        ])),
-        rows[0],
-    );
-
-    let value_style = if focused {
-        Style::default().add_modifier(Modifier::UNDERLINED)
-    } else {
-        Style::default()
-    };
-    let display = format!("  {}", value);
-    frame.render_widget(Paragraph::new(Span::styled(display, value_style)), rows[1]);
 }
 
 fn render_ready_to_validate(frame: &mut Frame, area: Rect, skill: &str) {
@@ -922,28 +788,52 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!(
-                "  ✔ Pushed {} v{} → {}",
-                outcome.skill, outcome.version, outcome.remote
-            ),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  PR: "),
-            Span::styled(outcome.pr_url.clone(), theme::accent()),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  [o] open in browser   [b] back to dashboard",
-            theme::dim(),
-        )]),
-    ];
+    let header = Line::from(vec![Span::styled(
+        format!(
+            "  ✔ Pushed {} v{} → {}",
+            outcome.skill, outcome.version, outcome.remote
+        ),
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    )]);
+
+    let lines = if outcome.pr_url.is_empty() {
+        // Direct-mode summary.
+        let short_sha: String = outcome.commit_sha.chars().take(8).collect();
+        vec![
+            Line::from(""),
+            header,
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Direct push to "),
+                Span::styled(outcome.branch.clone(), theme::accent()),
+                Span::raw(" at "),
+                Span::styled(short_sha, theme::accent()),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  [b] back to dashboard",
+                theme::dim(),
+            )]),
+        ]
+    } else {
+        // PR-mode summary.
+        vec![
+            Line::from(""),
+            header,
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  PR: "),
+                Span::styled(outcome.pr_url.clone(), theme::accent()),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  [o] open in browser   [b] back to dashboard",
+                theme::dim(),
+            )]),
+        ]
+    };
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -1001,89 +891,13 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn buf_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
-        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
-        content.contains(needle)
-    }
-
-    #[test]
-    fn form_renders_all_fields() {
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let app = App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None);
-        let state = CreatePushState::Form(FormFields::with_remotes(&["skills-hub", "platform"]));
-        term.draw(|f| render(f, &app, f.area(), &state)).unwrap();
-        let buf = term.backend().buffer().clone();
-        assert!(buf_contains(&buf, "Name"), "buffer missing 'Name'");
-        assert!(
-            buf_contains(&buf, "Description"),
-            "buffer missing 'Description'"
-        );
-        assert!(buf_contains(&buf, "Tags"), "buffer missing 'Tags'");
-        assert!(
-            buf_contains(&buf, "skills-hub"),
-            "buffer missing remote 'skills-hub'"
-        );
-    }
-
-    #[test]
-    fn tab_advances_focus_through_all_fields() {
-        let mut fields = FormFields::with_remotes(&["a"]);
-        assert!(matches!(fields.focus, FormFocus::Name));
-        fields.tab_forward();
-        assert!(matches!(fields.focus, FormFocus::Description));
-        fields.tab_forward();
-        assert!(matches!(fields.focus, FormFocus::Tags));
-        fields.tab_forward();
-        assert!(matches!(fields.focus, FormFocus::Remote));
-        fields.tab_forward();
-        assert!(matches!(fields.focus, FormFocus::SaveButton));
-        fields.tab_forward();
-        assert!(matches!(fields.focus, FormFocus::CancelButton));
-        fields.tab_forward();
-        // Wraps back to Name.
-        assert!(matches!(fields.focus, FormFocus::Name));
-    }
-
-    #[test]
-    fn backtab_reverses_focus() {
-        let mut fields = FormFields::with_remotes(&["a"]);
-        fields.tab_back();
-        assert!(matches!(fields.focus, FormFocus::CancelButton));
-    }
-
-    #[test]
-    fn char_input_appends_to_name_field() {
-        let mut fields = FormFields::with_remotes(&["a"]);
-        fields.push_char('h');
-        fields.push_char('i');
-        assert_eq!(fields.name, "hi");
-    }
-
-    #[test]
-    fn backspace_removes_last_char() {
-        let mut fields = FormFields::with_remotes(&["a"]);
-        fields.push_char('h');
-        fields.push_char('i');
-        fields.pop_char();
-        assert_eq!(fields.name, "h");
-    }
-
-    #[test]
-    fn remote_cycles_on_left_right() {
-        let mut fields = FormFields::with_remotes(&["a", "b", "c"]);
-        fields.focus = FormFocus::Remote;
-        assert_eq!(fields.selected_remote(), Some("a"));
-        fields.cycle_remote_next();
-        assert_eq!(fields.selected_remote(), Some("b"));
-        fields.cycle_remote_next();
-        assert_eq!(fields.selected_remote(), Some("c"));
-        fields.cycle_remote_next();
-        // Wraps.
-        assert_eq!(fields.selected_remote(), Some("a"));
-        fields.cycle_remote_prev();
-        assert_eq!(fields.selected_remote(), Some("c"));
+    fn make_app() -> App {
+        App::new(
+            quay_core::Config::default(),
+            quay_core::Lockfile::default(),
+            std::path::PathBuf::from("/tmp"),
+            None,
+        )
     }
 
     #[test]
@@ -1124,11 +938,9 @@ mod tests {
 
     #[test]
     fn failed_state_dismisses_on_any_key() {
-        let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None);
+        let mut app = make_app();
         app.create_push = CreatePushState::Failed {
-            state: Box::new(CreatePushState::Form(FormFields::with_remotes(&[]))),
+            state: Box::new(CreatePushState::Form(build_create_form(&[]))),
             message: "oops".into(),
         };
         handle_key(&mut app, KeyCode::Enter);
@@ -1136,10 +948,8 @@ mod tests {
     }
 
     #[test]
-    fn done_o_key_sets_status_message() {
-        let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None);
+    fn done_o_key_opens_browser_and_sets_status() {
+        let mut app = make_app();
         app.create_push = CreatePushState::Done(PushOutcome {
             skill: "s".into(),
             remote: "r".into(),
@@ -1147,21 +957,24 @@ mod tests {
             version: "0.1.0".into(),
             pr_url: "https://example.com/pr/1".into(),
             pr_auto_created: true,
+            commit_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
         });
         handle_key(&mut app, KeyCode::Char('o'));
         assert!(app.status_message.is_some());
-        assert!(app
-            .status_message
-            .as_ref()
-            .unwrap()
-            .contains("https://example.com/pr/1"));
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(
+            msg.starts_with("opened: "),
+            "expected status to start with 'opened: ', got: {msg}"
+        );
+        assert!(
+            msg.contains("https://example.com/pr/1"),
+            "expected status to contain the URL, got: {msg}"
+        );
     }
 
     #[test]
     fn ready_to_push_bump_cycles_via_b_key() {
-        let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None);
+        let mut app = make_app();
         app.create_push = CreatePushState::ReadyToPush {
             skill: "x".into(),
             path: PathBuf::from("/tmp/x"),
@@ -1181,6 +994,71 @@ mod tests {
         );
     }
 
+    // -- Paste handler tests --
+
+    #[test]
+    fn paste_inserts_into_focused_name_field() {
+        let mut state = CreatePushState::Form(build_create_form(&[]));
+        handle_paste(&mut state, "my-skill");
+        if let CreatePushState::Form(form) = &state {
+            let json = form.to_json();
+            assert_eq!(json["name"].as_str().unwrap_or(""), "my-skill");
+        } else {
+            panic!("wrong state");
+        }
+    }
+
+    #[test]
+    fn paste_inserts_into_description_when_focused() {
+        let mut state = CreatePushState::Form(build_create_form(&[]));
+        // Tab once: name → description.
+        if let CreatePushState::Form(form) = &mut state {
+            let tab = KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            };
+            form.handle_input(tab);
+        }
+        handle_paste(&mut state, "A short description");
+        if let CreatePushState::Form(form) = &state {
+            let json = form.to_json();
+            assert_eq!(
+                json["description"].as_str().unwrap_or(""),
+                "A short description"
+            );
+        } else {
+            panic!("wrong state");
+        }
+    }
+
+    #[test]
+    fn paste_noop_when_not_in_form_state() {
+        let mut state = CreatePushState::ReadyToValidate {
+            skill: "s".into(),
+            path: std::path::PathBuf::from("/tmp/s"),
+        };
+        handle_paste(&mut state, "some text");
+        assert!(matches!(state, CreatePushState::ReadyToValidate { .. }));
+    }
+
+    #[test]
+    fn form_render_does_not_panic() {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let app = make_app();
+        let state = CreatePushState::Form(build_create_form(
+            &["skills-hub", "platform"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        ));
+        term.draw(|f| render(f, &app, f.area(), &state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // Form renders without panic; lib controls content.
+        assert!(buf.area().width > 0);
+    }
+
     // Tests involving scaffold / validate / push transitions that need EDITOR=true
     // are marked #[ignore] because std::env::set_var is not safe to call from
     // multiple concurrent test threads (UB under POSIX).
@@ -1193,15 +1071,46 @@ mod tests {
         let cfg = quay_core::Config::default();
         let lock = quay_core::Lockfile::default();
         let mut app = App::new(cfg, lock, dir.path().to_path_buf(), None);
-        let mut fields = FormFields::with_remotes(&[]);
-        fields.name = "my-skill".into();
-        let mut state = CreatePushState::Form(fields);
+
+        // Build a form with "my-skill" filled in the name field.
+        let mut form = build_create_form(&[]);
+        let chars: Vec<KeyEvent> = "my-skill"
+            .chars()
+            .map(|c| KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            })
+            .collect();
+        for ev in chars {
+            form.handle_input(ev);
+        }
+        // Tab to description, type something.
+        let tab = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        form.handle_input(tab);
+        for ev in "a skill".chars().map(|c| KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }) {
+            form.handle_input(ev);
+        }
+        let mut state = CreatePushState::Form(form);
 
         // SAFETY: single-threaded when run with -- --ignored
         unsafe {
             std::env::set_var("EDITOR", "true");
         }
-        on_save(&mut state, &mut app);
+        // Tab to Submit and press Enter.
+        // We submit name "my-skill" directly via on_save.
+        on_save(&mut state, &mut app, "my-skill");
         unsafe {
             std::env::remove_var("EDITOR");
         }
@@ -1230,6 +1139,7 @@ mod tests {
                 url: "https://example.com/hub.git".into(),
                 default: true,
                 provider: None,
+                push_mode: quay_core::PushMode::default(),
             },
         );
         let lock = quay_core::Lockfile::default();
@@ -1252,7 +1162,6 @@ mod tests {
         let dir = assert_fs::TempDir::new().unwrap();
         let skill_dir = dir.path().join(".agents/skills/bad-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        // Minimal frontmatter missing required fields (description, version).
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: bad-skill\n---\nbody\n",
@@ -1292,7 +1201,6 @@ mod tests {
             "expected Pushing, got: {:?}",
             state
         );
-        // The blocking action was deferred.
         assert!(
             app.next_blocking.is_some(),
             "expected a deferred BlockingAction"

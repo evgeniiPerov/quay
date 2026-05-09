@@ -57,6 +57,11 @@ pub enum QuayError {
     /// The resource the caller tried to create already exists on the filesystem.
     #[error("{0} already exists")]
     AlreadyExists(String),
+    /// A subprocess or operation exceeded its deadline.
+    #[error("operation timed out: {0}")]
+    Timeout(String),
+    #[error("invalid push log at {path}: {reason}")]
+    InvalidPushLog { path: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, QuayError>;
