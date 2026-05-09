@@ -48,36 +48,20 @@ Quay treats skills like packages:
 
 Works for: a Next.js team sharing a `react-perf-review` skill, an org standardising a `pr-description` skill across services, a contractor publishing skills to clients via private GitHub repos.
 
+Requires `git` on `PATH`. `gh` / `glab` / `az` is optional — used to auto-open PRs on `quay push`; without it, push prints a compare URL or runs in `direct` mode if the remote is configured for it.
+
+Supported hub providers: **GitHub.com**, **GitHub Enterprise**, **GitLab** (cloud + self-hosted, nested subgroups), **Bitbucket Cloud**, **Azure DevOps Services**. Auto-detected from URL; override with `quay remote add --provider <kind>`.
+
 ## Status
 
 | Plan | Scope | State |
 |---|---|---|
-| 1 / 1.5 | foundation, read-only CLI | ✅ |
-| 2 / 2.5 | search, outdated, update, sync | ✅ |
-| 3 | create, validate, push (PR-based) | ✅ |
-| 4 | profiles (multi-org) | ✅ |
-| 5 | mirroring (`quay link`) | ✅ |
-| 6 / 6.5 / 6.75 / 6.85 | TUI MVP, settings, create/push, paste-friendly forms | ✅ |
+| 1–5 | foundation, read-only CLI, search, sync, create/validate/push, profiles, mirroring | ✅ |
+| 6 / 6.5 / 6.75 / 6.85 | TUI MVP, settings, create/push, paste-friendly `ratatui-form` | ✅ |
 | 7a | provider abstraction (GitHub / GHE / GitLab / Bitbucket / Azure DevOps) + live `remote test` | ✅ |
+| 7b | packaged releases (cargo-dist, GitHub Releases, Homebrew tap, PowerShell installer) | ✅ |
 | 8 | scan-first flow, format-tolerant push, mixed-format skills | ✅ |
-| 7b | packaged releases (cargo-dist, Homebrew tap) | planned |
-
-**287 tests, 0 clippy warnings, MSRV `stable`.** Plans live in [`docs/superpowers/plans/`](docs/superpowers/plans/). Active design doc: [`docs/superpowers/specs/2026-05-08-quay-cli-design.md`](docs/superpowers/specs/2026-05-08-quay-cli-design.md).
-
-## Install
-
-From source (until Plan 7b ships packaged releases):
-
-```sh
-git clone https://github.com/evgeniiPerov/quay.git
-cd quay/apps/cli
-cargo build --release
-cp target/release/quay ~/.local/bin/   # or anywhere on PATH
-```
-
-Requires the `git` CLI on `PATH`. `gh` is optional — used to auto-open PRs on `quay push`; without it, push prints a compare URL for manual PR creation.
-
-Supported hub providers: **GitHub.com**, **GitHub Enterprise**, **GitLab** (cloud + self-hosted, nested subgroups), **Bitbucket Cloud**, **Azure DevOps Services**. Auto-detected from URL; override with `quay remote add --provider <kind>`.
+| 9 | per-remote `push_mode` (`pr` default, `direct` opt-in via pure git, no provider CLI) | ✅ |
 
 ## Quickstart
 
@@ -149,9 +133,7 @@ apps/cli/                  Rust workspace
 │                          scanner, providers/{github,gitlab,bitbucket,azure})
 ├── crates/quay-cli/       clap subcommands + ratatui TUI
 └── crates/quay/           binary
-docs/superpowers/
-├── specs/                 design docs
-└── plans/                 implementation plans (used by Claude Code agents)
+.github/workflows/         release.yml — cargo-dist matrix + Homebrew publish
 .agents/                   shared agent rules + skills (tool-neutral)
 .claude/                   Claude Code-specific configuration
 ```

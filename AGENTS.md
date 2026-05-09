@@ -84,11 +84,11 @@ When that happens:
 
 Until the trigger is hit, both stacks live here, with path-scoped rules + personas keeping concerns separated.
 
-See [`docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md`](docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md) for the full rationale and migration plan, and the per-directory READMEs in [`.agents/README.md`](.agents/README.md) and [`.claude/README.md`](.claude/README.md).
+Per-directory READMEs: [`.agents/README.md`](.agents/README.md) and [`.claude/README.md`](.claude/README.md). Implementation plans live under `docs/superpowers/` (gitignored — local working notes for agents).
 
 ## Status
 
-Plans 1–7a + 6.85 + 8 + 9 are **implemented**. The CLI provides:
+Plans 1–7a + 6.85 + 7b + 8 + 9 are **implemented** (v0.1.x shipping via cargo-dist). The CLI provides:
 - `init`, `remote add/list/remove` — project setup
 - `remote test <name>` — live test-connection probe (registry.json fetch via git)
 - `remote add ... --provider <kind>` — explicit provider override (github, githubenterprise, gitlab, bitbucket, azuredevops)
@@ -116,9 +116,9 @@ All commands honor `--profile`, `--remote`, and `--json`.
 
 Test status: 286 tests passing (5 ignored env-var/editor/network tests) in `apps/cli/`, 0 clippy warnings, release build succeeds. (Note: 4 pre-existing `cmd_add` integration tests in the binary crate fail when the user has a real `~/.config/quay/config.toml` with conflicting remote names — test isolation gap, not a Plan 9 regression.)
 
-Plan 7b (cargo-dist packaging, GitHub Releases, Homebrew tap) remains, deferred until UX is solid. Plan 10 (test isolation for binary integration tests — override `XDG_CONFIG_HOME` / `--user-config` per test) is a worthwhile next slice.
+Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open follow-ups: Plan 7c (crates.io publish + crate rename), test isolation for `cmd_add.rs` (override `XDG_CONFIG_HOME` / `--user-config` per test), `quay doctor` audit + auto-fix.
 
-**Active design doc:** [`docs/superpowers/specs/2026-05-08-quay-cli-design.md`](docs/superpowers/specs/2026-05-08-quay-cli-design.md)
+**Releases:** <https://github.com/evgeniiPerov/quay/releases> — six target triples (macOS x64+arm64, Linux x64+arm64+musl, Windows x64) + shell + PowerShell + Homebrew installers.
 
 ### Breaking changes (Plan 7a)
 - `QUAY_PROVIDER` environment variable is no longer honored. Set `provider = "<kind>"` in the remote's TOML entry, or run `quay remote edit <name> --provider <kind>` (TUI: Settings → Remotes → `e`). Valid kinds: `github`, `githubenterprise`, `gitlab`, `bitbucket`, `azuredevops`.
