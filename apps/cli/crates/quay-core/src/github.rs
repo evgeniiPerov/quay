@@ -71,7 +71,10 @@ impl GithubRawFetcher {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        let url = format!("{}/{}/{}/{}/{}?_cb={}", base, owner, repo, git_ref, path, cb);
+        let url = format!(
+            "{}/{}/{}/{}/{}?_cb={}",
+            base, owner, repo, git_ref, path, cb
+        );
         let resp = self
             .client
             .get(&url)

@@ -303,7 +303,15 @@ fn handle_form(app: &mut App, code: KeyCode) -> ScreenAction {
             let default = json["default"].as_bool().unwrap_or(false);
             let editing_name = editing.clone();
 
-            match submit_remote(app, &name, &url, provider, push_mode, default, editing_name.as_deref()) {
+            match submit_remote(
+                app,
+                &name,
+                &url,
+                provider,
+                push_mode,
+                default,
+                editing_name.as_deref(),
+            ) {
                 Ok(msg) => {
                     app.set_status(msg);
                     app.settings.remotes.modal = ModalState::Closed;

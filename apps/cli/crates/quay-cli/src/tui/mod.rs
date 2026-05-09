@@ -179,11 +179,8 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
             } else {
                 None
             };
-            let cfg_res = Config::load_resolved(
-                app.user_config_path.as_deref(),
-                project_path_arg,
-                None,
-            );
+            let cfg_res =
+                Config::load_resolved(app.user_config_path.as_deref(), project_path_arg, None);
             let cfg = match cfg_res {
                 Ok(c) => c,
                 Err(e) => {
@@ -191,8 +188,7 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
                     return;
                 }
             };
-            let branch =
-                std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
+            let branch = std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
             let f = GithubRawFetcher::new(branch);
             let mgr = SkillManager::new(&cfg, &f, &f, app.project_root.clone());
             match mgr.add(&skill, remote.as_deref()) {

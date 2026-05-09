@@ -81,15 +81,10 @@ pub fn run(
         &author_email,
     )?;
     if !did_commit {
-        eprintln!(
-            "rebuild-registry: registry.json already matches disk; nothing to push."
-        );
+        eprintln!("rebuild-registry: registry.json already matches disk; nothing to push.");
         let _ = std::fs::remove_dir_all(&clone_root);
         if json {
-            println!(
-                "{}",
-                serde_json::json!({"status": "noop", "skills": found})
-            );
+            println!("{}", serde_json::json!({"status": "noop", "skills": found}));
         }
         return Ok(());
     }

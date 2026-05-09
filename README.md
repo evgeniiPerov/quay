@@ -11,6 +11,30 @@ $ quay push my-skill --bump=patch
 opened PR: https://github.com/acme/skills/pull/142
 ```
 
+## Install
+
+### Homebrew (macOS, Linux)
+
+```sh
+brew install evgeniiPerov/tap/quay
+```
+
+### Manual download
+
+Grab the matching tarball or zip from
+<https://github.com/evgeniiPerov/quay/releases/latest> and extract the
+`quay` binary into a directory on your `PATH`.
+
+### macOS Gatekeeper note
+
+Binaries are unsigned in v0.1. If macOS blocks the binary on first launch:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/quay
+```
+
+…or right-click the binary in Finder once and choose **Open**.
+
 ## Why?
 
 Agents are eating dev workflows, but the **skills** that make them useful (prompts, validators, scaffolds, retry policies) get copy-pasted from project to project, drift, and die in private gists.

@@ -54,9 +54,7 @@ fn print_table(skills: &[LocalSkill]) {
                 format!("installed-modified v{version}")
             }
             ScanStatus::PushedLocal {
-                pr_url,
-                commit_sha,
-                ..
+                pr_url, commit_sha, ..
             } if pr_url.is_empty() => {
                 let short: String = commit_sha.chars().take(8).collect();
                 if short.is_empty() {

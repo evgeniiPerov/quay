@@ -221,8 +221,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             None => "(no remote selected)",
         };
         frame.render_widget(
-            Paragraph::new(msg)
-                .block(Block::default().borders(Borders::ALL).title(preview_title)),
+            Paragraph::new(msg).block(Block::default().borders(Borders::ALL).title(preview_title)),
             cols[1],
         );
         return;
@@ -232,13 +231,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, sk)| {
-            let prefix = if app.browse.focus == BrowseFocus::Skills
-                && i == app.browse.skill_selected
-            {
-                "▌ "
-            } else {
-                "  "
-            };
+            let prefix =
+                if app.browse.focus == BrowseFocus::Skills && i == app.browse.skill_selected {
+                    "▌ "
+                } else {
+                    "  "
+                };
             let line = format!("{prefix}{} v{}  — {}", sk.name, sk.version, sk.description);
             if app.browse.focus == BrowseFocus::Skills && i == app.browse.skill_selected {
                 use ratatui::style::{Color, Modifier, Style};
@@ -262,8 +260,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     frame.render_widget(
-        List::new(skill_items)
-            .block(Block::default().borders(Borders::ALL).title(right_title)),
+        List::new(skill_items).block(Block::default().borders(Borders::ALL).title(right_title)),
         cols[1],
     );
 

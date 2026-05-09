@@ -112,7 +112,10 @@ mod tests {
         assert!(r.skills.contains_key("bar"));
         assert_eq!(r.skills["foo"].path, "skills/foo");
         assert_eq!(r.skills["foo"].files, vec!["SKILL.md".to_string()]);
-        assert_eq!(r.skills["bar"].source_format, crate::scanner::SkillFormat::SlashCommand);
+        assert_eq!(
+            r.skills["bar"].source_format,
+            crate::scanner::SkillFormat::SlashCommand
+        );
     }
 
     #[test]

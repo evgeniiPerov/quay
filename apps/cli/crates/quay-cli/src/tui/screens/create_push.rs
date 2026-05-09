@@ -812,10 +812,7 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
                 Span::styled(short_sha, theme::accent()),
             ]),
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  [b] back to dashboard",
-                theme::dim(),
-            )]),
+            Line::from(vec![Span::styled("  [b] back to dashboard", theme::dim())]),
         ]
     } else {
         // PR-mode summary.

@@ -151,7 +151,16 @@ pub fn run(
                 "version": outcome.version,
                 "pr_url": outcome.pr_url,
                 "pr_auto_created": outcome.pr_auto_created,
+                "commit_sha": outcome.commit_sha,
+                "mode": if outcome.pr_url.is_empty() { "direct" } else { "pr" },
             }))?
+        );
+    } else if outcome.pr_url.is_empty() {
+        // Direct-mode push: no PR was opened.
+        let short_sha: String = outcome.commit_sha.chars().take(8).collect();
+        println!(
+            "pushed direct: {} → {} ({} at {})",
+            outcome.skill, outcome.remote, outcome.branch, short_sha
         );
     } else if outcome.pr_auto_created {
         println!(
