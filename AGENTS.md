@@ -88,7 +88,7 @@ Per-directory READMEs: [`.agents/README.md`](.agents/README.md) and [`.claude/RE
 
 ## Status
 
-Plans 1–7a + 6.85 + 7b + 8 + 9 + 10 + 10c + **10d** are **implemented** (**v0.2.2**). The CLI provides:
+Plans 1–7a + 6.85 + 7b + 8 + 9 + 10 + 10c + 10d + 10e + **10f** are **implemented** (**v0.2.4**). The CLI provides:
 - `init`, `remote add/list/remove` — project setup
 - `remote test <name>` — live test-connection probe (registry.json fetch via git)
 - `remote add ... --provider <kind>` — explicit provider override (github, githubenterprise, gitlab, bitbucket, azuredevops)
@@ -121,6 +121,10 @@ Plan 10 ships filesystem-first model: drops `skills.lock.json`, `quay sync`, `qu
 Plan 10c ships bulk select: TUI `[Space]` toggle on Local/Remote screens; bulk push/pull/delete with `[u]/[U]/[a]/[A]/[d]/[D]` operate over selected rows when non-empty (single-skill flow preserved when picks empty). CLI gains `quay push|add|update -i` interactive `dialoguer::MultiSelect` checkbox prompt; non-TTY fallback exits with a clear error. **v0.2.1.**
 
 Plan 10d ships profile creation UX: `quay profile add -i` interactive wizard (name → email → remote loop → activate, via `dialoguer`); `quay profile add <name> --from-toml <path|->` TOML ingestion from file or stdin; `--remote` is now repeatable with per-remote `--provider`, `--push-mode`, `--default` flags; `ProfileDraft` + `write_to_user_config` is the single canonical persistence path shared by wizard, TOML-ingest, and TUI Onboarding. **v0.2.2.**
+
+Plan 10e adds `quay remove -i` + `--everywhere`. Bare `add`/`push`/`update`/`remove` in a TTY auto-open the multi-select picker. Non-TTY (script/pipe/CI) preserves previous behaviour. `quay update --all` is the explicit escape hatch on TTY. **v0.2.3.**
+
+Plan 10f adds the per-collision prompt to `quay add -i` and TUI Remote `[a]` bulk pull. Three-way batch dialog: **Update all** (overwrite from remote) / **Skip all** (only install new ones) / **Prompt per skill** (per-collision Update/Skip). Pure `build_plan` / `build_plan_with_prompt` functions in `quay-core::add_plan` handle the decision logic. Single-skill `quay add foo` still errors on collision (use `--force`). TUI `[A]` force-pull unchanged. **v0.2.4.**
 
 Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open follow-ups: Plan 7c (crates.io publish + crate rename), test isolation for `cmd_add.rs` (override `XDG_CONFIG_HOME` / `--user-config` per test), `quay doctor` audit + auto-fix.
 

@@ -1,6 +1,11 @@
 use quay_core::{
-    apply_all, CloneFetcher, Config, MirrorAction, QuayError, RegistryFetcher, SkillFileFetcher,
-    SkillManager,
+    add_plan::{
+        build_plan, build_plan_with_prompt, collision_names, CollisionStrategy, SkillAction,
+    },
+    apply_all,
+    push_log::PushLog,
+    scanner::scan_local,
+    CloneFetcher, Config, MirrorAction, QuayError, RegistryFetcher, SkillFileFetcher, SkillManager,
 };
 use std::path::Path;
 
@@ -63,33 +68,184 @@ pub fn run_interactive(
         return Ok(());
     }
 
+    // Collect picked names in order.
+    let pick_names: Vec<&str> = picks.iter().map(|&i| entries[i].0.as_str()).collect();
+
+    // If force is already set, skip collision dialog.
+    let plan: Vec<(String, SkillAction)> = if force {
+        pick_names
+            .iter()
+            .map(|&n| (n.to_string(), SkillAction::UpdateForce))
+            .collect()
+    } else {
+        // Compute collisions against local skills.
+        let config_dir = crate::config_io::default_config_dir();
+        let log = PushLog::load(config_dir.as_deref().unwrap_or(project), Some(project))
+            .unwrap_or_default();
+        let locals = scan_local(project, &log);
+        let collisions = collision_names(&pick_names, &locals);
+
+        if collisions.is_empty() {
+            // No collisions — install everything.
+            pick_names
+                .iter()
+                .map(|&n| (n.to_string(), SkillAction::Install))
+                .collect()
+        } else {
+            // Show collision summary.
+            println!(
+                "{} of {} already exist locally:",
+                collisions.len(),
+                pick_names.len()
+            );
+            for col_name in &collisions {
+                println!("  - {}", col_name);
+            }
+            println!();
+
+            // Determine strategy — env var bypass for tests, dialoguer for real use.
+            let strategy = resolve_collision_strategy()?;
+
+            match strategy {
+                CollisionStrategy::UpdateAll => {
+                    build_plan(&pick_names, &locals, CollisionStrategy::UpdateAll)
+                }
+                CollisionStrategy::SkipAll => {
+                    build_plan(&pick_names, &locals, CollisionStrategy::SkipAll)
+                }
+                CollisionStrategy::PromptEach => {
+                    build_plan_with_prompt(&pick_names, &locals, |name, is_modified| {
+                        let label = if is_modified {
+                            format!("skill `{}` exists locally (modified). What to do?", name)
+                        } else {
+                            format!("skill `{}` exists locally. What to do?", name)
+                        };
+                        let choices = ["Update (overwrite from remote)", "Skip (keep local)"];
+                        // In test environments dialoguer is bypassed via env var.
+                        let idx = dialoguer::Select::new()
+                            .with_prompt(label)
+                            .items(&choices)
+                            .default(0)
+                            .interact()
+                            .unwrap_or(1); // default to Skip on error
+                        if idx == 0 {
+                            SkillAction::UpdateForce
+                        } else {
+                            SkillAction::Skip
+                        }
+                    })
+                }
+            }
+        }
+    };
+
+    // Execute plan.
     let f = CloneFetcher::new();
-    let mut ok = 0usize;
-    let mut fail = 0usize;
-    for idx in &picks {
-        let (skill_name, _, _) = &entries[*idx];
-        match run_with(
-            &cfg,
-            &f,
-            &f,
-            skill_name,
-            Some(remote_name.as_str()),
-            force,
-            project,
-            json,
-        ) {
-            Ok(()) => ok += 1,
-            Err(e) => {
-                eprintln!("\u{2717} {}: {}", skill_name, e);
-                fail += 1;
+    let mut installed = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+
+    for (skill_name, action) in &plan {
+        match action {
+            SkillAction::Skip => {
+                if !json {
+                    println!("- {} skipped", skill_name);
+                }
+                skipped += 1;
+            }
+            SkillAction::Install | SkillAction::UpdateForce => {
+                let do_force = matches!(action, SkillAction::UpdateForce);
+                match run_with(
+                    &cfg,
+                    &f,
+                    &f,
+                    skill_name,
+                    Some(remote_name.as_str()),
+                    do_force,
+                    project,
+                    json,
+                ) {
+                    Ok(()) => {
+                        if do_force {
+                            if !json {
+                                println!("\u{2713} {} updated", skill_name);
+                            }
+                            updated += 1;
+                        } else {
+                            if !json {
+                                println!("\u{2713} {} installed (new)", skill_name);
+                            }
+                            installed += 1;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("\u{2717} {}: {}", skill_name, e);
+                        failed += 1;
+                    }
+                }
             }
         }
     }
 
-    if !json {
-        println!("installed {} of {} selected", ok, ok + fail);
+    if !json && plan.len() > 1 {
+        // Print summary only for multi-pick.
+        let mut parts = Vec::new();
+        if updated > 0 {
+            parts.push(format!("{} updated", updated));
+        }
+        if installed > 0 {
+            parts.push(format!("{} newly installed", installed));
+        }
+        if skipped > 0 {
+            parts.push(format!("{} skipped", skipped));
+        }
+        if failed > 0 {
+            parts.push(format!("{} failed", failed));
+        }
+        if !parts.is_empty() {
+            println!("{}", parts.join(", "));
+        }
+    } else if !json && plan.len() == 1 && failed == 0 {
+        // Single pick: legacy "installed N of N selected"
+        let ok = installed + updated;
+        println!("installed {} of {} selected", ok, ok + failed);
     }
+
     Ok(())
+}
+
+/// Resolve the collision strategy for the bulk-add dialog.
+///
+/// In test mode (env var `QUAY_TEST_COLLISION_STRATEGY` set), parses the
+/// strategy directly.  In real interactive use, presents a `dialoguer::Select`.
+fn resolve_collision_strategy() -> Result<CollisionStrategy, Box<dyn std::error::Error>> {
+    // Test bypass: QUAY_TEST_COLLISION_STRATEGY=update_all|skip_all|prompt_each
+    if let Ok(val) = std::env::var("QUAY_TEST_COLLISION_STRATEGY") {
+        return match val.to_lowercase().as_str() {
+            "update_all" => Ok(CollisionStrategy::UpdateAll),
+            "skip_all" => Ok(CollisionStrategy::SkipAll),
+            "prompt_each" => Ok(CollisionStrategy::PromptEach),
+            other => Err(format!("unknown QUAY_TEST_COLLISION_STRATEGY={}", other).into()),
+        };
+    }
+
+    let options = [
+        "Update all (overwrite from remote)",
+        "Skip all (only install new ones)",
+        "Prompt per skill",
+    ];
+    let idx = dialoguer::Select::new()
+        .with_prompt("What should we do with the existing ones?")
+        .items(&options)
+        .default(0)
+        .interact()?;
+
+    Ok(match idx {
+        0 => CollisionStrategy::UpdateAll,
+        1 => CollisionStrategy::SkipAll,
+        _ => CollisionStrategy::PromptEach,
+    })
 }
 
 pub fn run(

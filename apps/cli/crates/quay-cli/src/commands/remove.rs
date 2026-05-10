@@ -2,10 +2,92 @@
 //!
 //! With `--everywhere`, also pushes a deletion commit to each configured
 //! remote that publishes the skill (requires git + push access).
+//! With `-i` / `--interactive`, opens a multi-select picker over local skills.
 
 use quay_core::{CloneFetcher, Config, SkillManager};
 use serde_json::json;
 use std::path::Path;
+
+/// Remove one or more local skills selected interactively via `dialoguer::MultiSelect`.
+///
+/// When `everywhere` is `true`, prompts for confirmation then pushes a deletion
+/// commit to every remote that publishes each picked skill.
+///
+/// Returns `Err(InteractiveUnavailable)` immediately when stdin is not a TTY.
+#[allow(clippy::too_many_arguments)]
+pub fn run_interactive(
+    everywhere: bool,
+    profile: Option<&str>,
+    project: &Path,
+    user_config: Option<&Path>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let project_config = project.join(".quay/config.toml");
+    let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
+
+    // Check TTY immediately so the caller gets a clear error even if the skill
+    // list is empty — consistent with add/push interactive paths.
+    if !crate::commands::interactive::is_tty() {
+        return Err(Box::new(
+            crate::commands::interactive::InteractiveUnavailable,
+        ));
+    }
+
+    let push_log = quay_core::push_log::PushLog::load(
+        user_config.and_then(|p| p.parent()).unwrap_or(project),
+        Some(project),
+    )
+    .unwrap_or_default();
+    let skills = quay_core::scanner::scan_local(project, &push_log);
+
+    if skills.is_empty() {
+        println!("(no local skills found)");
+        return Ok(());
+    }
+
+    let picks = crate::commands::interactive::pick_many(
+        "Select skills to remove (Space to toggle, Enter to confirm)",
+        &skills,
+        |s| format!("{} v{} ({:?})", s.meta.name, s.meta.version, s.status),
+    )?;
+
+    if picks.is_empty() {
+        println!("(nothing selected)");
+        return Ok(());
+    }
+
+    if everywhere && !picks.is_empty() {
+        let n = picks.len();
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!("delete {n} skill(s) everywhere? y/N"))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            return Ok(());
+        }
+    }
+
+    let f = CloneFetcher::new();
+    let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
+
+    for idx in &picks {
+        let skill_name = &skills[*idx].meta.name;
+        mgr.remove(skill_name)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({"action": "removed", "skill": skill_name}))?
+            );
+        } else {
+            println!("removed {skill_name}");
+        }
+        if everywhere {
+            remove_from_remotes(skill_name, &cfg, project, profile, user_config, json)?;
+        }
+    }
+
+    Ok(())
+}
 
 pub fn run(
     skill: &str,

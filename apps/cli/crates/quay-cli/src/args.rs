@@ -52,10 +52,16 @@ pub enum Command {
     List,
     /// Remove a previously installed skill
     Remove {
-        skill: String,
+        /// Skill name to remove. Omit when using --interactive (-i).
+        #[arg(conflicts_with = "interactive")]
+        skill: Option<String>,
         /// Also push a deletion commit to every remote that publishes the skill.
         #[arg(long)]
         everywhere: bool,
+        /// Open an interactive checkbox list to pick skills to remove.
+        /// Mutually exclusive with the positional skill argument.
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     /// Show metadata for a skill (without installing)
     Info {
@@ -77,15 +83,19 @@ pub enum Command {
     /// Update installed skills to the latest available version
     Update {
         /// Update only this skill; if omitted, updates every installed skill.
-        #[arg(conflicts_with = "interactive")]
+        #[arg(conflicts_with_all = ["interactive", "all"])]
         skill: Option<String>,
         /// Show what would change without writing to disk.
         #[arg(long)]
         dry_run: bool,
         /// Open an interactive checkbox list of outdated skills to update.
         /// Mutually exclusive with the positional skill argument.
-        #[arg(short = 'i', long)]
+        #[arg(short = 'i', long, conflicts_with = "all")]
         interactive: bool,
+        /// Update every installed skill without opening the picker, even in a terminal.
+        /// Explicit bypass for the TTY auto-trigger.
+        #[arg(long, conflicts_with = "interactive")]
+        all: bool,
     },
     /// Discover local skills under `.agents/skills/` and report their sync status.
     Scan {

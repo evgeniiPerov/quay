@@ -42,7 +42,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             force,
             interactive,
         } => {
-            if interactive {
+            use commands::interactive::should_auto_interactive;
+            if should_auto_interactive(skill.is_some(), interactive) {
                 commands::add::run_interactive(
                     remote.as_deref(),
                     force,
@@ -51,8 +52,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     user_config.as_deref(),
                     cli.json,
                 )?;
-            } else {
-                let skill = skill.ok_or("skill name is required when not using --interactive")?;
+            } else if let Some(skill) = skill {
                 commands::add::run(
                     &skill,
                     remote.as_deref(),
@@ -62,17 +62,42 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     user_config.as_deref(),
                     cli.json,
                 )?;
+            } else {
+                return Err(
+                    "skill name required, or pass -i in a terminal\n       use `quay add --help` for usage".into(),
+                );
             }
         }
         Command::List => commands::list::run(&project, cli.json)?,
-        Command::Remove { skill, everywhere } => commands::remove::run(
-            &skill,
+        Command::Remove {
+            skill,
             everywhere,
-            cli.profile.as_deref(),
-            &project,
-            user_config.as_deref(),
-            cli.json,
-        )?,
+            interactive,
+        } => {
+            use commands::interactive::should_auto_interactive;
+            if should_auto_interactive(skill.is_some(), interactive) {
+                commands::remove::run_interactive(
+                    everywhere,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else if let Some(skill) = skill {
+                commands::remove::run(
+                    &skill,
+                    everywhere,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else {
+                return Err(
+                    "skill name required, or pass -i in a terminal\n       use `quay remove --help` for usage".into(),
+                );
+            }
+        }
         Command::Info { skill, remote } => {
             commands::info::run(
                 &skill,
@@ -104,8 +129,20 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             skill,
             dry_run,
             interactive,
+            all,
         } => {
-            if interactive {
+            use commands::interactive::is_tty;
+            if all {
+                // Explicit bypass: update everything without the picker.
+                commands::update::run(
+                    None,
+                    dry_run,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else if interactive {
                 commands::update::run_interactive(
                     dry_run,
                     cli.profile.as_deref(),
@@ -113,15 +150,35 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     user_config.as_deref(),
                     cli.json,
                 )?;
-            } else {
+            } else if let Some(skill) = skill {
                 commands::update::run(
-                    skill.as_deref(),
+                    Some(skill.as_str()),
                     dry_run,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),
                     cli.json,
                 )?;
+            } else {
+                // Bare invocation: TTY → picker, non-TTY → update all.
+                if is_tty() {
+                    commands::update::run_interactive(
+                        dry_run,
+                        cli.profile.as_deref(),
+                        &project,
+                        user_config.as_deref(),
+                        cli.json,
+                    )?;
+                } else {
+                    commands::update::run(
+                        None,
+                        dry_run,
+                        cli.profile.as_deref(),
+                        &project,
+                        user_config.as_deref(),
+                        cli.json,
+                    )?;
+                }
             }
         }
         Command::Scan { root, json } => {
@@ -137,7 +194,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             push_mode,
             interactive,
         } => {
-            if interactive {
+            use commands::interactive::should_auto_interactive;
+            if should_auto_interactive(skill.is_some(), interactive) {
                 commands::push::run_interactive(
                     remote.as_deref(),
                     bump,
@@ -147,8 +205,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     user_config.as_deref(),
                     cli.json,
                 )?;
-            } else {
-                let skill = skill.ok_or("skill name is required when not using --interactive")?;
+            } else if let Some(skill) = skill {
                 commands::push::run(
                     &skill,
                     remote.as_deref(),
@@ -159,6 +216,10 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     user_config.as_deref(),
                     cli.json,
                 )?;
+            } else {
+                return Err(
+                    "skill name required, or pass -i in a terminal\n       use `quay push --help` for usage".into(),
+                );
             }
         }
         Command::Profile { action } => {

@@ -92,9 +92,70 @@ pub(crate) fn is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
+/// Decide whether to enter interactive (picker) mode.
+///
+/// Returns `true` when the caller should open the multi-select picker.
+///
+/// Rules:
+/// - If `-i` / `--interactive` was passed explicitly, always return `true`.
+/// - If a positional skill name was given, return `false` (name wins).
+/// - Otherwise: open the picker only when stdin is a TTY (bare invocation in
+///   a terminal). Non-TTY (CI, pipe, redirect) returns `false` so the caller
+///   can emit the "name required" error.
+pub(crate) fn should_auto_interactive(name_present: bool, explicit_i: bool) -> bool {
+    should_auto_interactive_with_tty(name_present, explicit_i, is_tty())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn should_auto_interactive_with_tty(name_present: bool, explicit_i: bool, tty: bool) -> bool {
+    if explicit_i {
+        return true;
+    }
+    if name_present {
+        return false;
+    }
+    tty
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check(name: bool, explicit_i: bool, tty: bool, expected: bool, label: &str) {
+        let result = should_auto_interactive_with_tty(name, explicit_i, tty);
+        assert_eq!(result, expected, "{label}");
+    }
+
+    #[test]
+    fn auto_interactive_truth_table() {
+        // (name_present, explicit_i, tty)  → expected
+        check(true, true, true, true, "name + i + tty: i wins");
+        check(
+            true,
+            true,
+            false,
+            true,
+            "name + i + non-tty: i wins, will error later",
+        );
+        check(true, false, true, false, "name + tty: name wins");
+        check(true, false, false, false, "name + non-tty: name wins");
+        check(false, true, true, true, "i + tty: i wins");
+        check(
+            false,
+            true,
+            false,
+            true,
+            "i + non-tty: i wins, will error later",
+        );
+        check(
+            false,
+            false,
+            true,
+            true,
+            "bare + tty: auto-interactive (NEW default)",
+        );
+        check(false, false, false, false, "bare + non-tty: error");
+    }
 
     /// In the test environment stdin is a pipe (not a TTY), so `pick_many` must
     /// return `InteractiveUnavailable` without attempting to open a prompt.

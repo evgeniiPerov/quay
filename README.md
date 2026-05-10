@@ -164,7 +164,54 @@ The same workflow is available from the CLI:
 quay push -i      # checkbox list of local skills
 quay add  -i      # checkbox list of remote registry rows
 quay update -i    # checkbox list of outdated skills
+quay remove -i    # checkbox list of local skills to delete
 ```
+
+### Bulk add — collision handling
+
+When some of your selected skills already exist locally, `quay add -i`
+asks once how to handle the conflict:
+
+```
+3 of 5 already exist locally:
+  - foo (modified)
+  - bar (clean)
+  - baz (clean)
+
+? What should we do with the existing ones?
+  ◉ Update all (overwrite from remote)
+  ◯ Skip all (only install new ones)
+  ◯ Prompt per skill
+```
+
+Choosing **Prompt per skill** shows a per-collision mini-prompt with
+**Update** / **Skip** choices for each skill.
+
+The same flow appears in the TUI Remote screen when you press `[a]` over
+a selection that includes already-installed skills — a three-way modal
+(Up/Down + Enter) replaces the old "skip blocked, pull rest" behaviour.
+
+`quay add foo` (single-skill) still errors on collision; pass `--force`
+to overwrite. TUI `[A]` force-pull (whole selection) is unchanged.
+
+### Interactive defaults
+
+In a terminal, bare invocations of `add`, `push`, `update`, `remove` open
+a multi-select picker:
+
+| Command | `name foo` | `-i` | bare TTY | bare non-TTY |
+|---|---|---|---|---|
+| `add` | install foo | picker | picker | error |
+| `push` | push foo | picker | picker | error |
+| `remove` | rm foo | picker | picker | error |
+| `update` | update foo | picker | picker | update all |
+
+`update` is the only command where bare non-TTY does work — it updates
+every installed skill. Use `update --all` to force this behaviour even
+on a TTY.
+
+Pipe / redirect / CI runners always count as non-TTY, so scripts that
+ran without args before keep working unchanged.
 
 See [`apps/cli/README.md`](apps/cli/README.md) for the full command list and `--json` output examples.
 
