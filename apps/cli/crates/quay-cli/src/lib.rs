@@ -36,10 +36,15 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             cli.profile.as_deref(),
             cli.json,
         )?,
-        Command::Add { skill, remote } => {
+        Command::Add {
+            skill,
+            remote,
+            force,
+        } => {
             commands::add::run(
                 &skill,
                 remote.as_deref(),
+                force,
                 cli.profile.as_deref(),
                 &project,
                 user_config.as_deref(),
@@ -47,8 +52,9 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Command::List => commands::list::run(&project, cli.json)?,
-        Command::Remove { skill } => commands::remove::run(
+        Command::Remove { skill, everywhere } => commands::remove::run(
             &skill,
+            everywhere,
             cli.profile.as_deref(),
             &project,
             user_config.as_deref(),
@@ -85,22 +91,6 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             commands::update::run(
                 skill.as_deref(),
                 dry_run,
-                cli.profile.as_deref(),
-                &project,
-                user_config.as_deref(),
-                cli.json,
-            )?;
-        }
-        Command::Sync => commands::sync::run(
-            &project,
-            cli.profile.as_deref(),
-            user_config.as_deref(),
-            cli.json,
-        )?,
-        Command::Create { name, author } => {
-            commands::create::run(
-                &name,
-                author.as_deref(),
                 cli.profile.as_deref(),
                 &project,
                 user_config.as_deref(),
@@ -159,5 +149,5 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn default_user_config_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config/quay/config.toml"))
+    config_io::default_config_dir().map(|d| d.join("config.toml"))
 }

@@ -88,17 +88,15 @@ fn push_creates_branch_in_bare_repo() {
     );
     std::fs::write(cfg_path.path(), cfg_text).unwrap();
 
-    // Create a skill, fill in description, push.
-    Command::cargo_bin("quay")
-        .unwrap()
-        .args(["--project", p, "create", "csv-parse"])
-        .assert()
-        .success();
+    // Write the skill file directly (quay create was removed in 0.2.0).
+    let skill_dir = project.child(".agents/skills/csv-parse");
+    std::fs::create_dir_all(skill_dir.path()).unwrap();
     let md = project.child(".agents/skills/csv-parse/SKILL.md");
-    let body = std::fs::read_to_string(md.path())
-        .unwrap()
-        .replace("description: \n", "description: Parse CSV\n");
-    std::fs::write(md.path(), body).unwrap();
+    std::fs::write(
+        md.path(),
+        "---\nname: csv-parse\ndescription: Parse CSV\nversion: 0.1.0\ntags: []\n---\nbody\n",
+    )
+    .unwrap();
 
     Command::cargo_bin("quay")
         .unwrap()

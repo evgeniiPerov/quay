@@ -10,16 +10,15 @@ fn validate_passes_for_well_formed_skill() {
         .args(["--project", p, "init"])
         .assert()
         .success();
-    Command::cargo_bin("quay")
-        .unwrap()
-        .args(["--project", p, "create", "csv-parse"])
-        .assert()
-        .success();
-    // Fill in description so validate passes (template description is empty).
+    // Write skill file directly (quay create was removed in 0.2.0).
+    let skill_dir = dir.child(".agents/skills/csv-parse");
+    std::fs::create_dir_all(skill_dir.path()).unwrap();
     let md = dir.child(".agents/skills/csv-parse/SKILL.md");
-    let mut body = std::fs::read_to_string(md.path()).unwrap();
-    body = body.replace("description: \n", "description: Parse CSV\n");
-    std::fs::write(md.path(), body).unwrap();
+    std::fs::write(
+        md.path(),
+        "---\nname: csv-parse\ndescription: Parse CSV\nversion: 0.1.0\ntags: []\n---\nbody\n",
+    )
+    .unwrap();
     Command::cargo_bin("quay")
         .unwrap()
         .args(["--project", p, "validate", "csv-parse"])

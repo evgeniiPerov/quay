@@ -454,7 +454,7 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 mod tests {
     use super::*;
     use assert_fs::prelude::*;
-    use quay_core::{Config, Lockfile};
+    use quay_core::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -472,7 +472,6 @@ mod tests {
 
         let mut a = App::new(
             Config::default(),
-            Lockfile::default(),
             dir.path().to_path_buf(),
             Some(user_path.path().to_path_buf()),
         );

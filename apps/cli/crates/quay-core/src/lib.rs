@@ -1,12 +1,12 @@
 //! Quay domain logic.
 
+pub mod clone_fetcher;
 pub mod config;
 pub mod error;
 pub mod fetcher;
 pub mod git;
 pub mod github;
 pub mod linker;
-pub mod lockfile;
 pub mod manager;
 pub mod manifest;
 pub mod outdated;
@@ -19,21 +19,24 @@ pub mod registry_builder;
 pub mod scanner;
 pub mod search;
 
+pub use clone_fetcher::CloneFetcher;
 pub use config::{
-    Config, InstallConfig, MetaSection, MirrorConfig, MirrorStrategy, ProfileFile,
+    Config, InstallConfig, MetaSection, MirrorConfig, MirrorRoot, MirrorStrategy, ProfileFile,
     ProjectConfigFile, PushMode, RemoteConfig, UserConfigFile, UserSection,
 };
 pub use error::{QuayError, Result};
 pub use fetcher::{RegistryFetcher, SkillFileFetcher};
 pub use git::{GitClient, GitShellClient};
+/// Legacy HTTP fetcher for GitHub raw URLs. Kept for backward compatibility;
+/// prefer [`CloneFetcher`] for new code.
+#[deprecated(since = "0.2.0", note = "use CloneFetcher instead")]
 pub use github::GithubRawFetcher;
 #[cfg(debug_assertions)]
 pub use github::GithubRawFetcherWithBase;
 pub use linker::{apply_all, apply_one, check, MirrorAction, MirrorDrift};
-pub use lockfile::{LockedFile, LockedRemote, LockedSkill, Lockfile};
-pub use manager::{sha256_hex, RefetchedFile, SkillManager};
+pub use manager::{sha256_hex, SkillManager};
 pub use manifest::{parse_skill, QuayMeta, SkillManifest};
-pub use outdated::{outdated, OutdatedEntry};
+pub use outdated::{outdated_for_local, OutdatedEntry};
 #[cfg(any(test, debug_assertions))]
 pub use provider::FakeOpener;
 pub use provider::{

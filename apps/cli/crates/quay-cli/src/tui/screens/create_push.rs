@@ -4,6 +4,10 @@
 //! `Form` → `ScaffoldRunning` → `Editing` → `ReadyToValidate` → `Validating`
 //!   → `ValidateErrors` | `ReadyToPush` → `Pushing` → `Done`
 //!
+//! `PushModal` is a lightweight push-existing-skill form launched from Local
+//! `[u]`/`[U]`: it collects Tags, Bump, and Target remote, then transitions to
+//! `ReadyToPush` → `Pushing` → `Done` exactly like the create flow.
+//!
 //! Error recovery: `Failed { state, message }` renders a banner and transitions
 //! back to the prior stable state on any key press.
 
@@ -64,10 +68,11 @@ impl BumpChoice {
 }
 
 // ---------------------------------------------------------------------------
-// Form builder
+// Form builders
 // ---------------------------------------------------------------------------
 
-/// Build the Create Skill frontmatter form.
+/// Build the Create Skill frontmatter form (used by the Dashboard `[u]` shortcut
+/// and the global `[c]` hotkey in older plans).
 ///
 /// If `remotes` is non-empty, a `Select` field is appended for the target
 /// remote.  If it is empty, the select field is omitted.
@@ -98,10 +103,93 @@ pub fn build_create_form(remotes: &[String]) -> Form {
     b.build()
 }
 
-/// Build a fresh form pre-populated from the app's current config remotes.
+/// Build a fresh create form pre-populated from the app's current config remotes.
 pub fn build_create_form_from_app(app: &App) -> Form {
     let remotes: Vec<String> = app.cfg.remotes.keys().cloned().collect();
     build_create_form(&remotes)
+}
+
+/// Build the Push Existing Skill form launched from Local `[u]`/`[U]`.
+///
+/// Fields (in order):
+/// - Tags (text, comma-separated, pre-filled from skill frontmatter)
+/// - Bump (select: patch / minor / major / as-written)
+/// - Target remote (select over configured remotes; omitted when empty)
+///
+/// The form title is `Push <skill_name>` with the actual name embedded.
+pub fn build_push_form(skill_name: &str, tags_initial: &str, remotes: &[String]) -> Form {
+    let title = format!(" Push {} ", skill_name);
+    let mut b = Form::builder()
+        .title(title)
+        .style(crate::tui::form_theme::dark())
+        .text("tags", "Tags (comma-separated)")
+        .initial_value(tags_initial)
+        .done()
+        .select("bump", "Bump")
+        .options(vec![
+            ("patch", "Patch  (0.1.0 \u{2192} 0.1.1)"),
+            ("minor", "Minor  (0.1.0 \u{2192} 0.2.0)"),
+            ("major", "Major  (0.1.0 \u{2192} 1.0.0)"),
+            ("as-written", "As-written (no version change)"),
+        ])
+        .initial_value("patch")
+        .done();
+    if !remotes.is_empty() {
+        let options: Vec<(&str, &str)> = remotes.iter().map(|s| (s.as_str(), s.as_str())).collect();
+        b = b
+            .select("remote", "Target remote")
+            .options(options)
+            .initial_value(remotes[0].as_str())
+            .done();
+    }
+    b.build()
+}
+
+/// Build a push form pre-populated from the app's config remotes.
+pub fn build_push_form_from_app(skill_name: &str, tags_initial: &str, app: &App) -> Form {
+    let remotes: Vec<String> = app.cfg.remotes.keys().cloned().collect();
+    build_push_form(skill_name, tags_initial, &remotes)
+}
+
+/// Build a push-existing form launched from Local `[U]`.
+///
+/// Like [`build_push_form`] but accepts an explicit remote list and a
+/// `default_remote` to pre-select.  When `default_remote` is `None` the
+/// first remote in `remotes` is pre-selected (same behaviour as
+/// [`build_push_form`]).
+pub fn build_push_existing_form(
+    skill_name: &str,
+    tags: &[String],
+    remotes: &[String],
+    default_remote: Option<&str>,
+) -> Box<Form> {
+    let tags_initial = tags.join(", ");
+    let title = format!(" Push {} ", skill_name);
+    let mut b = Form::builder()
+        .title(title)
+        .style(crate::tui::form_theme::dark())
+        .text("tags", "Tags (comma-separated)")
+        .initial_value(tags_initial.as_str())
+        .done()
+        .select("bump", "Bump")
+        .options(vec![
+            ("patch", "Patch  (0.1.0 \u{2192} 0.1.1)"),
+            ("minor", "Minor  (0.1.0 \u{2192} 0.2.0)"),
+            ("major", "Major  (0.1.0 \u{2192} 1.0.0)"),
+            ("as-written", "As-written (no version change)"),
+        ])
+        .initial_value("patch")
+        .done();
+    if !remotes.is_empty() {
+        let initial = default_remote.unwrap_or(remotes[0].as_str());
+        let options: Vec<(&str, &str)> = remotes.iter().map(|s| (s.as_str(), s.as_str())).collect();
+        b = b
+            .select("remote", "Target remote")
+            .options(options)
+            .initial_value(initial)
+            .done();
+    }
+    Box::new(b.build())
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +198,20 @@ pub fn build_create_form_from_app(app: &App) -> Form {
 
 /// Full state machine for Screen 5.
 pub enum CreatePushState {
-    /// Collecting frontmatter from the user via `ratatui-form`.
+    /// Collecting frontmatter from the user via `ratatui-form` (create flow).
     Form(ratatui_form::Form),
+    /// Push-existing-skill modal: collects Tags, Bump, Target remote.
+    ///
+    /// Launched from Local `[u]`/`[U]`. Esc returns to Local; submit transitions
+    /// to `ReadyToPush` (which re-uses the shared push pipeline).
+    PushModal {
+        /// Display name of the skill being pushed.
+        skill_name: String,
+        /// Absolute path to the skill's canonical `SKILL.md`.
+        skill_path: PathBuf,
+        /// The ratatui-form collecting Tags + Bump + Target remote.
+        form: Box<ratatui_form::Form>,
+    },
     /// Scaffold is running (fast disk write — this state is mostly a visual
     /// marker; we transition through it synchronously before entering `Editing`).
     ScaffoldRunning,
@@ -144,6 +244,18 @@ pub enum CreatePushState {
     },
     /// Push succeeded.
     Done(PushOutcome),
+    /// Push-existing form launched from Local `[U]` (simplified variant used
+    /// when skill path is resolved upstream in Local).
+    ///
+    /// `skill` is the skill name; `form` is the pre-built form box from
+    /// [`build_push_existing_form`].  Esc returns to Local; submit transitions
+    /// to `ReadyToPush`.
+    PushExistingForm {
+        /// Display name of the skill being pushed.
+        skill: String,
+        /// The ratatui-form collecting Tags + Bump + Target remote.
+        form: Box<ratatui_form::Form>,
+    },
     /// An operation failed; `message` is shown as a banner.  The boxed `state`
     /// is the prior stable state we will return to on acknowledgement.
     Failed {
@@ -156,6 +268,9 @@ impl std::fmt::Debug for CreatePushState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CreatePushState::Form(_) => write!(f, "Form(...)"),
+            CreatePushState::PushModal { skill_name, .. } => {
+                write!(f, "PushModal({})", skill_name)
+            }
             CreatePushState::ScaffoldRunning => write!(f, "ScaffoldRunning"),
             CreatePushState::Editing { skill, path } => f
                 .debug_struct("Editing")
@@ -205,6 +320,9 @@ impl std::fmt::Debug for CreatePushState {
                 .field("remote", remote)
                 .field("bump", bump)
                 .finish(),
+            CreatePushState::PushExistingForm { skill, .. } => {
+                write!(f, "PushExistingForm({})", skill)
+            }
             CreatePushState::Done(o) => write!(f, "Done({:?})", o),
             CreatePushState::Failed { message, .. } => {
                 f.debug_struct("Failed").field("message", message).finish()
@@ -220,6 +338,17 @@ impl CreatePushState {
             spinner.advance();
         }
     }
+
+    /// Returns `true` when this state is a `PushModal` (i.e. came from Local `[u]`).
+    ///
+    /// Used by the event loop so it does not clobber a pre-populated push form
+    /// when switching to `Screen::CreatePush`.
+    pub fn is_push_modal(&self) -> bool {
+        matches!(
+            self,
+            CreatePushState::PushModal { .. } | CreatePushState::PushExistingForm { .. }
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +357,27 @@ impl CreatePushState {
 
 /// Insert a pasted string into the currently focused text field of the form.
 ///
-/// Only the `Form` state accepts paste; all other states in the state machine
-/// (scaffold running, editing, validating, etc.) silently drop the paste.
+/// Only the `Form` and `PushModal` states accept paste; all other states in
+/// the state machine silently drop the paste.
 pub fn handle_paste(state: &mut CreatePushState, s: &str) {
-    if let CreatePushState::Form(form) = state {
-        let events = crate::tui::paste_to_key_events(s);
-        for ev in events {
-            form.handle_input(ev);
+    let events = crate::tui::paste_to_key_events(s);
+    match state {
+        CreatePushState::Form(form) => {
+            for ev in events {
+                form.handle_input(ev);
+            }
         }
+        CreatePushState::PushModal { form, .. } => {
+            for ev in events {
+                form.handle_input(ev);
+            }
+        }
+        CreatePushState::PushExistingForm { form, .. } => {
+            for ev in events {
+                form.handle_input(ev);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -265,6 +407,8 @@ fn handle_key_inner(state: &mut CreatePushState, app: &mut App, code: KeyCode) -
     let discriminant = state_discriminant(state);
     match discriminant {
         StateKind::Form => handle_form(state, app, code),
+        StateKind::PushModal => handle_push_modal(state, app, code),
+        StateKind::PushExistingForm => handle_push_existing_form(state, app, code),
         StateKind::ReadyToValidate => handle_ready_to_validate(state, app, code),
         StateKind::ValidateErrors => handle_validate_errors(state, app, code),
         StateKind::ReadyToPush => handle_ready_to_push(state, app, code),
@@ -293,6 +437,8 @@ fn handle_key_inner(state: &mut CreatePushState, app: &mut App, code: KeyCode) -
 #[derive(Debug, Clone, Copy)]
 enum StateKind {
     Form,
+    PushModal,
+    PushExistingForm,
     ReadyToValidate,
     ValidateErrors,
     ReadyToPush,
@@ -304,6 +450,8 @@ enum StateKind {
 fn state_discriminant(state: &CreatePushState) -> StateKind {
     match state {
         CreatePushState::Form(_) => StateKind::Form,
+        CreatePushState::PushModal { .. } => StateKind::PushModal,
+        CreatePushState::PushExistingForm { .. } => StateKind::PushExistingForm,
         CreatePushState::ReadyToValidate { .. } => StateKind::ReadyToValidate,
         CreatePushState::ValidateErrors { .. } => StateKind::ValidateErrors,
         CreatePushState::ReadyToPush { .. } => StateKind::ReadyToPush,
@@ -319,7 +467,7 @@ fn handle_form(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> Scr
         return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
     }
 
-    // Translate BackTab → Tab + SHIFT (ratatui-form checks modifiers).
+    // Translate BackTab -> Tab + SHIFT (ratatui-form checks modifiers).
     let (key_code, modifiers) = if code == KeyCode::BackTab {
         (KeyCode::Tab, KeyModifiers::SHIFT)
     } else {
@@ -359,6 +507,177 @@ fn handle_form(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> Scr
             }
             FormResult::Cancelled => {
                 return ScreenAction::SwitchTo(crate::tui::app::Screen::Dashboard);
+            }
+            FormResult::Active => {}
+        }
+    }
+    ScreenAction::Stay
+}
+
+/// Handle keys for the push-existing-skill modal form.
+///
+/// Esc returns to Local without changes. Submit writes updated tags to disk
+/// and transitions to `ReadyToPush`.
+fn handle_push_modal(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> ScreenAction {
+    // Intercept Esc — return to Local screen, no changes.
+    if code == KeyCode::Esc {
+        return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
+    }
+
+    let (key_code, modifiers) = if code == KeyCode::BackTab {
+        (KeyCode::Tab, KeyModifiers::SHIFT)
+    } else {
+        (code, KeyModifiers::NONE)
+    };
+    let key_event = KeyEvent {
+        code: key_code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+
+    if let CreatePushState::PushModal {
+        skill_name,
+        skill_path,
+        form,
+    } = state
+    {
+        form.handle_input(key_event);
+
+        match form.result() {
+            FormResult::Submitted => {
+                let json = form.to_json();
+                let tags_raw = json["tags"].as_str().unwrap_or("").trim().to_string();
+                let bump_str = json["bump"].as_str().unwrap_or("patch");
+                let remote = json
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let bump = match bump_str {
+                    "minor" => BumpChoice::Minor,
+                    "major" => BumpChoice::Major,
+                    "as-written" => BumpChoice::AsWritten,
+                    _ => BumpChoice::Patch,
+                };
+
+                let skill = skill_name.clone();
+                let path = skill_path.clone();
+
+                // Write updated tags back to the local SKILL.md.
+                if let Err(e) = update_tags_in_skill_md(&path, &tags_raw) {
+                    let prior = CreatePushState::PushModal {
+                        skill_name: skill.clone(),
+                        skill_path: path.clone(),
+                        form: Box::new(build_push_form_from_app(&skill, &tags_raw, app)),
+                    };
+                    *state = CreatePushState::Failed {
+                        state: Box::new(prior),
+                        message: format!("could not update tags: {}", e),
+                    };
+                    return ScreenAction::Stay;
+                }
+
+                *state = CreatePushState::ReadyToPush {
+                    skill,
+                    path,
+                    remote,
+                    bump,
+                };
+            }
+            FormResult::Cancelled => {
+                return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
+            }
+            FormResult::Active => {}
+        }
+    }
+    ScreenAction::Stay
+}
+
+/// Handle keys for the `PushExistingForm` state.
+///
+/// Esc returns to Local. Submit writes updated tags to disk (deriving the path
+/// from `app.project_root`) and transitions to `ReadyToPush`.
+fn handle_push_existing_form(
+    state: &mut CreatePushState,
+    app: &mut App,
+    code: KeyCode,
+) -> ScreenAction {
+    if code == KeyCode::Esc {
+        return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
+    }
+
+    let (key_code, modifiers) = if code == KeyCode::BackTab {
+        (KeyCode::Tab, KeyModifiers::SHIFT)
+    } else {
+        (code, KeyModifiers::NONE)
+    };
+    let key_event = KeyEvent {
+        code: key_code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+
+    if let CreatePushState::PushExistingForm { skill, form } = state {
+        form.handle_input(key_event);
+
+        match form.result() {
+            FormResult::Submitted => {
+                let json = form.to_json();
+                let tags_raw = json["tags"].as_str().unwrap_or("").trim().to_string();
+                let bump_str = json["bump"].as_str().unwrap_or("patch");
+                let remote = json
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let bump = match bump_str {
+                    "minor" => BumpChoice::Minor,
+                    "major" => BumpChoice::Major,
+                    "as-written" => BumpChoice::AsWritten,
+                    _ => BumpChoice::Patch,
+                };
+
+                let skill_name = skill.clone();
+                let skill_path = app
+                    .project_root
+                    .join(".agents/skills")
+                    .join(&skill_name)
+                    .join("SKILL.md");
+
+                if let Err(e) = update_tags_in_skill_md(&skill_path, &tags_raw) {
+                    let remotes: Vec<String> = app.cfg.remotes.keys().cloned().collect();
+                    let default_remote = app.cfg.default_remote().map(|(r, _)| r.to_string());
+                    let tag_vec: Vec<String> =
+                        tags_raw.split(',').map(|s| s.trim().to_string()).collect();
+                    let prior = CreatePushState::PushExistingForm {
+                        skill: skill_name.clone(),
+                        form: build_push_existing_form(
+                            &skill_name,
+                            &tag_vec,
+                            &remotes,
+                            default_remote.as_deref(),
+                        ),
+                    };
+                    *state = CreatePushState::Failed {
+                        state: Box::new(prior),
+                        message: format!("could not update tags: {}", e),
+                    };
+                    return ScreenAction::Stay;
+                }
+
+                *state = CreatePushState::ReadyToPush {
+                    skill: skill_name,
+                    path: skill_path,
+                    remote,
+                    bump,
+                };
+            }
+            FormResult::Cancelled => {
+                return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
             }
             FormResult::Active => {}
         }
@@ -436,8 +755,7 @@ fn handle_done(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> Scr
         KeyCode::Char('o') => {
             if let CreatePushState::Done(outcome) = state {
                 if outcome.pr_url.is_empty() {
-                    // Direct-mode push: no PR URL to open. Provider-specific commit URL is
-                    // out of scope for this plan — surface a helpful status instead.
+                    // Direct-mode push: no PR URL to open.
                     app.set_status("direct push: no PR URL (commit on hub default branch)");
                 } else {
                     match open_url(&outcome.pr_url) {
@@ -458,34 +776,99 @@ fn handle_done(state: &mut CreatePushState, app: &mut App, code: KeyCode) -> Scr
 }
 
 // ---------------------------------------------------------------------------
+// Tags update helper
+// ---------------------------------------------------------------------------
+
+/// Rewrite the `tags:` line in the YAML frontmatter of `path`.
+///
+/// Parses a comma-separated `tags_raw` string into a list, then rewrites the
+/// SKILL.md file with the updated frontmatter.  If `tags_raw` is empty or
+/// all-whitespace, tags are written as an empty list `tags: []`.
+///
+/// Does nothing and returns `Ok(())` if the file does not have YAML frontmatter.
+fn update_tags_in_skill_md(path: &std::path::Path, tags_raw: &str) -> std::io::Result<()> {
+    let raw = std::fs::read_to_string(path)?;
+
+    let trimmed = raw.trim_start_matches('\u{feff}');
+    let Some(rest) = trimmed.strip_prefix("---\n") else {
+        // Not a frontmatter skill — leave it alone.
+        return Ok(());
+    };
+    let Some((yaml, body)) = rest.split_once("\n---\n") else {
+        return Ok(());
+    };
+
+    let new_tags: Vec<String> = tags_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid frontmatter YAML: {e}"),
+        )
+    })?;
+
+    if let serde_yaml::Value::Mapping(ref mut map) = doc {
+        let tag_key = serde_yaml::Value::String("tags".into());
+        let tag_val = serde_yaml::Value::Sequence(
+            new_tags
+                .iter()
+                .map(|t| serde_yaml::Value::String(t.clone()))
+                .collect(),
+        );
+        map.insert(tag_key, tag_val);
+    }
+
+    let new_yaml = serde_yaml::to_string(&doc).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("could not serialize frontmatter: {e}"),
+        )
+    })?;
+
+    let new_content = format!("---\n{}\n---\n{}", new_yaml.trim_end(), body);
+    std::fs::write(path, new_content)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // State transition helpers
 // ---------------------------------------------------------------------------
 
 fn on_save(state: &mut CreatePushState, app: &mut App, name: &str) {
-    match commands::create::scaffold(
-        name,
-        None,
-        app.cfg.user.email.as_deref(),
-        &app.project_root,
-        app.user_config_path.as_deref(),
-    ) {
-        Ok(outcome) => {
-            // Suspend TUI and open editor.
-            match crate::tui::editor::run_editor(&outcome.skill_md_path) {
-                Ok(()) => {
-                    *state = CreatePushState::ReadyToValidate {
-                        skill: outcome.skill,
-                        path: outcome.skill_md_path,
-                    };
-                }
-                Err(e) => {
-                    *state = CreatePushState::Failed {
-                        state: Box::new(CreatePushState::Form(build_create_form_from_app(app))),
-                        message: format!("editor: {}", e),
-                    };
-                }
-            }
+    // Write a skeleton SKILL.md for the user to edit.
+    let skill_dir = app.project_root.join(".agents/skills").join(name);
+    let skill_md_path = skill_dir.join("SKILL.md");
+
+    let write_result = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&skill_dir)?;
+        if !skill_md_path.exists() {
+            let template = format!(
+                "---\nname: {name}\ndescription: \"\"\nversion: 0.1.0\ntags: []\n---\n\n# {name}\n\nDescribe what this skill does.\n"
+            );
+            std::fs::write(&skill_md_path, template)?;
         }
+        Ok(())
+    })();
+
+    match write_result {
+        Ok(()) => match crate::tui::editor::run_editor(&skill_md_path) {
+            Ok(()) => {
+                *state = CreatePushState::ReadyToValidate {
+                    skill: name.to_string(),
+                    path: skill_md_path,
+                };
+            }
+            Err(e) => {
+                *state = CreatePushState::Failed {
+                    state: Box::new(CreatePushState::Form(build_create_form_from_app(app))),
+                    message: format!("editor: {}", e),
+                };
+            }
+        },
         Err(e) => {
             *state = CreatePushState::Failed {
                 state: Box::new(CreatePushState::Form(build_create_form_from_app(app))),
@@ -585,7 +968,6 @@ fn on_push(state: &mut CreatePushState, app: &mut App) {
         _ => return,
     };
 
-    // Transition to Pushing state first so the spinner renders.
     *state = CreatePushState::Pushing {
         skill: skill.clone(),
         remote: remote.clone(),
@@ -594,8 +976,6 @@ fn on_push(state: &mut CreatePushState, app: &mut App) {
         spinner: Spinner::default(),
     };
 
-    // Defer the actual blocking push so the event loop renders the spinner
-    // at least once before freezing.
     app.defer_blocking_action(BlockingAction::Push {
         skill,
         remote,
@@ -604,7 +984,6 @@ fn on_push(state: &mut CreatePushState, app: &mut App) {
 }
 
 fn dismiss_failure(state: &mut CreatePushState, app: &mut App) {
-    // Replace `state` with the boxed prior state.
     let placeholder = CreatePushState::Form(build_create_form_from_app(app));
     let old = std::mem::replace(state, placeholder);
     if let CreatePushState::Failed { state: prior, .. } = old {
@@ -620,17 +999,23 @@ fn dismiss_failure(state: &mut CreatePushState, app: &mut App) {
 pub fn render(frame: &mut Frame, app: &App, area: Rect, state: &CreatePushState) {
     match state {
         CreatePushState::Form(form) => form.render(area, frame.buffer_mut()),
+        CreatePushState::PushModal { form, .. } => form.render(area, frame.buffer_mut()),
+        CreatePushState::PushExistingForm { form, .. } => form.render(area, frame.buffer_mut()),
         CreatePushState::ScaffoldRunning => {
             render_placeholder(frame, area, "Creating scaffold...");
         }
         CreatePushState::Editing { skill, .. } => {
-            render_placeholder(frame, area, &format!("Editing {} in $EDITOR…", skill));
+            render_placeholder(
+                frame,
+                area,
+                &format!("Editing {} in $EDITOR\u{2026}", skill),
+            );
         }
         CreatePushState::ReadyToValidate { skill, .. } => {
             render_ready_to_validate(frame, area, skill);
         }
         CreatePushState::Validating { skill, .. } => {
-            render_placeholder(frame, area, &format!("Validating {}…", skill));
+            render_placeholder(frame, area, &format!("Validating {}\u{2026}", skill));
         }
         CreatePushState::ValidateErrors { skill, errors, .. } => {
             render_validate_errors(frame, area, skill, errors);
@@ -700,7 +1085,7 @@ fn render_validate_errors(frame: &mut Frame, area: Rect, skill: &str, errors: &[
     ];
     for e in errors {
         lines.push(Line::from(vec![
-            Span::styled("  ✗ ", Style::default().fg(Color::Red)),
+            Span::styled("  \u{2717} ", Style::default().fg(Color::Red)),
             Span::raw(e.clone()),
         ]));
     }
@@ -774,7 +1159,7 @@ fn render_pushing(frame: &mut Frame, area: Rect, skill: &str, spinner: &Spinner)
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  Please wait — this may take a few seconds.",
+            "  Please wait \u{2014} this may take a few seconds.",
             theme::dim(),
         )]),
     ];
@@ -790,7 +1175,7 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
 
     let header = Line::from(vec![Span::styled(
         format!(
-            "  ✔ Pushed {} v{} → {}",
+            "  \u{2714} Pushed {} v{} \u{2192} {}",
             outcome.skill, outcome.version, outcome.remote
         ),
         Style::default()
@@ -799,7 +1184,6 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
     )]);
 
     let lines = if outcome.pr_url.is_empty() {
-        // Direct-mode summary.
         let short_sha: String = outcome.commit_sha.chars().take(8).collect();
         vec![
             Line::from(""),
@@ -815,7 +1199,6 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
             Line::from(vec![Span::styled("  [b] back to dashboard", theme::dim())]),
         ]
     } else {
-        // PR-mode summary.
         vec![
             Line::from(""),
             header,
@@ -891,11 +1274,12 @@ mod tests {
     fn make_app() -> App {
         App::new(
             quay_core::Config::default(),
-            quay_core::Lockfile::default(),
             std::path::PathBuf::from("/tmp"),
             None,
         )
     }
+
+    // -- BumpChoice tests --
 
     #[test]
     fn bump_choice_cycles() {
@@ -909,6 +1293,159 @@ mod tests {
         let b = b.next();
         assert!(matches!(b, BumpChoice::Patch));
     }
+
+    // -- PushModal form builder tests --
+
+    #[test]
+    fn push_form_tags_pre_filled() {
+        use quay_core::config::MirrorRoot;
+        use quay_core::scanner::{LocalLocation, LocalSkill, ScanStatus, SkillFormat, SkillMeta};
+
+        let meta = SkillMeta {
+            name: "my-skill".to_string(),
+            description: "desc".to_string(),
+            version: "0.1.0".to_string(),
+            tags: vec!["foo".to_string(), "bar".to_string()],
+            format: SkillFormat::Frontmatter,
+        };
+        let loc = LocalLocation {
+            root: MirrorRoot::Agents,
+            path: std::path::PathBuf::from("/tmp/.agents/skills/my-skill/SKILL.md"),
+            sha256: "abc".to_string(),
+        };
+        let skill = LocalSkill {
+            meta,
+            locations: vec![loc],
+            status: ScanStatus::Local,
+        };
+
+        let tags_initial = skill.meta.tags.join(", ");
+        let form = build_push_form(&skill.meta.name, &tags_initial, &[]);
+        let json = form.to_json();
+        assert_eq!(
+            json["tags"].as_str().unwrap_or(""),
+            "foo, bar",
+            "tags field must be pre-filled from skill frontmatter"
+        );
+    }
+
+    #[test]
+    fn push_form_title_contains_skill_name() {
+        let form = build_push_form("csv-parser", "data, csv", &[]);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let app = make_app();
+        let state = CreatePushState::PushModal {
+            skill_name: "csv-parser".to_string(),
+            skill_path: std::path::PathBuf::from("/tmp/x/SKILL.md"),
+            form: Box::new(form),
+        };
+        term.draw(|f| render(f, &app, f.area(), &state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("csv-parser"),
+            "rendered buffer must contain skill name; got first 200 chars: {}",
+            &content[..content.len().min(200)]
+        );
+    }
+
+    #[test]
+    fn push_form_no_name_or_description_fields() {
+        let form = build_push_form("my-skill", "", &[]);
+        let json = form.to_json();
+        assert!(
+            json.get("name").is_none(),
+            "push form must not have a 'name' field"
+        );
+        assert!(
+            json.get("description").is_none(),
+            "push form must not have a 'description' field"
+        );
+        assert!(
+            json.get("tags").is_some(),
+            "push form must have a 'tags' field"
+        );
+        assert!(
+            json.get("bump").is_some(),
+            "push form must have a 'bump' field"
+        );
+    }
+
+    #[test]
+    fn update_tags_roundtrips_in_skill_md() {
+        use assert_fs::prelude::*;
+        let dir = assert_fs::TempDir::new().unwrap();
+        let skill_md = dir.child("SKILL.md");
+        skill_md
+            .write_str(
+                "---\nname: my-skill\ndescription: Test.\nversion: 0.1.0\ntags:\n  - old\n---\nbody\n",
+            )
+            .unwrap();
+
+        update_tags_in_skill_md(skill_md.path(), "foo, bar").unwrap();
+
+        let written = std::fs::read_to_string(skill_md.path()).unwrap();
+        let meta = quay_core::scanner::parse_skill_metadata(&written, skill_md.path());
+        assert_eq!(
+            meta.tags,
+            vec!["foo".to_string(), "bar".to_string()],
+            "updated tags must be readable back from frontmatter"
+        );
+    }
+
+    #[test]
+    fn update_tags_preserves_existing_version() {
+        // The version bump is performed by the pusher on push, not by
+        // update_tags_in_skill_md. Verify the version field is preserved so
+        // the pusher can apply its own bump correctly.
+        use assert_fs::prelude::*;
+        let dir = assert_fs::TempDir::new().unwrap();
+        let skill_md = dir.child("SKILL.md");
+        skill_md
+            .write_str("---\nname: s\ndescription: d.\nversion: 0.1.0\ntags: []\n---\nbody\n")
+            .unwrap();
+
+        update_tags_in_skill_md(skill_md.path(), "newtag").unwrap();
+
+        let written = std::fs::read_to_string(skill_md.path()).unwrap();
+        let meta = quay_core::scanner::parse_skill_metadata(&written, skill_md.path());
+        assert_eq!(
+            meta.version, "0.1.0",
+            "update_tags must preserve the existing version"
+        );
+    }
+
+    #[test]
+    fn push_modal_esc_returns_to_local_screen() {
+        let mut app = make_app();
+        app.create_push = CreatePushState::PushModal {
+            skill_name: "s".into(),
+            skill_path: std::path::PathBuf::from("/tmp/s/SKILL.md"),
+            form: Box::new(build_push_form("s", "", &[])),
+        };
+        let action = handle_key(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(
+                action,
+                ScreenAction::SwitchTo(crate::tui::app::Screen::Local)
+            ),
+            "Esc from PushModal must return to Local screen"
+        );
+    }
+
+    #[test]
+    fn is_push_modal_discriminant() {
+        let modal = CreatePushState::PushModal {
+            skill_name: "x".into(),
+            skill_path: std::path::PathBuf::from("/tmp"),
+            form: Box::new(build_push_form("x", "", &[])),
+        };
+        assert!(modal.is_push_modal());
+        let form = CreatePushState::Form(build_create_form(&[]));
+        assert!(!form.is_push_modal());
+    }
+
+    // -- Spinner test --
 
     #[test]
     fn spinner_advances_in_pushing_state() {
@@ -1008,7 +1545,7 @@ mod tests {
     #[test]
     fn paste_inserts_into_description_when_focused() {
         let mut state = CreatePushState::Form(build_create_form(&[]));
-        // Tab once: name → description.
+        // Tab once: name -> description.
         if let CreatePushState::Form(form) = &mut state {
             let tab = KeyEvent {
                 code: KeyCode::Tab,
@@ -1025,6 +1562,22 @@ mod tests {
                 json["description"].as_str().unwrap_or(""),
                 "A short description"
             );
+        } else {
+            panic!("wrong state");
+        }
+    }
+
+    #[test]
+    fn paste_into_push_modal_tags_field() {
+        let mut state = CreatePushState::PushModal {
+            skill_name: "s".into(),
+            skill_path: std::path::PathBuf::from("/tmp/s/SKILL.md"),
+            form: Box::new(build_push_form("s", "", &[])),
+        };
+        handle_paste(&mut state, "rust, cli");
+        if let CreatePushState::PushModal { form, .. } = &state {
+            let json = form.to_json();
+            assert_eq!(json["tags"].as_str().unwrap_or(""), "rust, cli");
         } else {
             panic!("wrong state");
         }
@@ -1052,7 +1605,6 @@ mod tests {
         ));
         term.draw(|f| render(f, &app, f.area(), &state)).unwrap();
         let buf = term.backend().buffer().clone();
-        // Form renders without panic; lib controls content.
         assert!(buf.area().width > 0);
     }
 
@@ -1066,10 +1618,8 @@ mod tests {
     fn on_save_transitions_to_ready_to_validate_with_true_editor() {
         let dir = assert_fs::TempDir::new().unwrap();
         let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, dir.path().to_path_buf(), None);
+        let mut app = App::new(cfg, dir.path().to_path_buf(), None);
 
-        // Build a form with "my-skill" filled in the name field.
         let mut form = build_create_form(&[]);
         let chars: Vec<KeyEvent> = "my-skill"
             .chars()
@@ -1083,7 +1633,6 @@ mod tests {
         for ev in chars {
             form.handle_input(ev);
         }
-        // Tab to description, type something.
         let tab = KeyEvent {
             code: KeyCode::Tab,
             modifiers: KeyModifiers::NONE,
@@ -1105,8 +1654,6 @@ mod tests {
         unsafe {
             std::env::set_var("EDITOR", "true");
         }
-        // Tab to Submit and press Enter.
-        // We submit name "my-skill" directly via on_save.
         on_save(&mut state, &mut app, "my-skill");
         unsafe {
             std::env::remove_var("EDITOR");
@@ -1139,8 +1686,7 @@ mod tests {
                 push_mode: quay_core::PushMode::default(),
             },
         );
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, dir.path().to_path_buf(), None);
+        let mut app = App::new(cfg, dir.path().to_path_buf(), None);
 
         let mut state = CreatePushState::ReadyToValidate {
             skill: "csv-parse".into(),
@@ -1166,8 +1712,7 @@ mod tests {
         .unwrap();
 
         let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, dir.path().to_path_buf(), None);
+        let mut app = App::new(cfg, dir.path().to_path_buf(), None);
 
         let mut state = CreatePushState::ReadyToValidate {
             skill: "bad-skill".into(),
@@ -1184,8 +1729,7 @@ mod tests {
     #[test]
     fn on_push_transitions_to_pushing_state() {
         let cfg = quay_core::Config::default();
-        let lock = quay_core::Lockfile::default();
-        let mut app = App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None);
+        let mut app = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
         let mut state = CreatePushState::ReadyToPush {
             skill: "my-skill".into(),
             path: PathBuf::from("/tmp/my-skill/SKILL.md"),

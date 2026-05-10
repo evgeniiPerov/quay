@@ -1,23 +1,23 @@
 //! `quay scan` — list local skills and their sync status.
 
-use quay_core::lockfile::Lockfile;
 use quay_core::push_log::PushLog;
-use quay_core::scanner::{scan_local_skills, LocalSkill, ScanStatus, SkillFormat};
+use quay_core::scanner::{scan_local, LocalSkill, ScanStatus, SkillFormat};
 use std::path::{Path, PathBuf};
 
 pub fn run(
     project_root: &Path,
-    root: Option<PathBuf>,
+    _root: Option<PathBuf>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let scan_root = root.unwrap_or_else(|| project_root.join(".agents/skills"));
-
-    // Best-effort loads: any read error => empty defaults.
-    let lockfile =
-        Lockfile::load_or_default(&project_root.join(".quay/lockfile.json")).unwrap_or_default();
-    let push_log = PushLog::load(project_root).unwrap_or_default();
-
-    let skills = scan_local_skills(&[scan_root], &lockfile, &push_log);
+    // Derive the user-level config dir from the standard default location,
+    // respecting XDG_CONFIG_HOME / HOME.  A missing config dir is non-fatal.
+    let config_dir = crate::config_io::default_config_dir();
+    let push_log = PushLog::load(
+        config_dir.as_deref().unwrap_or(project_root),
+        Some(project_root),
+    )
+    .unwrap_or_default();
+    let skills = scan_local(project_root, &push_log);
 
     if json {
         match serde_json::to_string_pretty(&skills_for_json(&skills)) {
@@ -37,10 +37,13 @@ pub fn run(
 
 fn print_table(skills: &[LocalSkill]) {
     if skills.is_empty() {
-        println!("(no local skills found under .agents/skills/)");
+        println!("(no local skills found in any mirror root)");
         return;
     }
-    println!("{:<32}  {:<14}  {:<28}  PATH", "NAME", "FORMAT", "STATUS");
+    println!(
+        "{:<32}  {:<14}  {:<28}  {:<18}  PATH",
+        "NAME", "FORMAT", "STATUS", "MIRRORS"
+    );
     for s in skills {
         let format = match s.meta.format {
             SkillFormat::Frontmatter => "frontmatter",
@@ -65,12 +68,16 @@ fn print_table(skills: &[LocalSkill]) {
             }
             ScanStatus::PushedLocal { pr_url, .. } => format!("pushed-local ({pr_url})"),
         };
+        let mirrors: Vec<&str> = s.locations.iter().map(|l| l.root.label()).collect();
+        let drift = if s.has_drift() { " [drift]" } else { "" };
         println!(
-            "{:<32}  {:<14}  {:<28}  {}",
+            "{:<32}  {:<14}  {:<28}  {:<18}  {}{}",
             s.meta.name,
             format,
             status,
-            s.path.display()
+            mirrors.join(","),
+            s.canonical_path().display(),
+            drift,
         );
     }
 }
@@ -85,8 +92,10 @@ fn skills_for_json(skills: &[LocalSkill]) -> serde_json::Value {
                 "version": s.meta.version,
                 "tags": s.meta.tags,
                 "format": s.meta.format,
-                "path": s.path.display().to_string(),
-                "sha256": s.sha256,
+                "path": s.canonical_path().display().to_string(),
+                "sha256": s.canonical_sha256(),
+                "mirrors": s.locations.iter().map(|l| l.root.label()).collect::<Vec<_>>(),
+                "has_drift": s.has_drift(),
                 "status": match &s.status {
                     ScanStatus::Local => serde_json::json!({"kind": "local"}),
                     ScanStatus::Installed { remote, version } => {

@@ -1,6 +1,6 @@
 //! Implementation of `quay tui`.
 
-use quay_core::{Config, Lockfile};
+use quay_core::Config;
 use std::path::Path;
 
 pub fn run(
@@ -19,10 +19,8 @@ pub fn run(
 
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
-    let lock = Lockfile::load_or_default(&project.join(".agents/skills.lock.json"))?;
     let app = crate::tui::app::App::new(
         cfg,
-        lock,
         project.to_path_buf(),
         user_config.map(|p| p.to_path_buf()),
     );

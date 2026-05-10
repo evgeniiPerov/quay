@@ -4,6 +4,55 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The four well-known mirror directories quay scans for skills.
+///
+/// Order defines preference when deduplicating across mirrors (Agents is
+/// canonical). Adding a fifth variant (e.g. `Kimi`) is a one-line change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorRoot {
+    /// `.agents/skills/` — the canonical install location.
+    Agents,
+    /// `.claude/skills/`
+    Claude,
+    /// `.codex/skills/`
+    Codex,
+    /// `.cursor/skills/`
+    Cursor,
+}
+
+impl MirrorRoot {
+    /// Returns the relative path under the project root for this mirror's skills directory.
+    pub fn dir(self) -> &'static str {
+        match self {
+            MirrorRoot::Agents => ".agents/skills",
+            MirrorRoot::Claude => ".claude/skills",
+            MirrorRoot::Codex => ".codex/skills",
+            MirrorRoot::Cursor => ".cursor/skills",
+        }
+    }
+
+    /// All four mirror roots in canonical preference order (Agents first).
+    pub fn all() -> [MirrorRoot; 4] {
+        [
+            MirrorRoot::Agents,
+            MirrorRoot::Claude,
+            MirrorRoot::Codex,
+            MirrorRoot::Cursor,
+        ]
+    }
+
+    /// Human-readable short label, e.g. `"agents"`.
+    pub fn label(self) -> &'static str {
+        match self {
+            MirrorRoot::Agents => "agents",
+            MirrorRoot::Claude => "claude",
+            MirrorRoot::Codex => "codex",
+            MirrorRoot::Cursor => "cursor",
+        }
+    }
+}
+
 /// How `quay push` delivers a skill to the hub.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -86,9 +86,8 @@ pub fn refilter(state: &mut SearchState) {
 }
 
 fn load_all_remotes(app: &App) -> Vec<SkillRow> {
-    use quay_core::{search, GithubRawFetcher, SearchFilters};
-    let branch = std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
-    let f = GithubRawFetcher::new(branch);
+    use quay_core::{search, CloneFetcher, SearchFilters};
+    let f = CloneFetcher::new();
     let hits = search(&app.cfg, &f, &SearchFilters::default()).unwrap_or_default();
     hits.into_iter()
         .map(|h| SkillRow {
@@ -182,17 +181,12 @@ pub fn ensure_loaded(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quay_core::{Config, Lockfile};
+    use quay_core::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn empty_app() -> App {
-        let mut a = App::new(
-            Config::default(),
-            Lockfile::default(),
-            std::path::PathBuf::from("/tmp"),
-            None,
-        );
+        let mut a = App::new(Config::default(), std::path::PathBuf::from("/tmp"), None);
         a.current_screen = crate::tui::app::Screen::Search;
         a
     }

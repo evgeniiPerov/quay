@@ -79,6 +79,9 @@ pub fn push_skill(
         git: &git,
         opener: &opener,
         project_root: project.to_path_buf(),
+        config_dir: user_config
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf()),
         author: None,
     };
     let result = pusher.push(skill, remote, bump, &clone_root, push_mode)?;

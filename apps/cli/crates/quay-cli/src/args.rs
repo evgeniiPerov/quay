@@ -38,11 +38,19 @@ pub enum Command {
         skill: String,
         #[arg(long)]
         remote: Option<String>,
+        /// Overwrite the skill if it already exists locally.
+        #[arg(long)]
+        force: bool,
     },
     /// List installed skills
     List,
     /// Remove a previously installed skill
-    Remove { skill: String },
+    Remove {
+        skill: String,
+        /// Also push a deletion commit to every remote that publishes the skill.
+        #[arg(long)]
+        everywhere: bool,
+    },
     /// Show metadata for a skill (without installing)
     Info {
         skill: String,
@@ -67,16 +75,6 @@ pub enum Command {
         /// Show what would change without writing to disk.
         #[arg(long)]
         dry_run: bool,
-    },
-    /// Apply the lockfile exactly — refetch any missing or drifted files at the recorded sha.
-    Sync,
-    /// Scaffold a new local SKILL.md in .agents/skills/<name>/
-    Create {
-        /// Skill name (kebab-case recommended).
-        name: String,
-        /// Override the auto-detected author email.
-        #[arg(long)]
-        author: Option<String>,
     },
     /// Discover local skills under `.agents/skills/` and report their sync status.
     Scan {

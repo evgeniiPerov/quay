@@ -1,14 +1,13 @@
-#[cfg(debug_assertions)]
-use quay_core::GithubRawFetcherWithBase;
 use quay_core::{
-    apply_all, Config, GithubRawFetcher, MirrorAction, QuayError, RegistryFetcher,
-    SkillFileFetcher, SkillManager,
+    apply_all, CloneFetcher, Config, MirrorAction, QuayError, RegistryFetcher, SkillFileFetcher,
+    SkillManager,
 };
 use std::path::Path;
 
 pub fn run(
     skill: &str,
     remote: Option<&str>,
+    force: bool,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -19,36 +18,37 @@ pub fn run(
 
     crate::commands::ensure_remotes_configured(&cfg)?;
 
-    let branch = std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
-
-    #[cfg(debug_assertions)]
-    if let Ok(base) = std::env::var("QUAY_GITHUB_BASE_URL") {
-        let f = GithubRawFetcherWithBase::new(branch, base);
-        return run_with(&cfg, &f, &f, skill, remote, project, json);
-    }
-
-    let f = GithubRawFetcher::new(branch);
-    run_with(&cfg, &f, &f, skill, remote, project, json)
+    let f = CloneFetcher::new();
+    run_with(&cfg, &f, &f, skill, remote, force, project, json)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     cfg: &Config,
     reg_fetcher: &R,
     file_fetcher: &F,
     skill: &str,
     remote: Option<&str>,
+    force: bool,
     project: &Path,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
-    let locked = mgr.add(skill, remote)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&locked)?);
+    if force {
+        mgr.add_with_force(skill, remote, true)?;
     } else {
+        mgr.add(skill, remote)?;
+    }
+    if json {
         println!(
-            "installed {}@{} from {}",
-            skill, locked.version, locked.remote
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "action": "installed",
+                "skill": skill,
+            }))?
         );
+    } else {
+        println!("installed {}", skill);
     }
     apply_mirrors_after_install(cfg, project, skill, json);
     Ok(())

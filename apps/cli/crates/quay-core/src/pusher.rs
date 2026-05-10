@@ -41,6 +41,11 @@ pub struct SkillPusher<'a, G: GitClient, P: PrOpener> {
     pub git: &'a G,
     pub opener: &'a P,
     pub project_root: PathBuf,
+    /// Directory that holds the user-level `config.toml` (e.g. `~/.config/quay/`).
+    ///
+    /// When `Some`, push records are written to `<config_dir>/push-log.json`.
+    /// When `None`, the push-log write is silently skipped.
+    pub config_dir: Option<PathBuf>,
     /// Author identity for the commit. Falls back to the user-section in config when `None`.
     pub author: Option<(String, String)>,
 }
@@ -249,25 +254,29 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         };
 
         // Best-effort push-log append — note pr_url is "" for direct.
-        if let Err(e) = PushLog::append(
-            &self.project_root,
-            PushRecord {
-                name: skill_name.to_string(),
-                remote: result.remote.clone(),
-                branch: result.branch.clone(),
-                pr_url: result
-                    .pr
-                    .as_ref()
-                    .map(|p| p.url.clone())
-                    .unwrap_or_default(),
-                pushed_at: chrono::Utc::now().to_rfc3339(),
-                commit_sha: Some(result.commit_sha.clone()),
-            },
-        ) {
-            eprintln!(
-                "warning: failed to write .quay/push-log.json: {}; push succeeded",
-                e
-            );
+        if let Some(config_dir) = &self.config_dir {
+            let abs_project = self
+                .project_root
+                .canonicalize()
+                .unwrap_or_else(|_| self.project_root.clone());
+            if let Err(e) = PushLog::append(
+                config_dir,
+                PushRecord {
+                    name: skill_name.to_string(),
+                    remote: result.remote.clone(),
+                    branch: result.branch.clone(),
+                    pr_url: result
+                        .pr
+                        .as_ref()
+                        .map(|p| p.url.clone())
+                        .unwrap_or_default(),
+                    pushed_at: chrono::Utc::now().to_rfc3339(),
+                    commit_sha: Some(result.commit_sha.clone()),
+                    project_path: Some(abs_project),
+                },
+            ) {
+                eprintln!("warning: failed to write push-log: {}; push succeeded", e);
+            }
         }
 
         Ok(result)
@@ -654,6 +663,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let result = pusher
@@ -693,6 +703,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
 
@@ -727,6 +738,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let err = pusher
@@ -762,6 +774,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         pusher
@@ -799,6 +812,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         pusher
@@ -842,6 +856,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let err = pusher
@@ -853,6 +868,7 @@ mod tests {
     #[test]
     fn push_works_on_skill_without_frontmatter() {
         let project = assert_fs::TempDir::new().unwrap();
+        let config_dir = tempfile::TempDir::new().unwrap();
         let clone_root = assert_fs::TempDir::new().unwrap();
         let freestyle_body = "## Notes\n\nThis is a freestyle skill with no frontmatter.\n";
         make_local_skill(project.path(), "free-skill", freestyle_body);
@@ -865,6 +881,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: Some(config_dir.path().to_path_buf()),
             author: None,
         };
 
@@ -881,8 +898,8 @@ mod tests {
         assert_eq!(result.remote, "h");
         assert!(result.pr.as_ref().unwrap().url.contains("free-skill"));
 
-        // 2. .quay/push-log.json exists with one record matching the skill name.
-        let log = PushLog::load(project.path()).unwrap();
+        // 2. User-level push-log exists with one record matching the skill name.
+        let log = PushLog::load(config_dir.path(), Some(project.path())).unwrap();
         assert_eq!(log.records.len(), 1);
         assert_eq!(log.records[0].name, "free-skill");
         assert_eq!(log.records[0].pr_url, result.pr.as_ref().unwrap().url);
@@ -913,6 +930,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let err = pusher
@@ -930,6 +948,7 @@ mod tests {
     #[test]
     fn push_writes_push_log_after_frontmatter_skill() {
         let project = assert_fs::TempDir::new().unwrap();
+        let config_dir = tempfile::TempDir::new().unwrap();
         let clone_root = assert_fs::TempDir::new().unwrap();
         make_local_skill(
             project.path(),
@@ -944,6 +963,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: Some(config_dir.path().to_path_buf()),
             author: None,
         };
         let result = pusher
@@ -956,7 +976,7 @@ mod tests {
             )
             .unwrap();
 
-        let log = PushLog::load(project.path()).unwrap();
+        let log = PushLog::load(config_dir.path(), Some(project.path())).unwrap();
         assert_eq!(log.records.len(), 1);
         assert_eq!(log.records[0].name, "csv-parse");
         assert_eq!(log.records[0].remote, "h");
@@ -1014,6 +1034,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
 
@@ -1038,6 +1059,7 @@ mod tests {
     #[test]
     fn direct_mode_records_commit_sha_in_push_log() {
         let project = tempfile::TempDir::new().unwrap();
+        let config_dir = tempfile::TempDir::new().unwrap();
         make_local_skill(
             project.path(),
             "foo",
@@ -1052,6 +1074,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: Some(config_dir.path().to_path_buf()),
             author: None,
         };
         let clone_root = tempfile::TempDir::new().unwrap();
@@ -1059,7 +1082,7 @@ mod tests {
             .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
             .unwrap();
 
-        let log = crate::push_log::PushLog::load(project.path()).unwrap();
+        let log = crate::push_log::PushLog::load(config_dir.path(), Some(project.path())).unwrap();
         assert_eq!(log.records.len(), 1);
         assert!(
             log.records[0].pr_url.is_empty(),
@@ -1100,6 +1123,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let clone_root = tempfile::TempDir::new().unwrap();
@@ -1137,6 +1161,7 @@ mod tests {
             git: &git,
             opener: &opener,
             project_root: project.path().to_path_buf(),
+            config_dir: None,
             author: None,
         };
         let clone_root = tempfile::TempDir::new().unwrap();

@@ -3,9 +3,11 @@
 use crate::config_io;
 use crate::tui::screens::browse::BrowseState;
 use crate::tui::screens::installed::InstalledState;
+use crate::tui::screens::local::LocalState;
 use crate::tui::screens::onboarding::OnboardingState;
+use crate::tui::screens::remote::RemoteState;
 use crate::tui::screens::search::SearchState;
-use quay_core::{BumpKind, Config, Lockfile, UserConfigFile};
+use quay_core::{BumpKind, Config, UserConfigFile};
 use ratatui::widgets::{Block, Borders};
 use std::path::PathBuf;
 use tui_textarea::TextArea;
@@ -33,6 +35,8 @@ pub enum BlockingAction {
     Add {
         skill: String,
         remote: Option<String>,
+        /// If true, overwrite an existing local copy.
+        force: bool,
     },
     /// Probe a remote for reachability, auth, and registry presence.
     TestConnection {
@@ -40,20 +44,40 @@ pub enum BlockingAction {
         kind: Option<quay_core::ProviderKind>,
         remote_idx: usize,
     },
+    /// Fetch (shallow-clone) a remote registry and populate `app.remote.rows`.
+    FetchRegistry {
+        /// The configured remote name to fetch.
+        remote_name: String,
+    },
 }
 
 /// Top-level screen selection.
+///
+/// Plan 10 layout:
+///   `[1]` Dashboard — summary panels
+///   `[2]` Local     — scan_local across all mirror roots
+///   `[3]` Remote    — browse a remote's registry.json
+///   `[s]` Search    — live filter across local + remote
+///   `[,]` Settings  — profiles / remotes / install
+///   `[q]` Quit
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Dashboard,
-    Browse,
+    /// NEW (Plan 10): replaces the old Browse + Installed screens.
+    Local,
+    /// NEW (Plan 10): replaces the old Browse-Remote panel.
+    Remote,
     Search,
-    Installed,
     Settings,
+    /// Create/Push — still reachable via `[u]` from Local.
     CreatePush,
     /// First-run onboarding — shown when no user config exists or
     /// `meta.onboarded == false && profiles.is_empty()`.
     Onboarding,
+    // Legacy variants kept temporarily so existing tests still compile.
+    // Removed from navigation; will be deleted when old screens are fully gone.
+    Browse,
+    Installed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,9 +108,6 @@ pub enum ScreenAction {
 ///
 /// Driven by `profiles.is_empty()` alone — `meta.onboarded` exists only to
 /// suppress repeated skip prompts within onboarding itself, not as a hard gate.
-/// This means a user who skipped onboarding once (writing `onboarded = true`
-/// with no profiles) still gets onboarding on the next launch — exactly the
-/// recovery path the older two-condition gate was missing.
 pub fn should_show_onboarding(file: &UserConfigFile) -> bool {
     file.profiles.is_empty()
 }
@@ -114,44 +135,42 @@ fn decide_initial_screen_from_file(
 
 pub struct App {
     pub cfg: Config,
-    pub lock: Lockfile,
     pub project_root: PathBuf,
     pub user_config_path: Option<PathBuf>,
     pub current_screen: Screen,
     pub status_message: Option<String>,
     pub should_quit: bool,
+    // --- Legacy screen state (kept while old screens remain) ---
     pub browse: BrowseState,
-    pub search: SearchState,
     pub installed: InstalledState,
+    // -----------------------------------------------------------
+    pub search: SearchState,
     pub search_textarea: TextArea<'static>,
     pub settings: SettingsState,
     /// Active overlay modal, if any. When `Some`, the modal intercepts all key events.
     pub modal: Option<ModalState>,
-    /// Create/Push screen state machine.
+    /// Create/Push screen state machine (also used by Local [u]/[U]).
     pub create_push: crate::tui::screens::create_push::CreatePushState,
     /// Onboarding screen state machine.
     pub onboarding: OnboardingState,
     /// A blocking action deferred until after the next render cycle.
-    ///
-    /// The event loop checks this after each `terminal.draw()` call: if it is
-    /// `Some`, the action is taken out and executed synchronously before the
-    /// next `event::poll()`.  This guarantees that any state change (e.g.
-    /// transitioning to `Pushing`) is painted once before the blocking call
-    /// freezes the event loop.
     pub next_blocking: Option<BlockingAction>,
-    /// Local skills discovered under `.agents/skills/` at startup.
+    /// When `true`, the event loop must NOT reset `create_push` on the next
+    /// `SwitchTo(Screen::CreatePush)` transition.  Set by Local `[u]`/`[U]`
+    /// which pre-populate the state before switching screens.
+    pub push_form_ready: bool,
+    /// Local skills discovered under all mirror roots at startup.
     pub local_skills: Vec<quay_core::scanner::LocalSkill>,
-    /// Index of the currently highlighted row in the Local skills panel.
+    /// Index of the currently highlighted row in the Local skills panel (Dashboard legacy).
     pub local_selected: usize,
+    /// State for the Local screen ([2]).
+    pub local: LocalState,
+    /// State for the Remote screen ([3]).
+    pub remote: RemoteState,
 }
 
 impl App {
-    pub fn new(
-        cfg: Config,
-        lock: Lockfile,
-        project_root: PathBuf,
-        user_config_path: Option<PathBuf>,
-    ) -> Self {
+    pub fn new(cfg: Config, project_root: PathBuf, user_config_path: Option<PathBuf>) -> Self {
         let mut search_textarea = TextArea::default();
         search_textarea.set_block(Block::default().borders(Borders::ALL).title(" search "));
         let remotes: Vec<String> = cfg.remotes.keys().cloned().collect();
@@ -162,10 +181,10 @@ impl App {
             user_config_path.as_deref(),
             config_io::read_user_file(user_config_path.as_deref()),
         );
-        let local_skills = Self::scan_local(&project_root);
+        let config_dir_for_scan = user_config_path.as_deref().and_then(|p| p.parent());
+        let local_skills = Self::scan_local(&project_root, config_dir_for_scan);
         Self {
             cfg,
-            lock,
             project_root,
             user_config_path,
             current_screen: initial_screen,
@@ -180,25 +199,31 @@ impl App {
             create_push,
             onboarding: OnboardingState::default(),
             next_blocking: None,
+            push_form_ready: false,
             local_skills,
             local_selected: 0,
+            local: LocalState::default(),
+            remote: RemoteState::default(),
         }
     }
 
-    /// Scan local skills under `<project_root>/.agents/skills/`.
-    fn scan_local(project_root: &std::path::Path) -> Vec<quay_core::scanner::LocalSkill> {
-        let lockfile = quay_core::lockfile::Lockfile::load_or_default(
-            &project_root.join(".quay/lockfile.json"),
+    /// Scan local skills under all four mirror roots.
+    fn scan_local(
+        project_root: &std::path::Path,
+        config_dir: Option<&std::path::Path>,
+    ) -> Vec<quay_core::scanner::LocalSkill> {
+        let push_log = quay_core::push_log::PushLog::load(
+            config_dir.unwrap_or(project_root),
+            Some(project_root),
         )
         .unwrap_or_default();
-        let push_log = quay_core::push_log::PushLog::load(project_root).unwrap_or_default();
-        let scan_root = project_root.join(".agents/skills");
-        quay_core::scanner::scan_local_skills(&[scan_root], &lockfile, &push_log)
+        quay_core::scanner::scan_local(project_root, &push_log)
     }
 
-    /// Re-run the local-skills scan (used by Dashboard `[r]` rescan and after a push).
+    /// Re-run the local-skills scan (used by Local `[r]` rescan and after a push).
     pub fn reload_local_skills(&mut self) {
-        self.local_skills = Self::scan_local(&self.project_root);
+        let config_dir = self.user_config_path.as_deref().and_then(|p| p.parent());
+        self.local_skills = Self::scan_local(&self.project_root, config_dir);
         if self.local_selected >= self.local_skills.len() {
             self.local_selected = self.local_skills.len().saturating_sub(1);
         }
@@ -206,10 +231,6 @@ impl App {
 
     /// Returns `true` when the focused screen has a text input that should
     /// receive every keystroke verbatim (no global hotkey interception).
-    ///
-    /// Without this, typing `evgenii` in a profile-name field is impossible:
-    /// the global `g`-chord prefix and single-letter screen jumps eat
-    /// characters before the form sees them.
     pub fn has_focused_text_input(&self) -> bool {
         use crate::tui::screens::create_push::CreatePushState;
         use crate::tui::screens::onboarding::OnboardingState;
@@ -243,19 +264,11 @@ impl App {
     }
 
     /// Queue a [`BlockingAction`] to be executed after the next render.
-    ///
-    /// Only one action can be queued at a time.  Calling this while another
-    /// action is pending silently overwrites the pending action — callers must
-    /// not depend on ordering.
     pub fn defer_blocking_action(&mut self, action: BlockingAction) {
         self.next_blocking = Some(action);
     }
 
     /// Route a bracketed-paste string to the focused form-bearing screen.
-    ///
-    /// List screens (Dashboard, Browse, Search, Installed) silently drop the
-    /// paste.  Form-bearing screens (Onboarding, CreatePush, Settings) forward
-    /// the string to whichever text field currently has focus.
     pub fn handle_paste(&mut self, s: &str) {
         match self.current_screen {
             Screen::Onboarding => {
@@ -267,8 +280,13 @@ impl App {
             Screen::Settings => {
                 crate::tui::screens::settings::handle_paste(&mut self.settings, s);
             }
-            // List screens have no text inputs; paste is silently ignored.
-            Screen::Dashboard | Screen::Browse | Screen::Search | Screen::Installed => {}
+            // Screens without text inputs silently drop paste.
+            Screen::Dashboard
+            | Screen::Local
+            | Screen::Remote
+            | Screen::Browse
+            | Screen::Search
+            | Screen::Installed => {}
         }
     }
 }

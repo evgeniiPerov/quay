@@ -88,7 +88,7 @@ Per-directory READMEs: [`.agents/README.md`](.agents/README.md) and [`.claude/RE
 
 ## Status
 
-Plans 1–7a + 6.85 + 7b + 8 + 9 are **implemented** (v0.1.x shipping via cargo-dist). The CLI provides:
+Plans 1–7a + 6.85 + 7b + 8 + 9 + 10 are **implemented** (**v0.2.0** — breaking change). The CLI provides:
 - `init`, `remote add/list/remove` — project setup
 - `remote test <name>` — live test-connection probe (registry.json fetch via git)
 - `remote add ... --provider <kind>` — explicit provider override (github, githubenterprise, gitlab, bitbucket, azuredevops)
@@ -114,7 +114,9 @@ Plans 1–7a + 6.85 + 7b + 8 + 9 are **implemented** (v0.1.x shipping via cargo-
 
 All commands honor `--profile`, `--remote`, and `--json`.
 
-Test status: 286 tests passing (5 ignored env-var/editor/network tests) in `apps/cli/`, 0 clippy warnings, release build succeeds. (Note: 4 pre-existing `cmd_add` integration tests in the binary crate fail when the user has a real `~/.config/quay/config.toml` with conflicting remote names — test isolation gap, not a Plan 9 regression.)
+Test status: ~319 tests passing (4 ignored env-var/editor/network tests) in `apps/cli/`, 0 clippy warnings, release build succeeds. (Note: pre-existing integration test failures in `cmd_add`, `cmd_outdated`, `cmd_push`, `cmd_remote`, `cmd_search`, `cmd_update` when the user has a real `~/.config/quay/config.toml` with conflicting remote names — test isolation gap, not a Plan 10 regression.)
+
+Plan 10 ships filesystem-first model: drops `skills.lock.json`, `quay sync`, `quay create`. TUI restructured (Local + Remote + Search). Multi-mirror scan (`MirrorRoot`: `.agents/`, `.claude/`, `.codex/`, `.cursor/`). **v0.2.0** — breaking; lockfile detection prints removal hint. `quay scan` adds mirrors + drift columns. `quay list` reads scanner output.
 
 Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open follow-ups: Plan 7c (crates.io publish + crate rename), test isolation for `cmd_add.rs` (override `XDG_CONFIG_HOME` / `--user-config` per test), `quay doctor` audit + auto-fix.
 
@@ -136,7 +138,7 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 | Transport | Git-native (CLI shells `git clone` / `pull` / `push`) |
 | Auth | Whatever the user's git config provides (SSH keys, credential helper, gh CLI) |
 | Skill format | `SKILL.md` with YAML frontmatter (`name`, `description`, `version`, `tags`, `author`) |
-| Versioning | Per-skill semver, tracked in `.agents/skills.lock.json` |
+| Versioning | Per-skill semver in frontmatter; git history is the source of truth (no lockfile as of v0.2.0) |
 | MVP scope | Full TUI as primary UX (~6 weeks) |
 | Web | Phase 2, separate package, Next.js + shadcn |
 

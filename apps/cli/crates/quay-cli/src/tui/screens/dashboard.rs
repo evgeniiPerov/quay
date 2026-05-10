@@ -9,14 +9,11 @@ use ratatui::Frame;
 
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
     match code {
-        KeyCode::Char('b') => ScreenAction::SwitchTo(Screen::Browse),
-        KeyCode::Char('s') => ScreenAction::SwitchTo(Screen::Search),
+        // Plan 10: [2] Local, [3] Remote replace old b/i/c shortcuts.
         KeyCode::Char('r') => {
             app.reload_local_skills();
             ScreenAction::Stay
         }
-        KeyCode::Char('i') => ScreenAction::SwitchTo(Screen::Installed),
-        KeyCode::Char('c') => ScreenAction::SwitchTo(Screen::CreatePush),
         KeyCode::Char('j') | KeyCode::Down => {
             if !app.local_skills.is_empty() {
                 app.local_selected =
@@ -33,9 +30,6 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
         KeyCode::Char('u') => {
             if let Some(skill) = app.local_skills.get(app.local_selected) {
                 let name = skill.meta.name.clone();
-                // Show the spinner on the Create/Push screen so the user has
-                // visible feedback while the push runs and sees the Done /
-                // Failed result when it returns.
                 app.create_push = crate::tui::screens::create_push::CreatePushState::Pushing {
                     skill: name.clone(),
                     remote: None,
@@ -43,6 +37,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
                     started_at: std::time::Instant::now(),
                     spinner: crate::tui::screens::widgets::spinner::Spinner::default(),
                 };
+                app.push_form_ready = true;
                 app.defer_blocking_action(BlockingAction::Push {
                     skill: name,
                     remote: None,
@@ -78,7 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Dashboard", theme::accent()),
             Span::raw("    "),
             Span::styled(
-                "[b] browse  [s] search  [i] installed  [c] create  [r] rescan  [u] push  [,] settings  [q] quit",
+                "[2] Local  [3] Remote  [s] Search  [r] rescan  [u] push  [,] Settings  [q] quit",
                 theme::dim(),
             ),
         ])),
@@ -109,18 +104,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         top[0],
     );
 
-    // Installed (top-right)
-    let installed_items: Vec<ListItem> = app
-        .lock
-        .skills
+    // Local skills summary (top-right)
+    let local_summary_items: Vec<ListItem> = app
+        .local_skills
         .iter()
-        .map(|(name, s)| ListItem::new(Line::from(format!("{} v{}", name, s.version))))
+        .map(|s| ListItem::new(Line::from(format!("{} v{}", s.meta.name, s.meta.version))))
         .collect();
     frame.render_widget(
-        List::new(installed_items).block(
+        List::new(local_summary_items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Installed ({}) ", app.lock.skills.len())),
+                .title(format!(" Installed ({}) ", app.local_skills.len())),
         ),
         top[1],
     );
@@ -182,7 +176,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Tip: [1]/[2]/[3]/[4] jump screen  [,] settings  [j]/[k] move  [r] rescan  [u] push selected  [c] create  [q] quit",
+            "Tip: [1] Dashboard  [2] Local  [3] Remote  [s] Search  [,] Settings  [j]/[k] move  [r] rescan  [u] push  [q] quit",
             theme::dim(),
         ))),
         rows[3],
@@ -205,7 +199,7 @@ fn badge_for(status: &quay_core::scanner::ScanStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quay_core::{Config, Lockfile, RemoteConfig};
+    use quay_core::{Config, RemoteConfig};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -221,8 +215,7 @@ mod tests {
             },
         );
         cfg.user.email = Some("dev@example.com".into());
-        let lock = Lockfile::default();
-        App::new(cfg, lock, std::path::PathBuf::from("/tmp"), None)
+        App::new(cfg, std::path::PathBuf::from("/tmp"), None)
     }
 
     #[test]
@@ -238,28 +231,33 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(dump.contains("Remotes (1)"), "buffer: {}", dump);
-        assert!(dump.contains("Installed (0)"));
+        assert!(dump.contains("Installed ("), "buffer: {}", dump);
         assert!(dump.contains("Dashboard"));
     }
 
     #[test]
-    fn dashboard_b_key_switches_to_browse() {
+    fn dashboard_b_key_no_longer_switches_to_browse() {
+        // Plan 10: [b] is removed from the Dashboard. Use global [3] for Remote.
         let mut app = fixture_app();
         let action = handle_key(&mut app, KeyCode::Char('b'));
-        match action {
-            ScreenAction::SwitchTo(Screen::Browse) => {}
-            _ => panic!("expected SwitchTo(Browse)"),
-        }
+        // Should stay — no longer a shortcut.
+        assert!(
+            matches!(action, ScreenAction::Stay),
+            "expected Stay, got {:?}",
+            action
+        );
     }
 
     #[test]
-    fn dashboard_c_key_switches_to_create_push() {
+    fn dashboard_c_key_no_longer_switches_to_create_push() {
+        // Plan 10: [c] is removed from Dashboard. Use [u] from Local screen instead.
         let mut app = fixture_app();
         let action = handle_key(&mut app, KeyCode::Char('c'));
-        match action {
-            ScreenAction::SwitchTo(Screen::CreatePush) => {}
-            _ => panic!("expected SwitchTo(CreatePush), got {:?}", action),
-        }
+        assert!(
+            matches!(action, ScreenAction::Stay),
+            "expected Stay, got {:?}",
+            action
+        );
     }
 
     #[test]
@@ -273,8 +271,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.user.email = Some("dev@example.com".into());
-        let lock = Lockfile::default();
-        let app = App::new(cfg, lock, project.path().to_path_buf(), None);
+        let app = App::new(cfg, project.path().to_path_buf(), None);
         assert_eq!(app.local_skills.len(), 1);
         assert_eq!(app.local_skills[0].meta.name, "foo");
     }
@@ -290,8 +287,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.user.email = Some("dev@example.com".into());
-        let lock = Lockfile::default();
-        let mut app = App::new(cfg, lock, project.path().to_path_buf(), None);
+        let mut app = App::new(cfg, project.path().to_path_buf(), None);
         assert_eq!(app.local_skills.len(), 1);
 
         project
@@ -313,8 +309,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.user.email = Some("dev@example.com".into());
-        let lock = Lockfile::default();
-        let app = App::new(cfg, lock, project.path().to_path_buf(), None);
+        let app = App::new(cfg, project.path().to_path_buf(), None);
 
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|f| crate::tui::draw(f, &app)).unwrap();

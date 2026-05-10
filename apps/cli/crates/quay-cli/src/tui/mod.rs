@@ -97,22 +97,30 @@ fn event_loop<B: ratatui::backend::Backend>(
                     let action = handle_key(app, key.code, &mut pending_g);
                     if let ScreenAction::SwitchTo(s) = &action {
                         app.switch_to(*s);
-                        if *s == Screen::Search || *s == Screen::Browse {
-                            // Browse and Search share the same fetched skill list
-                            // (browse filters it by selected remote in its preview).
-                            screens::search::ensure_loaded(app);
-                        }
-                        if *s == Screen::Browse {
-                            // Populate `app.browse` items + initial selection so
-                            // key handlers can read it (render's local clone is
-                            // not enough for the [a] install path).
-                            screens::browse::ensure_loaded_into_app(app);
-                        }
-                        if *s == Screen::CreatePush {
-                            // Reset the create/push state machine to a fresh form.
-                            app.create_push = screens::create_push::CreatePushState::Form(
-                                screens::create_push::build_create_form_from_app(app),
-                            );
+                        match *s {
+                            Screen::Search => {
+                                screens::search::ensure_loaded(app);
+                            }
+                            Screen::Browse => {
+                                // Legacy Browse screen — also loads search data.
+                                screens::search::ensure_loaded(app);
+                                screens::browse::ensure_loaded_into_app(app);
+                            }
+                            Screen::Remote => {
+                                screens::remote::ensure_loaded(app);
+                            }
+                            Screen::CreatePush => {
+                                if app.push_form_ready {
+                                    // State was pre-populated by Local [u]/[U] — leave it as-is.
+                                    app.push_form_ready = false;
+                                } else {
+                                    // Normal entry (e.g. g+c chord) — reset to a fresh create form.
+                                    app.create_push = screens::create_push::CreatePushState::Form(
+                                        screens::create_push::build_create_form_from_app(app),
+                                    );
+                                }
+                            }
+                            _ => {}
                         }
                     } else if let ScreenAction::Quit = &action {
                         app.should_quit = true;
@@ -129,6 +137,9 @@ fn event_loop<B: ratatui::backend::Backend>(
             app.create_push.tick();
             if app.settings.remotes.testing_idx.is_some() {
                 app.settings.remotes.spinner.advance();
+            }
+            if app.remote.fetching {
+                app.remote.spinner.advance();
             }
             last_tick = Instant::now();
         }
@@ -167,12 +178,12 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
             app.settings.remotes.testing_idx = None;
             app.settings.remotes.last_results.insert(remote_idx, status);
         }
-        BlockingAction::Add { skill, remote } => {
-            // Run `quay add` against the configured remote, then refresh
-            // both the lockfile (so `quay list` and Dashboard `Installed`
-            // panel see the new entry) and the local-skills scan (so the
-            // badge graduates from `local`/`pushed-direct` to `installed`).
-            use quay_core::{Config, GithubRawFetcher, SkillManager};
+        BlockingAction::Add {
+            skill,
+            remote,
+            force,
+        } => {
+            use quay_core::{CloneFetcher, Config, SkillManager};
             let project_config = app.project_root.join(".quay/config.toml");
             let project_path_arg = if project_config.exists() {
                 Some(project_config.as_path())
@@ -188,20 +199,21 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
                     return;
                 }
             };
-            let branch = std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
-            let f = GithubRawFetcher::new(branch);
+            let f = CloneFetcher::new();
             let mgr = SkillManager::new(&cfg, &f, &f, app.project_root.clone());
-            match mgr.add(&skill, remote.as_deref()) {
-                Ok(locked) => {
-                    if let Ok(lock) = quay_core::Lockfile::load_or_default(
-                        &app.project_root.join(".quay/lockfile.json"),
-                    ) {
-                        app.lock = lock;
-                    }
+            let result = if force {
+                mgr.add_with_force(&skill, remote.as_deref(), true)
+            } else {
+                mgr.add(&skill, remote.as_deref())
+            };
+            match result {
+                Ok(()) => {
                     app.reload_local_skills();
+                    app.set_status(format!("installed {}", skill));
+                }
+                Err(quay_core::QuayError::AlreadyExists(_)) => {
                     app.set_status(format!(
-                        "installed {} v{} from {}",
-                        skill, locked.version, locked.remote
+                        "'{skill}' already exists locally — press [A] to overwrite"
                     ));
                 }
                 Err(e) => {
@@ -226,14 +238,9 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
             match result {
                 Ok(outcome) => {
                     app.create_push = screens::create_push::CreatePushState::Done(outcome);
-                    // Refresh local-skills badges so Dashboard reflects the new
-                    // push-log entry without the user having to press [r].
                     app.reload_local_skills();
                 }
                 Err(e) => {
-                    // Move the current Pushing state into a Failed wrapper.
-                    // We need to extract the current state to use as the "prior" state.
-                    // The Pushing state is already set; we wrap it in Failed.
                     let placeholder = screens::create_push::CreatePushState::Form(
                         screens::create_push::build_create_form(&[]),
                     );
@@ -244,6 +251,9 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
                     };
                 }
             }
+        }
+        BlockingAction::FetchRegistry { remote_name } => {
+            screens::remote::run_fetch(app, &remote_name);
         }
     }
 }
@@ -271,23 +281,16 @@ pub fn handle_key(app: &mut App, code: KeyCode, pending_g: &mut bool) -> ScreenA
         return ScreenAction::Stay;
     }
 
-    // When a text input is focused (Onboarding form, Create/Push form, or a
-    // Settings add/edit modal), every keystroke must reach the form verbatim.
-    // Otherwise typing `evgenii` is impossible — `g` triggers the chord
-    // prefix, `p` opens the profile switcher, `q` quits, etc.
-    //
-    // Esc is intentionally NOT special-cased here — the focused screen's
-    // own handler treats Esc as form-cancel / back, which is the same
-    // behaviour we want.
+    // When a text input is focused, every keystroke must reach the form verbatim.
     if app.has_focused_text_input() {
         *pending_g = false;
         return match app.current_screen {
             Screen::Onboarding => screens::onboarding::handle_key(app, code),
             Screen::CreatePush => screens::create_push::handle_key(app, code),
             Screen::Settings => screens::settings::handle_key(app, code),
-            // The matches! in has_focused_text_input never returns true
-            // for these — but the compiler needs an exhaustive match.
             Screen::Dashboard => screens::dashboard::handle_key(app, code),
+            Screen::Local => screens::local::handle_key(app, code),
+            Screen::Remote => screens::remote::handle_key(app, code),
             Screen::Browse => screens::browse::handle_key(app, code),
             Screen::Search => screens::search::handle_key(app, code),
             Screen::Installed => screens::installed::handle_key(app, code),
@@ -299,8 +302,11 @@ pub fn handle_key(app: &mut App, code: KeyCode, pending_g: &mut bool) -> ScreenA
         *pending_g = false;
         let action = match code {
             KeyCode::Char('d') => ScreenAction::SwitchTo(Screen::Dashboard),
-            KeyCode::Char('b') => ScreenAction::SwitchTo(Screen::Browse),
+            KeyCode::Char('l') => ScreenAction::SwitchTo(Screen::Local),
+            KeyCode::Char('r') => ScreenAction::SwitchTo(Screen::Remote),
             KeyCode::Char('s') => ScreenAction::SwitchTo(Screen::Settings),
+            // Legacy chords kept for backward compat with existing tests.
+            KeyCode::Char('b') => ScreenAction::SwitchTo(Screen::Browse),
             KeyCode::Char('i') => ScreenAction::SwitchTo(Screen::Installed),
             KeyCode::Char('c') => ScreenAction::SwitchTo(Screen::CreatePush),
             _ => ScreenAction::Stay,
@@ -308,13 +314,16 @@ pub fn handle_key(app: &mut App, code: KeyCode, pending_g: &mut bool) -> ScreenA
         return action;
     }
 
-    // Global keys come first.
+    // Global keys.
     match code {
         KeyCode::Char('q') => return ScreenAction::Quit,
+        // Plan 10 navigation: [1] Dashboard, [2] Local, [3] Remote, [s] Search, [,] Settings.
         KeyCode::Char('1') => return ScreenAction::SwitchTo(Screen::Dashboard),
-        KeyCode::Char('2') => return ScreenAction::SwitchTo(Screen::Browse),
-        KeyCode::Char('3') => return ScreenAction::SwitchTo(Screen::Search),
-        KeyCode::Char('4') => return ScreenAction::SwitchTo(Screen::Installed),
+        KeyCode::Char('2') => return ScreenAction::SwitchTo(Screen::Local),
+        KeyCode::Char('3') => return ScreenAction::SwitchTo(Screen::Remote),
+        KeyCode::Char('s') if app.current_screen != Screen::Search => {
+            return ScreenAction::SwitchTo(Screen::Search);
+        }
         KeyCode::Char(',') => return ScreenAction::SwitchTo(Screen::Settings),
         KeyCode::Char('g') => {
             *pending_g = true;
@@ -329,6 +338,8 @@ pub fn handle_key(app: &mut App, code: KeyCode, pending_g: &mut bool) -> ScreenA
 
     match app.current_screen {
         Screen::Dashboard => screens::dashboard::handle_key(app, code),
+        Screen::Local => screens::local::handle_key(app, code),
+        Screen::Remote => screens::remote::handle_key(app, code),
         Screen::Browse => screens::browse::handle_key(app, code),
         Screen::Search => screens::search::handle_key(app, code),
         Screen::Installed => screens::installed::handle_key(app, code),
@@ -348,6 +359,8 @@ pub fn draw(frame: &mut ratatui::Frame, app: &App) {
 
     match app.current_screen {
         Screen::Dashboard => screens::dashboard::render(frame, app, chunks[0]),
+        Screen::Local => screens::local::render(frame, app, chunks[0]),
+        Screen::Remote => screens::remote::render(frame, app, chunks[0]),
         Screen::Browse => screens::browse::render(frame, app, chunks[0]),
         Screen::Search => screens::search::render(frame, app, chunks[0]),
         Screen::Installed => screens::installed::render(frame, app, chunks[0]),
@@ -366,15 +379,10 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
     use crossterm::event::KeyCode as KCode;
-    use quay_core::{Config, Lockfile};
+    use quay_core::Config;
 
     fn fixture_app() -> App {
-        App::new(
-            Config::default(),
-            Lockfile::default(),
-            std::path::PathBuf::from("/tmp"),
-            None,
-        )
+        App::new(Config::default(), std::path::PathBuf::from("/tmp"), None)
     }
 
     // -----------------------------------------------------------------------
@@ -417,7 +425,6 @@ mod tests {
     fn onboarding_when_no_config_file() {
         let dir = assert_fs::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        // File does not exist — gate should route to onboarding.
         let initial = decide_initial_screen(Some(&path));
         assert!(
             matches!(initial, Screen::Onboarding),
@@ -430,7 +437,6 @@ mod tests {
     fn onboarding_when_meta_false_and_no_profiles() {
         let dir = assert_fs::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        // Empty file: default meta (onboarded=false) + no profiles.
         std::fs::write(&path, "").unwrap();
         let initial = decide_initial_screen(Some(&path));
         assert!(
@@ -458,11 +464,6 @@ mod tests {
     }
 
     /// `onboarded = true` with no profiles still routes to onboarding.
-    ///
-    /// This was the bug: the old gate used `!onboarded && profiles.is_empty()`,
-    /// so a user who hit "skip" once (setting `onboarded=true`, no profiles)
-    /// was permanently locked out of profile creation. The new gate uses
-    /// `profiles.is_empty()` alone.
     #[test]
     fn onboarding_when_skipped_marker_but_no_profiles() {
         let dir = assert_fs::TempDir::new().unwrap();
@@ -484,11 +485,9 @@ mod tests {
     fn g_c_chord_enters_create_push() {
         let mut app = fixture_app();
         let mut pending_g = false;
-        // First key: 'g' — sets the pending flag.
         let action = handle_key(&mut app, KeyCode::Char('g'), &mut pending_g);
         assert!(matches!(action, ScreenAction::Stay));
         assert!(pending_g, "pending_g should be true after 'g'");
-        // Second key: 'c' — resolves the chord.
         let action = handle_key(&mut app, KeyCode::Char('c'), &mut pending_g);
         assert!(
             matches!(action, ScreenAction::SwitchTo(Screen::CreatePush)),
@@ -515,5 +514,50 @@ mod tests {
         let action = handle_key(&mut app, KeyCode::Char('z'), &mut pending_g);
         assert!(matches!(action, ScreenAction::Stay));
         assert!(!pending_g, "pending_g must be cleared on unknown chord");
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 10 — new screen jump keys
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn key_1_jumps_to_dashboard() {
+        let mut app = fixture_app();
+        let mut pending_g = false;
+        let action = handle_key(&mut app, KeyCode::Char('1'), &mut pending_g);
+        assert!(matches!(action, ScreenAction::SwitchTo(Screen::Dashboard)));
+    }
+
+    #[test]
+    fn key_2_jumps_to_local() {
+        let mut app = fixture_app();
+        let mut pending_g = false;
+        let action = handle_key(&mut app, KeyCode::Char('2'), &mut pending_g);
+        assert!(matches!(action, ScreenAction::SwitchTo(Screen::Local)));
+    }
+
+    #[test]
+    fn key_3_jumps_to_remote() {
+        let mut app = fixture_app();
+        let mut pending_g = false;
+        let action = handle_key(&mut app, KeyCode::Char('3'), &mut pending_g);
+        assert!(matches!(action, ScreenAction::SwitchTo(Screen::Remote)));
+    }
+
+    #[test]
+    fn key_comma_jumps_to_settings() {
+        let mut app = fixture_app();
+        let mut pending_g = false;
+        let action = handle_key(&mut app, KeyCode::Char(','), &mut pending_g);
+        assert!(matches!(action, ScreenAction::SwitchTo(Screen::Settings)));
+    }
+
+    #[test]
+    fn key_s_jumps_to_search_from_dashboard() {
+        let mut app = fixture_app();
+        app.current_screen = Screen::Dashboard;
+        let mut pending_g = false;
+        let action = handle_key(&mut app, KeyCode::Char('s'), &mut pending_g);
+        assert!(matches!(action, ScreenAction::SwitchTo(Screen::Search)));
     }
 }

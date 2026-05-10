@@ -1,6 +1,4 @@
-#[cfg(debug_assertions)]
-use quay_core::GithubRawFetcherWithBase;
-use quay_core::{Config, GithubRawFetcher, RegistryFetcher, SkillFileFetcher, SkillManager};
+use quay_core::{CloneFetcher, Config, RegistryFetcher, SkillFileFetcher, SkillManager};
 use std::path::Path;
 
 pub fn run(
@@ -14,15 +12,8 @@ pub fn run(
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
     crate::commands::ensure_remotes_configured(&cfg)?;
-    let branch = std::env::var("QUAY_GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
 
-    #[cfg(debug_assertions)]
-    if let Ok(base) = std::env::var("QUAY_GITHUB_BASE_URL") {
-        let f = GithubRawFetcherWithBase::new(branch, base);
-        return run_with(&cfg, &f, &f, skill, remote, project, json);
-    }
-
-    let f = GithubRawFetcher::new(branch);
+    let f = CloneFetcher::new();
     run_with(&cfg, &f, &f, skill, remote, project, json)
 }
 

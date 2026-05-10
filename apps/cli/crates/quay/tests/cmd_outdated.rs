@@ -119,7 +119,7 @@ async fn outdated_when_no_install_says_no_skills() {
             .args(["--project", &p, "outdated"])
             .assert()
             .success()
-            .stdout(predicates::str::contains("(no skills installed)"));
+            .stdout(predicates::str::contains("(everything up to date)"));
     })
     .await
     .unwrap();

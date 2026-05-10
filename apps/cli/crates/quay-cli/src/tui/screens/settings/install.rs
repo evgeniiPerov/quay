@@ -379,7 +379,7 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 mod tests {
     use super::*;
     use assert_fs::prelude::*;
-    use quay_core::{Config, Lockfile, ProjectConfigFile};
+    use quay_core::{Config, ProjectConfigFile};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -392,12 +392,7 @@ mod tests {
         });
         write_project_file(dir.path(), &file).unwrap();
 
-        let mut a = App::new(
-            Config::default(),
-            Lockfile::default(),
-            dir.path().to_path_buf(),
-            None,
-        );
+        let mut a = App::new(Config::default(), dir.path().to_path_buf(), None);
         a.current_screen = crate::tui::app::Screen::Settings;
         a.settings.tab = crate::tui::app::SettingsTab::Install;
         (a, dir)

@@ -1,5 +1,4 @@
 pub mod add;
-pub mod create;
 pub mod info;
 pub mod init;
 pub mod link;
@@ -12,7 +11,6 @@ pub mod remote;
 pub mod remove;
 pub mod scan;
 pub mod search;
-pub mod sync;
 pub mod tui;
 pub mod update;
 pub mod validate;

@@ -1,6 +1,7 @@
-//! Lenient discovery and metadata parsing for local skills in `.agents/skills/`.
+//! Lenient discovery and metadata parsing for local skills across all four
+//! mirror directories (`.agents/`, `.claude/`, `.codex/`, `.cursor/`).
 
-use crate::lockfile::Lockfile;
+use crate::config::MirrorRoot;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -117,13 +118,18 @@ pub fn parse_skill_metadata(raw: &str, path: &Path) -> SkillMeta {
 /// Sync state of a discovered local skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanStatus {
-    /// On disk; no lockfile entry.
+    /// On disk only — not yet pushed to any remote and not pulled from one.
     Local,
-    /// On disk and in lockfile; primary-file hash matches.
+    /// Pulled from a remote (legacy status; populated from push-log for skills
+    /// that have a lockfile record from pre-0.2.0 installs).
+    ///
+    /// Kept for backward-compatibility display; no longer written by the scanner.
     Installed { remote: String, version: String },
-    /// On disk and in lockfile; primary-file hash differs.
+    /// Same as `Installed` but the file has been modified since last pull.
+    ///
+    /// Kept for backward-compatibility display.
     InstalledModified { remote: String, version: String },
-    /// On disk; no lockfile entry, but a recent push-log record exists.
+    /// A push-log record exists for this skill — it was pushed to a remote.
     PushedLocal {
         remote: String,
         branch: String,
@@ -134,23 +140,139 @@ pub enum ScanStatus {
     },
 }
 
-/// One skill discovered on disk.
+/// One location where a skill's `SKILL.md` was found on disk.
+#[derive(Debug, Clone)]
+pub struct LocalLocation {
+    /// Which mirror root this location belongs to.
+    pub root: MirrorRoot,
+    /// Absolute path to the `SKILL.md` file.
+    pub path: PathBuf,
+    /// SHA-256 hex digest of the file's contents.
+    pub sha256: String,
+}
+
+/// One skill discovered on disk (possibly present in multiple mirror roots).
+///
+/// `locations` contains one entry per mirror root that has this skill; sorted
+/// in canonical preference order (Agents first). The "canonical" location is
+/// always `locations[0]`.
 #[derive(Debug, Clone)]
 pub struct LocalSkill {
     pub meta: SkillMeta,
-    pub path: PathBuf,
-    pub sha256: String,
+    /// All mirror roots where this skill appears. Never empty.
+    pub locations: Vec<LocalLocation>,
     pub status: ScanStatus,
 }
 
-/// Walk one level deep under each `root` and return one `LocalSkill` per
-/// directory containing a markdown skill file.
+impl LocalSkill {
+    /// Convenience accessor for the canonical (first/preferred) location's path.
+    pub fn canonical_path(&self) -> &Path {
+        &self.locations[0].path
+    }
+
+    /// Convenience accessor for the canonical location's SHA-256.
+    pub fn canonical_sha256(&self) -> &str {
+        &self.locations[0].sha256
+    }
+
+    /// Returns `true` if the skill has different content across mirrors.
+    pub fn has_drift(&self) -> bool {
+        if self.locations.len() < 2 {
+            return false;
+        }
+        let first = &self.locations[0].sha256;
+        self.locations[1..].iter().any(|l| &l.sha256 != first)
+    }
+}
+
+/// Walk all four mirror roots under `project_root`, deduplicate by folder name,
+/// and return one `LocalSkill` per unique skill name (sorted alphabetically).
+///
+/// Skills present in multiple mirrors are folded into one `LocalSkill` with
+/// multiple `locations`. The canonical location (index 0) is always the one
+/// with the highest preference in [`MirrorRoot::all()`] order.
+///
+/// Push status is derived from `push_log` filtered to records whose
+/// `project_path` matches `project_root` (or records with no `project_path`
+/// for backward compatibility).
+pub fn scan_local(project_root: &Path, push_log: &crate::push_log::PushLog) -> Vec<LocalSkill> {
+    use std::collections::BTreeMap;
+
+    let mut by_name: BTreeMap<String, Vec<LocalLocation>> = BTreeMap::new();
+    let mut meta_by_name: BTreeMap<String, SkillMeta> = BTreeMap::new();
+
+    for mirror in MirrorRoot::all() {
+        let root = project_root.join(mirror.dir());
+        let entries = match std::fs::read_dir(&root) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(skill_file) = pick_skill_file(&path) else {
+                continue;
+            };
+            let raw = match std::fs::read_to_string(&skill_file) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let folder = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if folder.is_empty() {
+                continue;
+            }
+            let sha256 = sha256_of(&raw);
+            // Only parse metadata from the most-preferred mirror.
+            if !meta_by_name.contains_key(&folder) {
+                let meta = parse_skill_metadata(&raw, &skill_file);
+                meta_by_name.insert(folder.clone(), meta);
+            }
+            by_name.entry(folder).or_default().push(LocalLocation {
+                root: mirror,
+                path: skill_file,
+                sha256,
+            });
+        }
+    }
+
+    let mut out: Vec<LocalSkill> = by_name
+        .into_iter()
+        .filter_map(|(name, locs)| {
+            let meta = meta_by_name.remove(&name)?;
+            let status = derive_status(&name, push_log, project_root);
+            Some(LocalSkill {
+                meta,
+                locations: locs,
+                status,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+    out
+}
+
+/// Legacy helper: walk one level deep under each supplied `root` path.
+///
+/// Used by existing call sites that pass explicit root paths. New code should
+/// prefer [`scan_local`] which walks all four mirror roots automatically.
+///
+/// Push status is derived from `push_log` without project-path filtering (all
+/// records match), since this function operates on arbitrary root lists rather
+/// than a single project root.
 pub fn scan_local_skills(
     roots: &[PathBuf],
-    lockfile: &Lockfile,
     push_log: &crate::push_log::PushLog,
 ) -> Vec<LocalSkill> {
-    let mut out = Vec::new();
+    use std::collections::BTreeMap;
+
+    let mut by_name: BTreeMap<String, Vec<LocalLocation>> = BTreeMap::new();
+    let mut meta_by_name: BTreeMap<String, SkillMeta> = BTreeMap::new();
+
     for root in roots {
         let entries = match std::fs::read_dir(root) {
             Ok(e) => e,
@@ -168,17 +290,39 @@ pub fn scan_local_skills(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let meta = parse_skill_metadata(&raw, &skill_file);
+            let folder = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if folder.is_empty() {
+                continue;
+            }
             let sha256 = sha256_of(&raw);
-            let status = derive_status(&meta.name, &sha256, lockfile, push_log);
-            out.push(LocalSkill {
-                meta,
+            if !meta_by_name.contains_key(&folder) {
+                let meta = parse_skill_metadata(&raw, &skill_file);
+                meta_by_name.insert(folder.clone(), meta);
+            }
+            by_name.entry(folder).or_default().push(LocalLocation {
+                root: MirrorRoot::Agents,
                 path: skill_file,
                 sha256,
-                status,
             });
         }
     }
+
+    let mut out: Vec<LocalSkill> = by_name
+        .into_iter()
+        .filter_map(|(name, locs)| {
+            let meta = meta_by_name.remove(&name)?;
+            let status = derive_status_global(&name, push_log);
+            Some(LocalSkill {
+                meta,
+                locations: locs,
+                status,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
     out
 }
 
@@ -207,37 +351,35 @@ fn sha256_of(s: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Derive status for a skill scanned from `project_root`, filtering push-log
+/// records to those belonging to that project.
 fn derive_status(
     name: &str,
-    on_disk_hash: &str,
-    lockfile: &Lockfile,
     push_log: &crate::push_log::PushLog,
+    project_root: &Path,
 ) -> ScanStatus {
-    match (
-        lockfile.skill_primary_sha(name),
-        lockfile.skill_remote_version(name),
-    ) {
-        (Some(locked_hash), Some((remote, version))) if locked_hash == on_disk_hash => {
-            ScanStatus::Installed {
-                remote: remote.to_string(),
-                version: version.to_string(),
-            }
-        }
-        (Some(_), Some((remote, version))) => ScanStatus::InstalledModified {
-            remote: remote.to_string(),
-            version: version.to_string(),
+    match push_log.latest_for_project(name, project_root) {
+        Some(rec) => ScanStatus::PushedLocal {
+            remote: rec.remote.clone(),
+            branch: rec.branch.clone(),
+            pr_url: rec.pr_url.clone(),
+            commit_sha: rec.commit_sha.clone().unwrap_or_default(),
         },
-        (None, _) => match push_log.latest_for(name) {
-            Some(rec) => ScanStatus::PushedLocal {
-                remote: rec.remote.clone(),
-                branch: rec.branch.clone(),
-                pr_url: rec.pr_url.clone(),
-                commit_sha: rec.commit_sha.clone().unwrap_or_default(),
-            },
-            None => ScanStatus::Local,
+        None => ScanStatus::Local,
+    }
+}
+
+/// Derive status without project-path filtering (used by [`scan_local_skills`]
+/// which operates on arbitrary root lists).
+fn derive_status_global(name: &str, push_log: &crate::push_log::PushLog) -> ScanStatus {
+    match push_log.latest_for(name) {
+        Some(rec) => ScanStatus::PushedLocal {
+            remote: rec.remote.clone(),
+            branch: rec.branch.clone(),
+            pr_url: rec.pr_url.clone(),
+            commit_sha: rec.commit_sha.clone().unwrap_or_default(),
         },
-        // Degenerate lockfile: sha present but no remote/version recorded.
-        (Some(_), None) => ScanStatus::Local,
+        None => ScanStatus::Local,
     }
 }
 
@@ -332,13 +474,6 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
-    fn sha256_hex(s: &str) -> String {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(s.as_bytes());
-        hex::encode(h.finalize())
-    }
-
     #[test]
     fn scan_finds_three_format_variants_as_local() {
         let tmp = TempDir::new().unwrap();
@@ -353,9 +488,8 @@ mod tests {
         );
         write_file(&root.join("c-free/SKILL.md"), "Just markdown.\n");
 
-        let lock = Lockfile::default();
         let log = crate::push_log::PushLog::default();
-        let mut skills = scan_local_skills(std::slice::from_ref(&root), &lock, &log);
+        let mut skills = scan_local_skills(std::slice::from_ref(&root), &log);
         skills.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
 
         assert_eq!(skills.len(), 3);
@@ -371,88 +505,17 @@ mod tests {
     }
 
     #[test]
-    fn scan_marks_installed_when_lockfile_hash_matches() {
-        use crate::lockfile::{LockedFile, LockedSkill};
-
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join(".agents/skills");
-        let body = "---\nname: dep\ndescription: d\n---\nbody\n";
-        write_file(&root.join("dep/SKILL.md"), body);
-
-        let mut lock = Lockfile::default();
-        lock.skills.insert(
-            "dep".into(),
-            LockedSkill {
-                remote: "hub".into(),
-                version: "1.0.0".into(),
-                sha: "irrelevant".into(),
-                path: "skills/dep".into(),
-                files: vec![LockedFile {
-                    path: "skills/dep/SKILL.md".into(),
-                    sha256: sha256_hex(body),
-                }],
-                installed_at: "2026-05-09T00:00:00Z".into(),
-            },
-        );
-
-        let log = crate::push_log::PushLog::default();
-        let skills = scan_local_skills(std::slice::from_ref(&root), &lock, &log);
-        assert_eq!(skills.len(), 1);
-        assert_eq!(
-            skills[0].status,
-            ScanStatus::Installed {
-                remote: "hub".into(),
-                version: "1.0.0".into()
-            }
-        );
-    }
-
-    #[test]
-    fn scan_marks_installed_modified_when_hash_differs() {
-        use crate::lockfile::{LockedFile, LockedSkill};
-
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join(".agents/skills");
-        let on_disk = "---\nname: dep\ndescription: edited\n---\nbody\n";
-        write_file(&root.join("dep/SKILL.md"), on_disk);
-
-        let mut lock = Lockfile::default();
-        lock.skills.insert(
-            "dep".into(),
-            LockedSkill {
-                remote: "hub".into(),
-                version: "1.0.0".into(),
-                sha: "irrelevant".into(),
-                path: "skills/dep".into(),
-                files: vec![LockedFile {
-                    path: "skills/dep/SKILL.md".into(),
-                    sha256: sha256_hex("---\nname: dep\ndescription: original\n---\nbody\n"),
-                }],
-                installed_at: "2026-05-09T00:00:00Z".into(),
-            },
-        );
-
-        let log = crate::push_log::PushLog::default();
-        let skills = scan_local_skills(std::slice::from_ref(&root), &lock, &log);
-        assert!(matches!(
-            skills[0].status,
-            ScanStatus::InstalledModified { .. }
-        ));
-    }
-
-    #[test]
     fn scan_skips_directories_without_md_files() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".agents/skills");
         write_file(&root.join("not-a-skill/.keep"), "");
-        let lock = Lockfile::default();
         let log = crate::push_log::PushLog::default();
-        let skills = scan_local_skills(std::slice::from_ref(&root), &lock, &log);
+        let skills = scan_local_skills(std::slice::from_ref(&root), &log);
         assert!(skills.is_empty());
     }
 
     #[test]
-    fn scan_marks_pushed_local_when_log_has_record_and_no_lockfile_entry() {
+    fn scan_marks_pushed_local_when_log_has_record() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".agents/skills");
         write_file(
@@ -468,10 +531,23 @@ mod tests {
             pr_url: "https://example/pr/9".into(),
             pushed_at: "2026-05-09T18:30:00Z".into(),
             commit_sha: None,
+            project_path: None,
         });
 
-        let lock = Lockfile::default();
-        let skills = scan_local_skills(std::slice::from_ref(&root), &lock, &log);
+        let skills = scan_local_skills(std::slice::from_ref(&root), &log);
         assert!(matches!(skills[0].status, ScanStatus::PushedLocal { .. }));
+    }
+
+    #[test]
+    fn scan_returns_local_status_when_no_push_log_entry() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".agents/skills");
+        write_file(
+            &root.join("foo/SKILL.md"),
+            "---\nname: foo\ndescription: d\n---\n",
+        );
+        let log = crate::push_log::PushLog::default();
+        let skills = scan_local_skills(std::slice::from_ref(&root), &log);
+        assert_eq!(skills[0].status, ScanStatus::Local);
     }
 }

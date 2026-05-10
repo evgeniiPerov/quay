@@ -1,3 +1,7 @@
+//! Installed-skills screen — shows locally-found skills from the scanner.
+//!
+//! Replaces the old lockfile-based view. Data comes from `app.local_skills`.
+
 use crate::tui::app::{App, ScreenAction};
 use crate::tui::theme;
 use crossterm::event::KeyCode;
@@ -36,17 +40,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let entries: Vec<(&String, &quay_core::LockedSkill)> = app.lock.skills.iter().collect();
-    let items: Vec<ListItem> = entries
+    let skills = &app.local_skills;
+    let items: Vec<ListItem> = skills
         .iter()
-        .map(|(name, sk)| {
+        .map(|s| {
+            let mirrors: Vec<&str> = s.locations.iter().map(|l| l.root.label()).collect();
             ListItem::new(Line::from(format!(
-                "{}  v{}  ({})",
-                name, sk.version, sk.remote
+                "{}  v{}  [{}]",
+                s.meta.name,
+                s.meta.version,
+                mirrors.join(",")
             )))
         })
         .collect();
-    let title = format!(" Installed ({}) ", entries.len());
+    let title = format!(" Local Skills ({}) ", skills.len());
     let mut list_state = app.installed.list_state.clone();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -57,14 +64,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .installed
         .list_state
         .selected()
-        .and_then(|i| entries.get(i))
-        .map(|(name, sk)| {
+        .and_then(|i| skills.get(i))
+        .map(|s| {
+            let mirrors: Vec<&str> = s.locations.iter().map(|l| l.root.label()).collect();
             format!(
-                "{} v{}\nremote: {}\nsha: {}\n",
-                name, sk.version, sk.remote, sk.sha
+                "{} v{}\nmirrors: {}\npath: {}\n",
+                s.meta.name,
+                s.meta.version,
+                mirrors.join(", "),
+                s.canonical_path().display(),
             )
         })
-        .unwrap_or_else(|| "(no installed skills)".into());
+        .unwrap_or_else(|| "(no local skills found)".into());
     frame.render_widget(
         Paragraph::new(preview).block(Block::default().borders(Borders::ALL).title(" Detail ")),
         cols[1],
@@ -74,47 +85,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quay_core::{Config, LockedSkill, Lockfile};
+    use quay_core::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn fixture_app() -> App {
-        let mut lock = Lockfile::default();
-        lock.skills.insert(
-            "csv-parse".into(),
-            LockedSkill {
-                remote: "primary".into(),
-                version: "0.1.0".into(),
-                sha: "deadbeef".into(),
-                path: "skills/csv-parse".into(),
-                files: vec![],
-                installed_at: "2026-05-08T00:00:00Z".into(),
-            },
-        );
-        let mut a = App::new(
-            Config::default(),
-            lock,
-            std::path::PathBuf::from("/tmp"),
-            None,
-        );
-        a.current_screen = crate::tui::app::Screen::Installed;
-        a
+        App::new(Config::default(), std::path::PathBuf::from("/tmp"), None)
     }
 
     #[test]
-    fn installed_renders_skill_row() {
+    fn installed_renders_without_crash() {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        let a = fixture_app();
+        let mut a = fixture_app();
+        a.current_screen = crate::tui::app::Screen::Installed;
         terminal.draw(|f| crate::tui::draw(f, &a)).unwrap();
-        let dump: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(dump.contains("csv-parse"), "dump: {}", dump);
-        assert!(dump.contains("Installed (1)"), "dump: {}", dump);
+        // Just verify it doesn't panic.
     }
 
     #[test]

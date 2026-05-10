@@ -3,7 +3,41 @@
 //! screen so writes always go through the same atomic-rename code path.
 
 use quay_core::{ProjectConfigFile, QuayError, UserConfigFile};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Return the user-level quay config directory (e.g. `~/.config/quay/`).
+///
+/// Platform logic:
+/// - Linux / other Unix: respects `XDG_CONFIG_HOME`; falls back to
+///   `$HOME/.config/quay`.
+/// - macOS: `$HOME/Library/Application Support/quay` (matches Finder
+///   conventions), unless `XDG_CONFIG_HOME` is explicitly set.
+/// - Windows: `%APPDATA%\quay`.
+///
+/// Returns `None` when the relevant environment variable is absent.
+pub fn default_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("quay"));
+    }
+
+    // XDG_CONFIG_HOME always wins on any non-Windows platform (useful in tests).
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("quay"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Library/Application Support/quay"));
+    }
+
+    // Linux and other Unix.
+    #[allow(unreachable_code)]
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/quay"))
+}
 
 /// Read the user config (legacy or new shape) and migrate legacy fields in place.
 /// Returns an empty `UserConfigFile` if the path is `None` or the file does not exist.

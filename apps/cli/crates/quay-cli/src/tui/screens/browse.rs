@@ -71,6 +71,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
                 app.defer_blocking_action(crate::tui::app::BlockingAction::Add {
                     skill: skill_name,
                     remote: Some(remote_name),
+                    force: false,
                 });
                 app.set_status("installing…");
             }
@@ -284,7 +285,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quay_core::{Config, Lockfile, RemoteConfig};
+    use quay_core::{Config, RemoteConfig};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -299,12 +300,7 @@ mod tests {
                 push_mode: quay_core::PushMode::default(),
             },
         );
-        let mut a = App::new(
-            cfg,
-            Lockfile::default(),
-            std::path::PathBuf::from("/tmp"),
-            None,
-        );
+        let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
         a.current_screen = crate::tui::app::Screen::Browse;
         a
     }

@@ -375,17 +375,12 @@ fn render_failed(frame: &mut Frame, area: Rect, msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quay_core::{Config, Lockfile};
+    use quay_core::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn fixture_app() -> App {
-        App::new(
-            Config::default(),
-            Lockfile::default(),
-            std::path::PathBuf::from("/tmp"),
-            None,
-        )
+        App::new(Config::default(), std::path::PathBuf::from("/tmp"), None)
     }
 
     // -- Save writes profile + remote + active to disk --
