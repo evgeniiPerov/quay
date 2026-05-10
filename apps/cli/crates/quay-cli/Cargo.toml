@@ -19,6 +19,7 @@ tui-textarea.workspace = true
 nucleo-matcher.workspace = true
 ratatui-form.workspace = true
 tempfile.workspace = true
+dialoguer.workspace = true
 
 [dev-dependencies]
 assert_fs.workspace = true

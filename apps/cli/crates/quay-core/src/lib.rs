@@ -10,6 +10,7 @@ pub mod linker;
 pub mod manager;
 pub mod manifest;
 pub mod outdated;
+pub mod profile_draft;
 pub mod provider;
 pub mod providers;
 pub mod push_log;
@@ -37,6 +38,7 @@ pub use linker::{apply_all, apply_one, check, MirrorAction, MirrorDrift};
 pub use manager::{sha256_hex, SkillManager};
 pub use manifest::{parse_skill, QuayMeta, SkillManifest};
 pub use outdated::{outdated_for_local, OutdatedEntry};
+pub use profile_draft::{ProfileDraft, RemoteDraft};
 #[cfg(any(test, debug_assertions))]
 pub use provider::FakeOpener;
 pub use provider::{

@@ -135,6 +135,7 @@ fn event_loop<B: ratatui::backend::Backend>(
         if last_tick.elapsed() >= tick_rate {
             // Tick: advance any animated state.
             app.create_push.tick();
+            app.remote.bulk_add.tick();
             if app.settings.remotes.testing_idx.is_some() {
                 app.settings.remotes.spinner.advance();
             }
@@ -183,6 +184,7 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
             remote,
             force,
         } => {
+            use crate::tui::screens::remote::BulkAddState;
             use quay_core::{CloneFetcher, Config, SkillManager};
             let project_config = app.project_root.join(".quay/config.toml");
             let project_path_arg = if project_config.exists() {
@@ -206,18 +208,32 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
             } else {
                 mgr.add(&skill, remote.as_deref())
             };
-            match result {
-                Ok(()) => {
+
+            // Check if we're in bulk-add mode; if so, advance the state machine.
+            let in_bulk = matches!(app.remote.bulk_add, BulkAddState::BulkAdding { .. });
+            if in_bulk {
+                let (ok, err_msg) = match &result {
+                    Ok(()) => (true, None),
+                    Err(e) => (false, Some(e.to_string())),
+                };
+                if result.is_ok() {
                     app.reload_local_skills();
-                    app.set_status(format!("installed {}", skill));
                 }
-                Err(quay_core::QuayError::AlreadyExists(_)) => {
-                    app.set_status(format!(
-                        "'{skill}' already exists locally — press [A] to overwrite"
-                    ));
-                }
-                Err(e) => {
-                    app.set_status(format!("install failed: {e}"));
+                screens::remote::advance_bulk_add(app, skill, ok, err_msg);
+            } else {
+                match result {
+                    Ok(()) => {
+                        app.reload_local_skills();
+                        app.set_status(format!("installed {}", skill));
+                    }
+                    Err(quay_core::QuayError::AlreadyExists(_)) => {
+                        app.set_status(format!(
+                            "'{skill}' already exists locally — press [A] to overwrite"
+                        ));
+                    }
+                    Err(e) => {
+                        app.set_status(format!("install failed: {e}"));
+                    }
                 }
             }
         }

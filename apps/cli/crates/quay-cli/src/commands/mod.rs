@@ -1,6 +1,7 @@
 pub mod add;
 pub mod info;
 pub mod init;
+pub mod interactive;
 pub mod link;
 pub mod list;
 pub mod outdated;

@@ -6,7 +6,7 @@ use serde_json::json;
 use std::path::Path;
 
 /// All information produced by a successful [`push_skill`] call.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PushOutcome {
     /// The skill name as supplied.
     pub skill: String,
@@ -111,6 +111,106 @@ fn ensure_remotes_configured_core(cfg: &Config) -> Result<(), QuayError> {
         return Err(QuayError::ConfigValidation(
             "no remotes configured — run `quay remote add <name> <url> --default` first".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Push one or more local skills selected interactively via `dialoguer::MultiSelect`.
+///
+/// Presents a checkbox list of all skills discovered under `.agents/skills/`.
+/// Each selected skill is pushed sequentially with the provided bump/remote
+/// settings.  Prints a per-skill ✓/✗ summary.
+///
+/// Returns `Err` immediately when stdin is not a TTY.
+#[allow(clippy::too_many_arguments)]
+pub fn run_interactive(
+    remote: Option<&str>,
+    bump: crate::args::BumpArg,
+    push_mode: Option<quay_core::config::PushMode>,
+    profile: Option<&str>,
+    project: &Path,
+    user_config: Option<&Path>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let project_config = project.join(".quay/config.toml");
+    let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
+    ensure_remotes_configured_core(&cfg)?;
+
+    let push_log = quay_core::push_log::PushLog::load(
+        user_config.and_then(|p| p.parent()).unwrap_or(project),
+        Some(project),
+    )
+    .unwrap_or_default();
+    let skills = quay_core::scanner::scan_local(project, &push_log);
+    if skills.is_empty() {
+        println!("(no local skills found)");
+        return Ok(());
+    }
+
+    let bump_kind = match bump {
+        crate::args::BumpArg::Patch => BumpKind::Patch,
+        crate::args::BumpArg::Minor => BumpKind::Minor,
+        crate::args::BumpArg::Major => BumpKind::Major,
+        crate::args::BumpArg::AsWritten => BumpKind::AsWritten,
+    };
+
+    let picks = crate::commands::interactive::pick_many(
+        "Select skills to push (Space to toggle, Enter to confirm)",
+        &skills,
+        |s| {
+            let version = &s.meta.version;
+            format!("{} v{}", s.meta.name, version)
+        },
+    )?;
+
+    if picks.is_empty() {
+        println!("(nothing selected)");
+        return Ok(());
+    }
+
+    let mut ok = 0usize;
+    let mut fail = 0usize;
+    for idx in &picks {
+        let skill = &skills[*idx];
+        match push_skill(
+            &skill.meta.name,
+            remote,
+            bump_kind,
+            push_mode,
+            profile,
+            project,
+            user_config,
+        ) {
+            Ok(outcome) if json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "skill": outcome.skill,
+                        "remote": outcome.remote,
+                        "version": outcome.version,
+                        "pr_url": outcome.pr_url,
+                    }))?
+                );
+                ok += 1;
+            }
+            Ok(outcome) => {
+                let pr = if outcome.pr_url.is_empty() {
+                    String::new()
+                } else {
+                    format!(" → {}", outcome.pr_url)
+                };
+                println!("\u{2713} {} v{}{}", outcome.skill, outcome.version, pr);
+                ok += 1;
+            }
+            Err(e) => {
+                eprintln!("\u{2717} {}: {}", skill.meta.name, e);
+                fail += 1;
+            }
+        }
+    }
+
+    if !json {
+        println!("pushed {} of {} selected", ok, ok + fail);
     }
     Ok(())
 }

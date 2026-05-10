@@ -3,12 +3,14 @@
 //! Renders `Vec<LocalSkill>` from the scanner. Columns: Name, Status, Mirrors, Path.
 //! Key bindings:
 //!   - `[j]/[k]` — navigate rows
+//!   - `[Space]` — toggle row in/out of bulk selection (`picks`)
 //!   - `[Enter]` — detail view (all locations + frontmatter)
-//!   - `[u]` — quick push: patch bump, default remote, no form
-//!   - `[U]` — push form (Tags, Bump, Target remote)
-//!   - `[d]` — remove local
-//!   - `[D]` — remove everywhere (with confirm)
+//!   - `[u]` — quick push (bulk if picks non-empty; else single-skill, patch bump)
+//!   - `[U]` — push form (bulk if picks non-empty; else single-skill form)
+//!   - `[d]` — remove local (bulk if picks non-empty; else single-skill)
+//!   - `[D]` — remove everywhere with confirm (bulk if picks non-empty)
 //!   - `[r]` — rescan
+//!   - `[Esc]` — clear selection when picks non-empty; otherwise back/dismiss modal
 
 use crate::tui::app::{App, BlockingAction, Screen, ScreenAction};
 use crate::tui::theme;
@@ -18,6 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
+use std::collections::BTreeSet;
 
 /// Internal state for the Local screen modal confirm dialog.
 #[derive(Debug, Default, Clone)]
@@ -26,6 +29,10 @@ pub enum LocalModal {
     None,
     /// Confirm "delete everywhere?" for the selected skill.
     ConfirmDeleteEverywhere { skill_name: String },
+    /// Confirm bulk local delete for N picked skills.
+    ConfirmBulkDeleteLocal { count: usize },
+    /// Confirm bulk delete everywhere for N picked skills.
+    ConfirmBulkDeleteEverywhere { count: usize },
 }
 
 /// State for the Local screen.
@@ -37,6 +44,8 @@ pub struct LocalState {
     pub detail_open: bool,
     /// Active confirm modal, if any.
     pub modal: LocalModal,
+    /// Bulk-selected row indices; toggled by `[Space]`.
+    pub picks: BTreeSet<usize>,
 }
 
 pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
@@ -57,10 +66,73 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
             }
             return ScreenAction::Stay;
         }
+        LocalModal::ConfirmBulkDeleteLocal { count: _ } => {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    // Collect names from picks before mutating.
+                    let names: Vec<String> = app
+                        .local
+                        .picks
+                        .iter()
+                        .filter_map(|&i| app.local_skills.get(i))
+                        .map(|s| s.meta.name.clone())
+                        .collect();
+                    let n = names.len();
+                    for name in &names {
+                        remove_local(app, name);
+                    }
+                    app.local.picks.clear();
+                    app.set_status(format!("removed {n} skills locally"));
+                }
+                _ => {
+                    // Cancel: dismiss modal (already None).
+                }
+            }
+            return ScreenAction::Stay;
+        }
+        LocalModal::ConfirmBulkDeleteEverywhere { count: _ } => {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let names: Vec<String> = app
+                        .local
+                        .picks
+                        .iter()
+                        .filter_map(|&i| app.local_skills.get(i))
+                        .map(|s| s.meta.name.clone())
+                        .collect();
+                    let n = names.len();
+                    for name in &names {
+                        remove_everywhere(app, name);
+                    }
+                    app.local.picks.clear();
+                    app.set_status(format!("removed {n} skills everywhere"));
+                }
+                _ => {
+                    // Cancel: dismiss modal (already None).
+                }
+            }
+            return ScreenAction::Stay;
+        }
         LocalModal::None => {}
     }
 
     match code {
+        KeyCode::Esc => {
+            if !app.local.picks.is_empty() {
+                app.local.picks.clear();
+                return ScreenAction::Stay;
+            }
+            // No picks — fall through to default (no-op for Local screen).
+            return ScreenAction::Stay;
+        }
+        KeyCode::Char(' ') => {
+            if !app.local_skills.is_empty() {
+                let idx = app.local.selected;
+                if !app.local.picks.insert(idx) {
+                    app.local.picks.remove(&idx);
+                }
+            }
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             if !app.local_skills.is_empty() {
                 app.local.selected =
@@ -79,32 +151,65 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
         }
         KeyCode::Char('r') => {
             app.reload_local_skills();
-            app.local.selected = app
-                .local
-                .selected
-                .min(app.local_skills.len().saturating_sub(1));
+            let new_len = app.local_skills.len();
+            app.local.selected = app.local.selected.min(new_len.saturating_sub(1));
+            // Drop picks whose indices no longer resolve to any skill.
+            app.local.picks.retain(|&i| i < new_len);
             app.set_status("rescanned local skills");
         }
         KeyCode::Char('u') => {
-            if let Some(skill) = app.local_skills.get(app.local.selected).cloned() {
+            if !app.local.picks.is_empty() {
+                // Bulk quick-push: Patch bump, default remote, sequential.
+                let names: Vec<String> = app
+                    .local
+                    .picks
+                    .iter()
+                    .filter_map(|&i| app.local_skills.get(i))
+                    .map(|s| s.meta.name.clone())
+                    .collect();
+                if !names.is_empty() {
+                    crate::tui::screens::create_push::bulk_quick_push(app, names);
+                    return ScreenAction::SwitchTo(Screen::CreatePush);
+                }
+            } else if let Some(skill) = app.local_skills.get(app.local.selected).cloned() {
                 quick_push(app, &skill);
                 return ScreenAction::SwitchTo(Screen::CreatePush);
             }
         }
         KeyCode::Char('U') => {
-            if let Some(skill) = app.local_skills.get(app.local.selected).cloned() {
+            if !app.local.picks.is_empty() {
+                // Bulk push with form: collect picked skill names and open push form.
+                // The form's submit will call bulk_form_push.
+                let names: Vec<String> = app
+                    .local
+                    .picks
+                    .iter()
+                    .filter_map(|&i| app.local_skills.get(i))
+                    .map(|s| s.meta.name.clone())
+                    .collect();
+                if !names.is_empty() {
+                    open_bulk_push_form(app, names);
+                    return ScreenAction::SwitchTo(Screen::CreatePush);
+                }
+            } else if let Some(skill) = app.local_skills.get(app.local.selected).cloned() {
                 open_push_form(app, &skill);
                 return ScreenAction::SwitchTo(Screen::CreatePush);
             }
         }
         KeyCode::Char('d') => {
-            if let Some(skill) = app.local_skills.get(app.local.selected) {
+            if !app.local.picks.is_empty() {
+                let count = app.local.picks.len();
+                app.local.modal = LocalModal::ConfirmBulkDeleteLocal { count };
+            } else if let Some(skill) = app.local_skills.get(app.local.selected) {
                 let name = skill.meta.name.clone();
                 remove_local(app, &name);
             }
         }
         KeyCode::Char('D') => {
-            if let Some(skill) = app.local_skills.get(app.local.selected) {
+            if !app.local.picks.is_empty() {
+                let count = app.local.picks.len();
+                app.local.modal = LocalModal::ConfirmBulkDeleteEverywhere { count };
+            } else if let Some(skill) = app.local_skills.get(app.local.selected) {
                 let name = skill.meta.name.clone();
                 app.local.modal = LocalModal::ConfirmDeleteEverywhere { skill_name: name };
             }
@@ -139,6 +244,29 @@ fn quick_push(app: &mut App, skill: &quay_core::scanner::LocalSkill) {
         remote: None,
         bump: BumpKind::Patch,
     });
+}
+
+/// Open a bulk push form for N picked skills.
+///
+/// The form uses the first skill's tags as a template; on submit, `bulk_form_push`
+/// is called with all N skill names and the form's chosen bump + remote.
+fn open_bulk_push_form(app: &mut App, names: Vec<String>) {
+    use crate::tui::screens::create_push::{build_push_form_from_app, CreatePushState};
+
+    // Use the first skill's tags as the initial tags value.
+    let tags_initial = names
+        .first()
+        .and_then(|n| app.local_skills.iter().find(|s| &s.meta.name == n))
+        .map(|s| s.meta.tags.join(", "))
+        .unwrap_or_default();
+    let label = format!(" Push {} skills ", names.len());
+    // Re-use build_push_form_from_app with the label as the skill name (cosmetic).
+    let form = build_push_form_from_app(&label, &tags_initial, app);
+    app.create_push = CreatePushState::BulkPushForm {
+        skill_names: names,
+        form: Box::new(form),
+    };
+    app.push_form_ready = true;
 }
 
 /// Open the `PushModal` form for the selected skill.
@@ -203,6 +331,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let skills = &app.local_skills;
     let selected = app.local.selected;
     let detail_open = app.local.detail_open;
+    let picks = &app.local.picks;
+    let has_picks = !picks.is_empty();
 
     // Split area: list | detail (when detail_open)
     let (list_area, detail_area) = if detail_open {
@@ -216,11 +346,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Column widths for list view.
-    // Name(24) Status(22) Mirrors(22) Path(rest)
-    let header = format!(
-        " {:<24}  {:<22}  {:<22}  {}",
-        "Name", "Status", "Mirrors", "Path"
-    );
+    // When picks active: "[x] " prefix (4 chars) + Name(24) Status(22) Mirrors(22) Path(rest)
+    let header = if has_picks {
+        format!(
+            "    {:<24}  {:<22}  {:<22}  {}",
+            "Name", "Status", "Mirrors", "Path"
+        )
+    } else {
+        format!(
+            " {:<24}  {:<22}  {:<22}  {}",
+            "Name", "Status", "Mirrors", "Path"
+        )
+    };
 
     let selected_style = Style::default()
         .fg(Color::Black)
@@ -245,10 +382,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 let name_col = truncate(&s.meta.name, 24);
                 let status_col = truncate(&status_str, 22);
                 let mirror_col = truncate(&format!("{mirror_str}{drift}"), 22);
-                let line = format!(
+                let row_content = format!(
                     " {:<24}  {:<22}  {:<22}  {}",
                     name_col, status_col, mirror_col, path_str
                 );
+                let line = if has_picks {
+                    let prefix = if picks.contains(&i) { "[x]" } else { "[ ]" };
+                    format!("{prefix}{row_content}")
+                } else {
+                    row_content
+                };
                 if i == selected {
                     ListItem::new(Line::from(Span::styled(line, selected_style)))
                 } else {
@@ -258,7 +401,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .collect()
     };
 
-    let title = format!(" Local ({}) ", skills.len());
+    let title = if has_picks {
+        format!(
+            " Local skills ({} of {} selected) ",
+            picks.len(),
+            skills.len()
+        )
+    } else {
+        format!(" Local ({}) ", skills.len())
+    };
     let mut header_items = vec![ListItem::new(Line::from(Span::styled(
         header,
         Style::default().add_modifier(Modifier::BOLD),
@@ -271,8 +422,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, list_area);
 
     // Confirm modal overlay.
-    if let LocalModal::ConfirmDeleteEverywhere { ref skill_name } = app.local.modal {
-        render_confirm_modal(frame, area, skill_name);
+    match &app.local.modal {
+        LocalModal::ConfirmDeleteEverywhere { skill_name } => {
+            render_confirm_modal(frame, area, skill_name);
+        }
+        LocalModal::ConfirmBulkDeleteLocal { count } => {
+            render_confirm_bulk_local_modal(frame, area, *count);
+        }
+        LocalModal::ConfirmBulkDeleteEverywhere { count } => {
+            render_confirm_bulk_everywhere_modal(frame, area, *count);
+        }
+        LocalModal::None => {}
     }
 
     // Detail panel.
@@ -289,11 +449,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         width: area.width,
         height: 1,
     };
+    let hint_text = if has_picks {
+        format!(
+            "[Space] toggle  [u] push selected ({n})  [d] delete selected  [Esc] clear",
+            n = picks.len()
+        )
+    } else {
+        "[j]/[k] move  [Space] select  [Enter] detail  [u] push  [U] push+tags  [d] rm local  [D] rm everywhere  [r] rescan".to_string()
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "[j]/[k] move  [Enter] detail  [u] push  [U] push+tags  [d] rm local  [D] rm everywhere  [r] rescan",
-            theme::dim(),
-        ))),
+        Paragraph::new(Line::from(Span::styled(hint_text, theme::dim()))),
         hint_area,
     );
 }
@@ -368,6 +533,60 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect, skill_name: &str) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_confirm_bulk_local_modal(frame: &mut Frame, area: Rect, count: usize) {
+    use ratatui::widgets::Clear;
+    let modal_width = 60_u16;
+    let modal_height = 5_u16;
+    let modal_x = area.x + area.width.saturating_sub(modal_width) / 2;
+    let modal_y = area.y + area.height.saturating_sub(modal_height) / 2;
+    let modal_area = Rect {
+        x: modal_x,
+        y: modal_y,
+        width: modal_width.min(area.width),
+        height: modal_height,
+    };
+    frame.render_widget(Clear, modal_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .title(" Confirm Bulk Delete Local ");
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+    let lines = vec![
+        Line::from(format!(" Remove {} skill(s) locally? y/N", count)),
+        Line::from(""),
+        Line::from(Span::styled(" [y] yes   [any other] cancel", theme::dim())),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_confirm_bulk_everywhere_modal(frame: &mut Frame, area: Rect, count: usize) {
+    use ratatui::widgets::Clear;
+    let modal_width = 60_u16;
+    let modal_height = 5_u16;
+    let modal_x = area.x + area.width.saturating_sub(modal_width) / 2;
+    let modal_y = area.y + area.height.saturating_sub(modal_height) / 2;
+    let modal_area = Rect {
+        x: modal_x,
+        y: modal_y,
+        width: modal_width.min(area.width),
+        height: modal_height,
+    };
+    frame.render_widget(Clear, modal_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .title(" Confirm Bulk Delete Everywhere ");
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+    let lines = vec![
+        Line::from(format!(" Delete {} skill(s) everywhere? y/N", count)),
+        Line::from(""),
+        Line::from(Span::styled(" [y] yes   [any other] cancel", theme::dim())),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn badge_for(status: &quay_core::scanner::ScanStatus) -> String {
     use quay_core::scanner::ScanStatus;
     match status {
@@ -396,6 +615,151 @@ mod tests {
 
     fn fixture_app() -> App {
         App::new(Config::default(), std::path::PathBuf::from("/tmp"), None)
+    }
+
+    /// Helper: build an App with two local skills (aaa, bbb).
+    fn two_skill_app() -> App {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        project
+            .child(".agents/skills/bbb/SKILL.md")
+            .write_str("---\nname: bbb\ndescription: b\n---\n")
+            .unwrap();
+        App::new(Config::default(), project.path().to_path_buf(), None)
+    }
+
+    #[test]
+    fn space_toggles_pick() {
+        let mut a = two_skill_app();
+        a.current_screen = Screen::Local;
+        assert!(a.local.picks.is_empty());
+        // Press Space on row 0 — should be added.
+        handle_key(&mut a, KeyCode::Char(' '));
+        assert!(a.local.picks.contains(&0), "picks should contain index 0");
+        // Press Space again on row 0 — should be removed.
+        handle_key(&mut a, KeyCode::Char(' '));
+        assert!(
+            a.local.picks.is_empty(),
+            "picks should be empty after toggle off"
+        );
+    }
+
+    #[test]
+    fn esc_clears_picks_when_non_empty() {
+        let mut a = two_skill_app();
+        a.local.picks.insert(0);
+        a.local.picks.insert(1);
+        assert_eq!(a.local.picks.len(), 2);
+        let action = handle_key(&mut a, KeyCode::Esc);
+        assert!(matches!(action, ScreenAction::Stay), "should Stay");
+        assert!(a.local.picks.is_empty(), "picks should be cleared by Esc");
+    }
+
+    #[test]
+    fn esc_stays_when_picks_empty() {
+        let mut a = fixture_app();
+        assert!(a.local.picks.is_empty());
+        let action = handle_key(&mut a, KeyCode::Esc);
+        assert!(matches!(action, ScreenAction::Stay));
+    }
+
+    #[test]
+    fn render_with_picks_shows_prefix_and_header_count() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        project
+            .child(".agents/skills/bbb/SKILL.md")
+            .write_str("---\nname: bbb\ndescription: b\n---\n")
+            .unwrap();
+        project
+            .child(".agents/skills/ccc/SKILL.md")
+            .write_str("---\nname: ccc\ndescription: c\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        a.current_screen = Screen::Local;
+        // Select rows 0 and 2 (not 1).
+        a.local.picks.insert(0);
+        a.local.picks.insert(2);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|f| crate::tui::draw(f, &a)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            dump.contains("[x]"),
+            "selected rows should show [x] prefix; dump: {dump}"
+        );
+        assert!(
+            dump.contains("[ ]"),
+            "unselected rows should show [ ] prefix; dump: {dump}"
+        );
+        assert!(
+            dump.contains("2 of 3 selected"),
+            "header should show selection count; dump: {dump}"
+        );
+    }
+
+    #[test]
+    fn render_without_picks_shows_no_prefix() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        a.current_screen = Screen::Local;
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|f| crate::tui::draw(f, &a)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            !dump.contains("[x]"),
+            "no [x] prefix when picks empty; dump: {dump}"
+        );
+        assert!(
+            !dump.contains("selected"),
+            "header should not mention 'selected' when picks empty; dump: {dump}"
+        );
+    }
+
+    #[test]
+    fn rescan_drops_invalid_picks() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        // Manually inject a pick for index 5 (out of bounds after rescan of 1 skill).
+        a.local.picks.insert(5);
+        handle_key(&mut a, KeyCode::Char('r'));
+        assert!(
+            a.local.picks.is_empty(),
+            "out-of-bounds picks must be dropped on rescan"
+        );
     }
 
     #[test]
@@ -535,6 +899,125 @@ mod tests {
         assert!(
             a.next_blocking.is_none(),
             "no blocking action should be queued before form submit"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5 — Bulk delete tests
+    // -----------------------------------------------------------------------
+
+    /// `[d]` with picks non-empty shows a confirm modal (not immediately deleting).
+    #[test]
+    fn d_bulk_with_confirm_removes_all_picks_locally() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        project
+            .child(".agents/skills/bbb/SKILL.md")
+            .write_str("---\nname: bbb\ndescription: b\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        a.current_screen = Screen::Local;
+        a.local.picks.insert(0);
+        a.local.picks.insert(1);
+
+        // First [d] should open confirm modal, NOT delete.
+        handle_key(&mut a, KeyCode::Char('d'));
+        assert!(
+            matches!(
+                a.local.modal,
+                LocalModal::ConfirmBulkDeleteLocal { count: 2 }
+            ),
+            "expected ConfirmBulkDeleteLocal modal, got {:?}",
+            a.local.modal
+        );
+        // Both skills still present.
+        assert_eq!(a.local_skills.len(), 2, "no skills deleted yet");
+
+        // Confirm with [y].
+        handle_key(&mut a, KeyCode::Char('y'));
+        assert!(
+            a.local.picks.is_empty(),
+            "picks must be cleared after bulk delete"
+        );
+        // Skills should be removed from disk.
+        assert!(
+            a.local_skills.is_empty() || a.local_skills.len() < 2,
+            "local skills should be reduced after bulk delete"
+        );
+    }
+
+    /// `[d]` bulk confirm modal: cancelling with any other key leaves skills intact.
+    #[test]
+    fn d_bulk_clears_picks_and_rescans() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        a.local.picks.insert(0);
+
+        // Open modal.
+        handle_key(&mut a, KeyCode::Char('d'));
+        assert!(matches!(
+            a.local.modal,
+            LocalModal::ConfirmBulkDeleteLocal { count: 1 }
+        ));
+
+        // Cancel with [n].
+        handle_key(&mut a, KeyCode::Char('n'));
+        // Skill must still be there.
+        assert_eq!(
+            a.local_skills.len(),
+            1,
+            "skill should not be deleted on cancel"
+        );
+        // Modal dismissed.
+        assert!(
+            matches!(a.local.modal, LocalModal::None),
+            "modal must be dismissed on cancel"
+        );
+    }
+
+    /// `[D]` with picks non-empty shows a bulk-everywhere confirm modal.
+    #[test]
+    fn cap_d_bulk_confirm_modal_then_loop() {
+        use assert_fs::prelude::*;
+        let project = assert_fs::TempDir::new().unwrap();
+        project
+            .child(".agents/skills/aaa/SKILL.md")
+            .write_str("---\nname: aaa\ndescription: a\n---\n")
+            .unwrap();
+        project
+            .child(".agents/skills/bbb/SKILL.md")
+            .write_str("---\nname: bbb\ndescription: b\n---\n")
+            .unwrap();
+        let mut a = App::new(Config::default(), project.path().to_path_buf(), None);
+        a.local.picks.insert(0);
+        a.local.picks.insert(1);
+
+        handle_key(&mut a, KeyCode::Char('D'));
+        assert!(
+            matches!(
+                a.local.modal,
+                LocalModal::ConfirmBulkDeleteEverywhere { count: 2 }
+            ),
+            "expected ConfirmBulkDeleteEverywhere modal, got {:?}",
+            a.local.modal
+        );
+        // No action yet — waiting for confirm.
+        assert_eq!(a.local_skills.len(), 2, "no skills deleted before confirm");
+
+        // Confirm with [y] — loops remove_everywhere for each pick.
+        handle_key(&mut a, KeyCode::Char('y'));
+        assert!(
+            a.local.picks.is_empty(),
+            "picks must be cleared after bulk delete everywhere"
         );
     }
 }

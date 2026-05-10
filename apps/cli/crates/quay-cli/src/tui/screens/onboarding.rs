@@ -5,15 +5,19 @@
 //! Step 1: Profile — collect a profile name and identity (email).
 //! Step 2: Remote  — collect a hub name and git URL.
 //!
-//! "Submit" persists a fully-configured user config.
+//! "Submit" persists a fully-configured user config via the shared
+//! [`ProfileDraft::write_to_user_config`] path so the write logic is
+//! canonical across wizard, TOML-ingest, and onboarding flows.
 //! `Esc` on Step 1 writes the onboarded marker only (skip path).
 //! `Esc` on Step 2 goes back to Step 1.
 
-use crate::config_io::write_user_file;
+use crate::config_io::{read_user_file, write_user_file};
 use crate::tui::app::{App, ScreenAction};
 use crate::tui::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-use quay_core::{MetaSection, ProfileFile, RemoteConfig, UserConfigFile, UserSection};
+use quay_core::{
+    detect_kind_from_url, MetaSection, ProfileDraft, PushMode, RemoteDraft, UserConfigFile,
+};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -155,6 +159,10 @@ pub fn handle_paste(state: &mut OnboardingState, s: &str) {
 
 /// Write a fully-configured user config (profile + remote + active + onboarded).
 ///
+/// Uses the shared [`ProfileDraft::write_to_user_config`] path for persistence,
+/// then sets `meta.onboarded = true` so the TUI skips onboarding on the next
+/// launch.
+///
 /// Transitions `state` to `Saving` on success or `Failed` on error.
 pub fn on_save(
     state: &mut OnboardingState,
@@ -163,43 +171,40 @@ pub fn on_save(
     hub_url: &str,
     user_config_path: &Path,
 ) {
-    let mut remote_map: BTreeMap<String, RemoteConfig> = BTreeMap::new();
-    remote_map.insert(
-        hub_name.trim().to_string(),
-        RemoteConfig {
-            url: hub_url.trim().to_string(),
-            default: true,
-            provider: None,
-            push_mode: quay_core::PushMode::default(),
-        },
-    );
+    let hub_url = hub_url.trim();
+    let hub_name = hub_name.trim();
 
-    let profile_file = ProfileFile {
-        user: UserSection {
-            name: None,
-            email: if profile.identity.is_empty() {
-                None
-            } else {
-                Some(profile.identity.clone())
-            },
-        },
-        remotes: remote_map,
-        ..Default::default()
+    let provider = detect_kind_from_url(hub_url);
+    let remote_draft = RemoteDraft {
+        name: hub_name.to_string(),
+        url: hub_url.to_string(),
+        provider,
+        push_mode: PushMode::default(),
+        default: true,
     };
 
-    let mut profiles: BTreeMap<String, ProfileFile> = BTreeMap::new();
-    profiles.insert(profile.name.clone(), profile_file);
-
-    let file = UserConfigFile {
-        meta: MetaSection { onboarded: true },
-        active_profile: Some(profile.name.clone()),
-        profiles,
-        user: None,
-        remotes: None,
+    let draft = ProfileDraft {
+        name: profile.name.clone(),
+        email: profile.identity.clone(),
+        remotes: vec![remote_draft],
+        activate: true,
     };
 
-    match write_user_file(user_config_path, &file) {
-        Ok(()) => *state = OnboardingState::Saving,
+    // Persist via the shared canonical path.
+    if let Err(e) = draft.write_to_user_config(user_config_path) {
+        *state = OnboardingState::Failed(e.to_string());
+        return;
+    }
+
+    // Set meta.onboarded = true so the TUI skips onboarding on the next launch.
+    match read_user_file(Some(user_config_path)) {
+        Ok(mut file) => {
+            file.meta = MetaSection { onboarded: true };
+            match write_user_file(user_config_path, &file) {
+                Ok(()) => *state = OnboardingState::Saving,
+                Err(e) => *state = OnboardingState::Failed(e.to_string()),
+            }
+        }
         Err(e) => *state = OnboardingState::Failed(e.to_string()),
     }
 }

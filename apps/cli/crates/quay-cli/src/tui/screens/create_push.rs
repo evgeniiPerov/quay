@@ -23,10 +23,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui_form::{Form, FormResult};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::commands::push::PushOutcome;
+
+/// Per-skill outcome recorded during a bulk push.
+#[derive(Debug, Clone)]
+pub struct BulkResult {
+    /// Skill name.
+    pub skill: String,
+    /// `Ok` with push outcome, or `Err` with error message.
+    pub outcome: Result<PushOutcome, String>,
+}
 
 /// Which bump level to apply on push.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -262,6 +272,36 @@ pub enum CreatePushState {
         state: Box<CreatePushState>,
         message: String,
     },
+    /// Bulk push form: collects bump + remote for N picked skills.
+    ///
+    /// On submit, transitions to `BulkPushing` via `bulk_form_push`.
+    BulkPushForm {
+        /// Names of the skills to push (in pick order).
+        skill_names: Vec<String>,
+        /// The ratatui-form collecting Tags + Bump + Target remote.
+        form: Box<ratatui_form::Form>,
+    },
+    /// Bulk push in progress: one skill at a time, driven sequentially.
+    BulkPushing {
+        /// Skill names still waiting to be pushed.
+        remaining: VecDeque<String>,
+        /// Total number of skills in the batch (for progress display).
+        total: usize,
+        /// Skill currently being pushed.
+        current: String,
+        /// Bump level applied to every skill in the batch.
+        bump: BumpChoice,
+        /// Optional remote override (None = default remote).
+        remote: Option<String>,
+        /// Accumulated per-skill outcomes.
+        results: Vec<BulkResult>,
+        /// Spinner widget.
+        spinner: Spinner,
+        /// When the batch started (for elapsed-time display).
+        started_at: Instant,
+    },
+    /// All bulk pushes finished — show per-skill outcome list.
+    BulkDone(Vec<BulkResult>),
 }
 
 impl std::fmt::Debug for CreatePushState {
@@ -327,15 +367,36 @@ impl std::fmt::Debug for CreatePushState {
             CreatePushState::Failed { message, .. } => {
                 f.debug_struct("Failed").field("message", message).finish()
             }
+            CreatePushState::BulkPushForm { skill_names, .. } => {
+                write!(f, "BulkPushForm({} skills)", skill_names.len())
+            }
+            CreatePushState::BulkPushing {
+                current,
+                total,
+                results,
+                ..
+            } => f
+                .debug_struct("BulkPushing")
+                .field("current", current)
+                .field("total", total)
+                .field("done", &results.len())
+                .finish(),
+            CreatePushState::BulkDone(results) => {
+                write!(f, "BulkDone({} results)", results.len())
+            }
         }
     }
 }
 
 impl CreatePushState {
-    /// Advance the spinner if we are in the `Pushing` state.
+    /// Advance the spinner if we are in the `Pushing` or `BulkPushing` state.
     pub fn tick(&mut self) {
-        if let CreatePushState::Pushing { spinner, .. } = self {
-            spinner.advance();
+        match self {
+            CreatePushState::Pushing { spinner, .. }
+            | CreatePushState::BulkPushing { spinner, .. } => {
+                spinner.advance();
+            }
+            _ => {}
         }
     }
 
@@ -346,7 +407,11 @@ impl CreatePushState {
     pub fn is_push_modal(&self) -> bool {
         matches!(
             self,
-            CreatePushState::PushModal { .. } | CreatePushState::PushExistingForm { .. }
+            CreatePushState::PushModal { .. }
+                | CreatePushState::PushExistingForm { .. }
+                | CreatePushState::BulkPushForm { .. }
+                | CreatePushState::BulkPushing { .. }
+                | CreatePushState::BulkDone(_)
         )
     }
 }
@@ -373,6 +438,11 @@ pub fn handle_paste(state: &mut CreatePushState, s: &str) {
             }
         }
         CreatePushState::PushExistingForm { form, .. } => {
+            for ev in events {
+                form.handle_input(ev);
+            }
+        }
+        CreatePushState::BulkPushForm { form, .. } => {
             for ev in events {
                 form.handle_input(ev);
             }
@@ -409,10 +479,12 @@ fn handle_key_inner(state: &mut CreatePushState, app: &mut App, code: KeyCode) -
         StateKind::Form => handle_form(state, app, code),
         StateKind::PushModal => handle_push_modal(state, app, code),
         StateKind::PushExistingForm => handle_push_existing_form(state, app, code),
+        StateKind::BulkPushForm => handle_bulk_push_form(state, app, code),
         StateKind::ReadyToValidate => handle_ready_to_validate(state, app, code),
         StateKind::ValidateErrors => handle_validate_errors(state, app, code),
         StateKind::ReadyToPush => handle_ready_to_push(state, app, code),
         StateKind::Done => handle_done(state, app, code),
+        StateKind::BulkDone => handle_bulk_done(state, app, code),
         StateKind::Failed => {
             // Any key dismisses the failure banner. If the prior state was
             // Pushing (a transient state with no key handlers), unwrapping
@@ -439,11 +511,13 @@ enum StateKind {
     Form,
     PushModal,
     PushExistingForm,
+    BulkPushForm,
     ReadyToValidate,
     ValidateErrors,
     ReadyToPush,
     Done,
     Failed,
+    BulkDone,
     Other,
 }
 
@@ -452,11 +526,13 @@ fn state_discriminant(state: &CreatePushState) -> StateKind {
         CreatePushState::Form(_) => StateKind::Form,
         CreatePushState::PushModal { .. } => StateKind::PushModal,
         CreatePushState::PushExistingForm { .. } => StateKind::PushExistingForm,
+        CreatePushState::BulkPushForm { .. } => StateKind::BulkPushForm,
         CreatePushState::ReadyToValidate { .. } => StateKind::ReadyToValidate,
         CreatePushState::ValidateErrors { .. } => StateKind::ValidateErrors,
         CreatePushState::ReadyToPush { .. } => StateKind::ReadyToPush,
         CreatePushState::Done(_) => StateKind::Done,
         CreatePushState::Failed { .. } => StateKind::Failed,
+        CreatePushState::BulkDone(_) => StateKind::BulkDone,
         _ => StateKind::Other,
     }
 }
@@ -835,6 +911,120 @@ fn update_tags_in_skill_md(path: &std::path::Path, tags_raw: &str) -> std::io::R
 }
 
 // ---------------------------------------------------------------------------
+// Bulk push helpers
+// ---------------------------------------------------------------------------
+
+/// Initialise a `BulkPushing` state for `[u]` (quick push, Patch bump, default remote).
+///
+/// Defers the first `BlockingAction::Push` immediately.  Subsequent pushes are
+/// advanced by the worker completion handler in `tui/mod.rs`.
+pub fn bulk_quick_push(app: &mut App, names: Vec<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let mut remaining: VecDeque<String> = names.into();
+    let current = remaining.pop_front().expect("non-empty checked above");
+    let total = remaining.len() + 1; // current + remaining
+    app.create_push = CreatePushState::BulkPushing {
+        remaining,
+        total,
+        current: current.clone(),
+        bump: BumpChoice::Patch,
+        remote: None,
+        results: Vec::new(),
+        spinner: Spinner::default(),
+        started_at: Instant::now(),
+    };
+    app.push_form_ready = true;
+    app.defer_blocking_action(BlockingAction::Push {
+        skill: current,
+        remote: None,
+        bump: BumpKind::Patch,
+    });
+}
+
+/// Initialise a `BulkPushing` state for `[U]` (form-based push with user-chosen bump/remote).
+///
+/// Like [`bulk_quick_push`] but uses the bump level and remote from the submitted push form.
+pub fn bulk_form_push(app: &mut App, names: Vec<String>, bump: BumpChoice, remote: Option<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let mut remaining: VecDeque<String> = names.into();
+    let current = remaining.pop_front().expect("non-empty checked above");
+    let total = remaining.len() + 1;
+    let bump_kind = bump.as_bump_kind();
+    app.create_push = CreatePushState::BulkPushing {
+        remaining,
+        total,
+        current: current.clone(),
+        bump,
+        remote: remote.clone(),
+        results: Vec::new(),
+        spinner: Spinner::default(),
+        started_at: Instant::now(),
+    };
+    app.push_form_ready = true;
+    app.defer_blocking_action(BlockingAction::Push {
+        skill: current,
+        remote,
+        bump: bump_kind,
+    });
+}
+
+/// Advance the bulk-push state machine after a push completes.
+///
+/// Called from the TUI event loop once the worker returns a Push result.
+/// Appends the result to `results`, pops the next skill from `remaining`,
+/// defers another `BlockingAction::Push`, or transitions to `BulkDone` when
+/// `remaining` is empty.
+pub fn advance_bulk_push(app: &mut App, result: Result<PushOutcome, String>) {
+    // Pull state out temporarily.
+    let old = std::mem::replace(
+        &mut app.create_push,
+        CreatePushState::Form(build_create_form(&[])),
+    );
+
+    if let CreatePushState::BulkPushing {
+        mut remaining,
+        total,
+        current,
+        bump,
+        remote,
+        mut results,
+        ..
+    } = old
+    {
+        results.push(BulkResult {
+            skill: current,
+            outcome: result,
+        });
+
+        if let Some(next) = remaining.pop_front() {
+            let bump_kind = bump.as_bump_kind();
+            app.defer_blocking_action(BlockingAction::Push {
+                skill: next.clone(),
+                remote: remote.clone(),
+                bump: bump_kind,
+            });
+            app.create_push = CreatePushState::BulkPushing {
+                remaining,
+                total,
+                current: next,
+                bump,
+                remote,
+                results,
+                spinner: Spinner::default(),
+                started_at: Instant::now(),
+            };
+        } else {
+            app.create_push = CreatePushState::BulkDone(results);
+        }
+    }
+    // Else: not in BulkPushing — placeholder Form state remains (no-op fallback).
+}
+
+// ---------------------------------------------------------------------------
 // State transition helpers
 // ---------------------------------------------------------------------------
 
@@ -983,6 +1173,73 @@ fn on_push(state: &mut CreatePushState, app: &mut App) {
     });
 }
 
+/// Handle keys for the `BulkPushForm` state.
+///
+/// Esc returns to Local. Submit initiates `BulkPushing` via `bulk_form_push`.
+fn handle_bulk_push_form(
+    state: &mut CreatePushState,
+    app: &mut App,
+    code: KeyCode,
+) -> ScreenAction {
+    if code == KeyCode::Esc {
+        return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
+    }
+
+    let (key_code, modifiers) = if code == KeyCode::BackTab {
+        (KeyCode::Tab, KeyModifiers::SHIFT)
+    } else {
+        (code, KeyModifiers::NONE)
+    };
+    let key_event = KeyEvent {
+        code: key_code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+
+    if let CreatePushState::BulkPushForm { skill_names, form } = state {
+        form.handle_input(key_event);
+
+        match form.result() {
+            FormResult::Submitted => {
+                let json = form.to_json();
+                let bump_str = json["bump"].as_str().unwrap_or("patch");
+                let remote = json
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let bump = match bump_str {
+                    "minor" => BumpChoice::Minor,
+                    "major" => BumpChoice::Major,
+                    "as-written" => BumpChoice::AsWritten,
+                    _ => BumpChoice::Patch,
+                };
+
+                let names = skill_names.clone();
+                bulk_form_push(app, names, bump, remote);
+            }
+            FormResult::Cancelled => {
+                return ScreenAction::SwitchTo(crate::tui::app::Screen::Local);
+            }
+            FormResult::Active => {}
+        }
+    }
+    ScreenAction::Stay
+}
+
+fn handle_bulk_done(state: &mut CreatePushState, _app: &mut App, code: KeyCode) -> ScreenAction {
+    match code {
+        KeyCode::Esc | KeyCode::Char('b') => ScreenAction::SwitchTo(crate::tui::app::Screen::Local),
+        _ => {
+            // Clear the BulkDone on any other key and return to Local.
+            let _ = state;
+            ScreenAction::Stay
+        }
+    }
+}
+
 fn dismiss_failure(state: &mut CreatePushState, app: &mut App) {
     let placeholder = CreatePushState::Form(build_create_form_from_app(app));
     let old = std::mem::replace(state, placeholder);
@@ -1040,6 +1297,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect, state: &CreatePushState)
         } => {
             render_inner_state(frame, app, area, inner);
             render_failure_banner(frame, area, message);
+        }
+        CreatePushState::BulkPushForm { form, .. } => form.render(area, frame.buffer_mut()),
+        CreatePushState::BulkPushing {
+            current,
+            total,
+            results,
+            spinner,
+            ..
+        } => {
+            render_bulk_pushing(frame, area, current, *total, results.len(), spinner);
+        }
+        CreatePushState::BulkDone(results) => {
+            render_bulk_done(frame, area, results);
         }
     }
 }
@@ -1214,6 +1484,91 @@ fn render_done(frame: &mut Frame, area: Rect, outcome: &PushOutcome) {
             )]),
         ]
     };
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_bulk_pushing(
+    frame: &mut Frame,
+    area: Rect,
+    current: &str,
+    total: usize,
+    done: usize,
+    spinner: &Spinner,
+) {
+    let outer = Block::default().borders(Borders::ALL).title(Span::styled(
+        format!(" Bulk Push ({}/{}) ", done, total),
+        theme::accent(),
+    ));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("  {} ", spinner.frame()), theme::accent()),
+            Span::raw(format!(
+                "Pushing skill {}… ({}/{} done)",
+                current, done, total
+            )),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Please wait \u{2014} pushing sequentially.",
+            theme::dim(),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_bulk_done(frame: &mut Frame, area: Rect, results: &[BulkResult]) {
+    let ok_count = results.iter().filter(|r| r.outcome.is_ok()).count();
+    let total = results.len();
+    let title = format!(" Bulk Push Done ({}/{} succeeded) ", ok_count, total);
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, theme::accent()));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let mut lines = vec![Line::from("")];
+    for r in results {
+        let line = match &r.outcome {
+            Ok(outcome) => {
+                let pr = if outcome.pr_url.is_empty() {
+                    format!(
+                        "direct push at {}",
+                        &outcome.commit_sha[..8.min(outcome.commit_sha.len())]
+                    )
+                } else {
+                    outcome.pr_url.clone()
+                };
+                Line::from(vec![
+                    Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
+                    Span::raw(format!("{} v{} \u{2192} {}", r.skill, outcome.version, pr)),
+                ])
+            }
+            Err(e) => Line::from(vec![
+                Span::styled("  \u{2717} ", Style::default().fg(Color::Red)),
+                Span::raw(format!("{}: {}", r.skill, e)),
+            ]),
+        };
+        lines.push(line);
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("pushed {} of {}", ok_count, total),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [Esc] / [b] back to Local",
+        theme::dim(),
+    )));
+
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

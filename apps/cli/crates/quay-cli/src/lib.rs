@@ -40,16 +40,29 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             skill,
             remote,
             force,
+            interactive,
         } => {
-            commands::add::run(
-                &skill,
-                remote.as_deref(),
-                force,
-                cli.profile.as_deref(),
-                &project,
-                user_config.as_deref(),
-                cli.json,
-            )?;
+            if interactive {
+                commands::add::run_interactive(
+                    remote.as_deref(),
+                    force,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else {
+                let skill = skill.ok_or("skill name is required when not using --interactive")?;
+                commands::add::run(
+                    &skill,
+                    remote.as_deref(),
+                    force,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            }
         }
         Command::List => commands::list::run(&project, cli.json)?,
         Command::Remove { skill, everywhere } => commands::remove::run(
@@ -87,15 +100,29 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             user_config.as_deref(),
             cli.json,
         )?,
-        Command::Update { skill, dry_run } => {
-            commands::update::run(
-                skill.as_deref(),
-                dry_run,
-                cli.profile.as_deref(),
-                &project,
-                user_config.as_deref(),
-                cli.json,
-            )?;
+        Command::Update {
+            skill,
+            dry_run,
+            interactive,
+        } => {
+            if interactive {
+                commands::update::run_interactive(
+                    dry_run,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else {
+                commands::update::run(
+                    skill.as_deref(),
+                    dry_run,
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            }
         }
         Command::Scan { root, json } => {
             commands::scan::run(&project, root, json || cli.json)?;
@@ -108,17 +135,31 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             remote,
             bump,
             push_mode,
+            interactive,
         } => {
-            commands::push::run(
-                &skill,
-                remote.as_deref(),
-                bump,
-                push_mode.map(quay_core::config::PushMode::from),
-                cli.profile.as_deref(),
-                &project,
-                user_config.as_deref(),
-                cli.json,
-            )?;
+            if interactive {
+                commands::push::run_interactive(
+                    remote.as_deref(),
+                    bump,
+                    push_mode.map(quay_core::config::PushMode::from),
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            } else {
+                let skill = skill.ok_or("skill name is required when not using --interactive")?;
+                commands::push::run(
+                    &skill,
+                    remote.as_deref(),
+                    bump,
+                    push_mode.map(quay_core::config::PushMode::from),
+                    cli.profile.as_deref(),
+                    &project,
+                    user_config.as_deref(),
+                    cli.json,
+                )?;
+            }
         }
         Command::Profile { action } => {
             commands::profile::run(action, &project, user_config.as_deref(), cli.json)?;

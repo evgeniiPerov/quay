@@ -6,6 +6,79 @@ use quay_core::{
 };
 use std::path::Path;
 
+/// Update skills selected interactively via `dialoguer::MultiSelect`.
+///
+/// Shows only skills that have a newer version available (same list as
+/// `quay outdated`).  Returns `Err` immediately when stdin is not a TTY.
+#[allow(clippy::too_many_arguments)]
+pub fn run_interactive(
+    dry_run: bool,
+    profile: Option<&str>,
+    project: &Path,
+    user_config: Option<&Path>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let project_config = project.join(".quay/config.toml");
+    let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
+    let config_dir = user_config.and_then(|p| p.parent());
+
+    let f = CloneFetcher::new();
+    let candidates: Vec<OutdatedEntry> = outdated_for_local(project, config_dir, &cfg, &f)?
+        .into_iter()
+        .collect();
+
+    if candidates.is_empty() {
+        println!("(everything up to date)");
+        return Ok(());
+    }
+
+    let picks = crate::commands::interactive::pick_many(
+        "Select skills to update (Space to toggle, Enter to confirm)",
+        &candidates,
+        |e| format!("{} → {} (from {})", e.name, e.available, e.remote),
+    )?;
+
+    if picks.is_empty() {
+        println!("(nothing selected)");
+        return Ok(());
+    }
+
+    if dry_run {
+        for idx in &picks {
+            let e = &candidates[*idx];
+            println!(
+                "would update {} → {} (from {})",
+                e.name, e.available, e.remote
+            );
+        }
+        return Ok(());
+    }
+
+    let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
+    let mut ok = 0usize;
+    let mut fail = 0usize;
+    for idx in &picks {
+        let e = &candidates[*idx];
+        match mgr.update_one(&e.name) {
+            Ok(_) => {
+                if !json {
+                    println!("\u{2713} {} → {}", e.name, e.available);
+                }
+                ok += 1;
+            }
+            Err(err) => {
+                eprintln!("\u{2717} {}: {}", e.name, err);
+                fail += 1;
+            }
+        }
+    }
+
+    if !json {
+        println!("updated {} of {} selected", ok, ok + fail);
+    }
+    Ok(())
+}
+
 pub fn run(
     skill: Option<&str>,
     dry_run: bool,

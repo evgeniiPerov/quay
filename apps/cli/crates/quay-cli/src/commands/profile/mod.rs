@@ -1,8 +1,14 @@
 //! Implementation of `quay profile <action>`.
 
-use crate::args::ProfileAction;
+pub mod ingest_toml;
+pub mod wizard;
+
+use crate::args::{ProfileAction, ProviderKindArg, PushModeArg};
+use crate::commands::interactive::pick_one;
 use crate::config_io::{read_user_file, write_user_file};
-use quay_core::QuayError;
+use quay_core::{
+    detect_kind_from_url, ProfileDraft, ProviderKind, PushMode, QuayError, RemoteDraft,
+};
 use serde_json::json;
 use std::path::Path;
 
@@ -18,18 +24,35 @@ pub fn run(
         ProfileAction::Current => current(project, user_config, json),
         ProfileAction::Add {
             name,
+            interactive,
+            from_toml,
             email,
             remote,
+            provider,
+            push_mode,
+            default,
             activate,
         } => add(
-            &name,
-            email.as_deref(),
-            remote.as_deref(),
+            name,
+            interactive,
+            from_toml,
+            email,
+            remote,
+            provider,
+            push_mode,
+            default,
             activate,
             user_config,
             json,
         ),
-        ProfileAction::Use { name } => use_profile(&name, user_config, json),
+        ProfileAction::Use { name, interactive } => {
+            if interactive {
+                use_profile_interactive(user_config, json)
+            } else {
+                let name = name.ok_or("profile name is required when not using --interactive")?;
+                use_profile(&name, user_config, json)
+            }
+        }
         ProfileAction::Remove { name } => remove(&name, user_config, json),
         ProfileAction::Show { name } => show(name.as_deref(), user_config, json),
         ProfileAction::Rename { old, new } => rename(&old, &new, user_config, json),
@@ -113,70 +136,189 @@ fn current(
     Ok(())
 }
 
+/// Build a `RemoteDraft` from the `i`-th `--remote name=url` spec, looking up
+/// optional parallel `--provider`, `--push-mode`, `--default` by index.
+fn build_remote_draft(
+    i: usize,
+    spec: &str,
+    providers: &[ProviderKindArg],
+    push_modes: &[PushModeArg],
+    default_count: u8,
+) -> Result<RemoteDraft, Box<dyn std::error::Error>> {
+    let (rname, rurl) = match spec.split_once('=') {
+        Some((n, u)) if !n.is_empty() && !u.is_empty() => (n.to_string(), u.to_string()),
+        _ => return Err(format!("--remote must be `<name>=<url>`, got '{}'", spec).into()),
+    };
+
+    let provider: ProviderKind = providers
+        .get(i)
+        .copied()
+        .map(ProviderKind::from)
+        .unwrap_or_else(|| detect_kind_from_url(&rurl));
+
+    let push_mode: PushMode = push_modes
+        .get(i)
+        .copied()
+        .map(PushMode::from)
+        .unwrap_or_default();
+
+    // remote[i] is the default if i < default_count
+    let is_default = (i as u8) < default_count;
+
+    Ok(RemoteDraft {
+        name: rname,
+        url: rurl,
+        provider,
+        push_mode,
+        default: is_default,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn add(
-    name: &str,
-    email: Option<&str>,
-    remote: Option<&str>,
+    name: Option<String>,
+    interactive: bool,
+    from_toml: Option<String>,
+    email: Option<String>,
+    remotes_raw: Vec<String>,
+    providers: Vec<ProviderKindArg>,
+    push_modes: Vec<PushModeArg>,
+    default_count: u8,
     activate: bool,
     user_config: Option<&Path>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    let path = user_config.ok_or("--user-config (or HOME) required to add a profile")?;
+
+    if interactive {
+        // Wizard mode — name comes from the wizard itself.
+        let draft = wizard::run_wizard()?;
+        let profile_name = draft.name.clone();
+        draft.write_to_user_config(path)?;
+        print_add_result(&profile_name, activate, path, json)?;
+        return Ok(());
+    }
+
+    if let Some(ref from_toml_arg) = from_toml {
+        // TOML ingestion mode — name comes from the CLI positional.
+        let profile_name = name.ok_or(
+            "profile name is required when using --from-toml (e.g. `quay profile add <name> --from-toml …`)",
+        )?;
+        validate_profile_name(&profile_name)?;
+        let toml_text = ingest_toml::read_from_arg(from_toml_arg)?;
+        let draft = ingest_toml::parse(&toml_text, &profile_name, activate)?;
+        draft.write_to_user_config(path)?;
+        print_add_result(&profile_name, activate, path, json)?;
+        return Ok(());
+    }
+
+    // Explicit-flags mode.
+    let profile_name = name.ok_or("profile name is required")?;
+    validate_profile_name(&profile_name)?;
+
+    // Validate provider/push_mode counts don't exceed remote count.
+    if providers.len() > remotes_raw.len() {
         return Err(format!(
-            "profile name '{}' must be non-empty alphanumeric (with optional - or _)",
+            "--provider specified {} times but only {} --remote(s) given",
+            providers.len(),
+            remotes_raw.len()
+        )
+        .into());
+    }
+    if push_modes.len() > remotes_raw.len() {
+        return Err(format!(
+            "--push-mode specified {} times but only {} --remote(s) given",
+            push_modes.len(),
+            remotes_raw.len()
+        )
+        .into());
+    }
+
+    // Auto-mark the first remote as default when there is exactly one remote
+    // and the user did not pass --default, preserving backward compatibility.
+    let effective_default_count = if default_count == 0 && remotes_raw.len() == 1 {
+        1
+    } else {
+        default_count
+    };
+
+    let mut remote_drafts: Vec<RemoteDraft> = Vec::new();
+    for (i, spec) in remotes_raw.iter().enumerate() {
+        remote_drafts.push(build_remote_draft(
+            i,
+            spec,
+            &providers,
+            &push_modes,
+            effective_default_count,
+        )?);
+    }
+
+    let draft = ProfileDraft {
+        name: profile_name.clone(),
+        email: email.unwrap_or_default(),
+        remotes: remote_drafts,
+        activate,
+    };
+    draft.write_to_user_config(path)?;
+    print_add_result(&profile_name, activate, path, json)?;
+    Ok(())
+}
+
+/// Validate profile name against `^[a-z0-9][a-z0-9_-]*$` or single char `[a-z0-9]`.
+fn validate_profile_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if name.is_empty() {
+        return Err("profile name must not be empty".into());
+    }
+    let first = name.chars().next().unwrap();
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(format!(
+            "profile name '{}' must start with a lowercase letter or digit",
             name
         )
         .into());
     }
-    let path = user_config.ok_or("--user-config (or HOME) required to add a profile")?;
-    let mut file = read_user_file(Some(path))?;
-    if file.profiles.contains_key(name) {
-        return Err(format!("profile '{}' already exists", name).into());
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "profile name '{}' must only contain lowercase letters, digits, hyphens, or underscores",
+            name
+        )
+        .into());
     }
-    let mut profile = quay_core::ProfileFile::default();
-    if let Some(e) = email {
-        profile.user.email = Some(e.into());
+    if name.len() > 64 {
+        return Err(format!("profile name '{}' exceeds 64 characters", name).into());
     }
-    if let Some(spec) = remote {
-        let (rname, rurl) = match spec.split_once('=') {
-            Some((n, u)) if !n.is_empty() && !u.is_empty() => (n.to_string(), u.to_string()),
-            _ => return Err(format!("--remote must be `<name>=<url>`, got '{}'", spec).into()),
-        };
-        profile.remotes.insert(
-            rname,
-            quay_core::RemoteConfig {
-                url: rurl,
-                default: true,
-                provider: None,
-                push_mode: quay_core::PushMode::default(),
-            },
-        );
-    }
-    file.profiles.insert(name.into(), profile);
-    if activate || file.active_profile.is_none() {
-        file.active_profile = Some(name.into());
-    }
-    write_user_file(path, &file)?;
+    Ok(())
+}
+
+fn print_add_result(
+    name: &str,
+    activate: bool,
+    path: &Path,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Re-read the file to get the current active_profile state.
+    let file = read_user_file(Some(path))?;
+    let is_active = file.active_profile.as_deref() == Some(name);
 
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "profile": name,
-                "active": file.active_profile.as_deref() == Some(name),
+                "active": is_active,
                 "path": path.display().to_string(),
             }))?
         );
     } else {
         println!("added profile '{}'", name);
-        if file.active_profile.as_deref() == Some(name) {
+        if is_active {
             println!("  (also set as active)");
         }
     }
+    let _ = activate; // activate is embedded in ProfileDraft; nothing more to do here
     Ok(())
 }
 
@@ -198,9 +340,37 @@ fn use_profile(
             serde_json::to_string_pretty(&json!({"active_profile": name}))?
         );
     } else {
-        println!("active profile: {}", name);
+        println!("active profile \u{2192} {}", name);
     }
     Ok(())
+}
+
+fn use_profile_interactive(
+    user_config: Option<&Path>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = user_config.ok_or("--user-config (or HOME) required")?;
+    let file = read_user_file(Some(path))?;
+    if file.profiles.is_empty() {
+        return Err("no profiles configured — run `quay profile add <name>`".into());
+    }
+    let names: Vec<&String> = file.profiles.keys().collect();
+    let active = file.active_profile.as_deref();
+    let default_idx = active.and_then(|a| names.iter().position(|n| n.as_str() == a));
+    let picked_idx = pick_one(
+        "Select active profile",
+        &names,
+        |n| {
+            if active == Some(n.as_str()) {
+                format!("{} *", n)
+            } else {
+                n.to_string()
+            }
+        },
+        default_idx,
+    )?;
+    let picked_name = names[picked_idx].as_str();
+    use_profile(picked_name, user_config, json)
 }
 
 fn remove(

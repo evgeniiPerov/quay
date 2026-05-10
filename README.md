@@ -68,6 +68,39 @@ Supported hub providers: **GitHub.com**, **GitHub Enterprise**, **GitLab** (clou
 
 ### Author + share a skill (you)
 
+### Setting up profiles
+
+Three ways to create a profile:
+
+#### Interactive wizard
+
+```sh
+quay profile add -i
+```
+
+Walks through name, email, remote(s) with provider auto-detection, push mode,
+default flag, and activation. Add as many remotes as you need in one session.
+
+#### From a TOML file or stdin
+
+```sh
+quay profile add ci --from-toml ci-profile.toml
+# or from stdin:
+cat profile.toml | quay profile add ci --from-toml -
+```
+
+#### Explicit flags (scriptable)
+
+```sh
+quay profile add work \
+  --email you@example.com \
+  --remote main=git@github.com:org/skills.git --provider github --push-mode pr --default \
+  --remote azure=git@ssh.dev.azure.com:v3/org/proj/repo --provider azuredevops --push-mode direct \
+  --activate
+```
+
+The three modes are mutually exclusive; clap will error if combined.
+
 ```sh
 # 1. Profile + hub (one time)
 quay profile add work --email you@example.com \
@@ -114,6 +147,24 @@ quay tui                  # full-screen browse / search / install / push
 ```
 
 Onboarding wizard runs on first launch when no profile is configured.
+
+#### Bulk select
+
+Press `[Space]` in Local (screen `[2]`) or Remote (screen `[3]`) to toggle selection on a row.
+With one or more rows selected:
+
+- `[u]` / `[U]` — push every selected skill (Patch bump in `[u]`; shared form in `[U]`)
+- `[a]` / `[A]` — pull every selected skill (block on collisions / force overwrite)
+- `[d]` / `[D]` — delete every selected skill (locally / everywhere)
+- `[Esc]` — clears the selection
+
+The same workflow is available from the CLI:
+
+```sh
+quay push -i      # checkbox list of local skills
+quay add  -i      # checkbox list of remote registry rows
+quay update -i    # checkbox list of outdated skills
+```
 
 See [`apps/cli/README.md`](apps/cli/README.md) for the full command list and `--json` output examples.
 

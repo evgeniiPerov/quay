@@ -35,12 +35,18 @@ pub enum Command {
     },
     /// Install a skill from a configured remote
     Add {
-        skill: String,
+        /// Skill name(s) to install. Omit when using --interactive (-i).
+        #[arg(conflicts_with = "interactive")]
+        skill: Option<String>,
         #[arg(long)]
         remote: Option<String>,
         /// Overwrite the skill if it already exists locally.
         #[arg(long)]
         force: bool,
+        /// Open an interactive checkbox list to pick skills to install.
+        /// Mutually exclusive with the positional skill argument.
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     /// List installed skills
     List,
@@ -71,10 +77,15 @@ pub enum Command {
     /// Update installed skills to the latest available version
     Update {
         /// Update only this skill; if omitted, updates every installed skill.
+        #[arg(conflicts_with = "interactive")]
         skill: Option<String>,
         /// Show what would change without writing to disk.
         #[arg(long)]
         dry_run: bool,
+        /// Open an interactive checkbox list of outdated skills to update.
+        /// Mutually exclusive with the positional skill argument.
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     /// Discover local skills under `.agents/skills/` and report their sync status.
     Scan {
@@ -96,7 +107,9 @@ pub enum Command {
     /// Push a local skill to a hub via PR (or directly, if --push-mode=direct
     /// or the remote's TOML says so).
     Push {
-        skill: String,
+        /// Skill name to push. Omit when using --interactive (-i).
+        #[arg(conflicts_with = "interactive")]
+        skill: Option<String>,
         #[arg(long)]
         remote: Option<String>,
         /// Bump kind: patch | minor | major | as-written. Default: as-written.
@@ -106,6 +119,10 @@ pub enum Command {
         /// Values: pr, direct.
         #[arg(long, value_enum)]
         push_mode: Option<PushModeArg>,
+        /// Open an interactive checkbox list of local skills to push.
+        /// Mutually exclusive with the positional skill argument.
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     /// Manage user profiles (multi-org identities + remote bundles)
     Profile {
@@ -200,20 +217,72 @@ pub enum ProfileAction {
     /// Print the active profile name.
     Current,
     /// Add a new profile.
+    ///
+    /// Three mutually-exclusive modes:
+    ///   * Explicit flags  — `quay profile add <name> --email <e> --remote n=url …`
+    ///   * Wizard          — `quay profile add -i`
+    ///   * TOML ingestion  — `quay profile add <name> --from-toml <path|->`
     Add {
-        name: String,
+        /// Profile name (required unless `-i` / `--interactive` is used).
+        #[arg(
+            conflicts_with = "interactive",
+            required_unless_present = "interactive"
+        )]
+        name: Option<String>,
+        /// Run the multi-step interactive wizard. Mutually exclusive with
+        /// `--email`, `--remote`, and `--from-toml`.
+        #[arg(
+            short = 'i',
+            long,
+            conflicts_with_all = ["email", "remote", "from_toml"]
+        )]
+        interactive: bool,
+        /// Read profile config from a TOML file or `-` for stdin.
+        /// Mutually exclusive with `-i`, `--email`, and `--remote`.
+        #[arg(
+            long,
+            value_name = "PATH|-",
+            conflicts_with_all = ["interactive", "email", "remote"]
+        )]
+        from_toml: Option<String>,
         /// Author email for commits made under this profile.
-        #[arg(long)]
+        /// Mutually exclusive with `-i` and `--from-toml`.
+        #[arg(long, conflicts_with_all = ["interactive", "from_toml"])]
         email: Option<String>,
-        /// Optionally seed the profile with a first remote: `--remote=<name>=<url>`.
-        #[arg(long)]
-        remote: Option<String>,
-        /// Mark this profile as the new `active_profile`.
+        /// Seed a remote: `--remote <name>=<url>` (repeatable).
+        /// Each `--provider`, `--push-mode`, and `--default` applies to the
+        /// most recently specified `--remote`.
+        /// Mutually exclusive with `-i` and `--from-toml`.
+        #[arg(
+            long,
+            action = clap::ArgAction::Append,
+            conflicts_with_all = ["interactive", "from_toml"]
+        )]
+        remote: Vec<String>,
+        /// Provider for the most recently specified `--remote`.
+        #[arg(long, value_enum, conflicts_with_all = ["interactive", "from_toml"])]
+        provider: Vec<ProviderKindArg>,
+        /// Push mode for the most recently specified `--remote` (`pr` or `direct`).
+        #[arg(long, value_enum, action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
+        push_mode: Vec<PushModeArg>,
+        /// Mark the most recently specified `--remote` as the default remote.
+        /// Repeat once per `--remote` that should be the default.
+        #[arg(long, action = clap::ArgAction::Count, conflicts_with_all = ["interactive", "from_toml"])]
+        default: u8,
+        /// Set this profile as the new `active_profile`.
         #[arg(long)]
         activate: bool,
     },
     /// Set the active profile.
-    Use { name: String },
+    Use {
+        /// Profile name to activate. Omit when using --interactive (-i).
+        #[arg(conflicts_with = "interactive")]
+        name: Option<String>,
+        /// Open an interactive single-select list of profiles to choose from.
+        /// Mutually exclusive with the positional name argument.
+        #[arg(short = 'i', long)]
+        interactive: bool,
+    },
     /// Remove a profile (cannot remove the last one).
     Remove { name: String },
     /// Print full profile contents.

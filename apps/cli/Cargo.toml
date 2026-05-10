@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/quay-core", "crates/quay-cli", "crates/quay"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -32,6 +32,7 @@ crossterm = "0.28"
 tui-textarea = "0.7"
 nucleo-matcher = "0.3"
 ratatui-form = "=0.1.1"
+dialoguer = "0.11"
 
 # The profile that 'dist' will build with.
 # Dist config lives at <repo-root>/dist-workspace.toml because the cargo
