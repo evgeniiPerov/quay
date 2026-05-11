@@ -97,6 +97,16 @@ pub struct RemoteConfig {
     /// Defaults to `Pr` when reading old configs.
     #[serde(default)]
     pub push_mode: PushMode,
+    /// Target branch for `push_mode = "direct"` pushes.
+    ///
+    /// `None` (the default) pushes to the hub's default branch, preserving
+    /// the behaviour before this field existed.  `Some("develop")` pushes to
+    /// `develop`, creating it from the default branch if it does not yet exist
+    /// on the remote.
+    ///
+    /// Has no effect when `push_mode = "pr"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_branch: Option<String>,
 }
 
 /// Persisted metadata about the quay installation (e.g. whether first-run
@@ -453,6 +463,7 @@ mod tests {
                     default: true,
                     provider: None,
                     push_mode: PushMode::default(),
+                    direct_branch: None,
                 },
             )]),
             ..Default::default()
@@ -469,6 +480,7 @@ mod tests {
                     default: false,
                     provider: None,
                     push_mode: PushMode::default(),
+                    direct_branch: None,
                 },
             )]),
             ..Default::default()
@@ -497,6 +509,7 @@ mod tests {
                     default: true,
                     provider: None,
                     push_mode: PushMode::default(),
+                    direct_branch: None,
                 },
             )]),
             install: InstallConfig::default(),
@@ -517,6 +530,7 @@ mod tests {
                         default: false,
                         provider: None,
                         push_mode: PushMode::default(),
+                        direct_branch: None,
                     },
                 ),
                 (
@@ -526,6 +540,7 @@ mod tests {
                         default: true,
                         provider: None,
                         push_mode: PushMode::default(),
+                        direct_branch: None,
                     },
                 ),
             ]),
@@ -851,6 +866,7 @@ default = true
             default: false,
             provider: None,
             push_mode: PushMode::default(),
+            direct_branch: None,
         };
         let s = toml::to_string(&r).unwrap();
         assert!(!s.contains("provider"));
@@ -863,6 +879,7 @@ default = true
             default: false,
             provider: Some(ProviderKind::GitLab),
             push_mode: PushMode::default(),
+            direct_branch: None,
         };
         let s = toml::to_string(&r).unwrap();
         assert!(s.contains("provider = \"gitlab\""));
@@ -884,6 +901,7 @@ default = true
             default: false,
             provider: None,
             push_mode: PushMode::Direct,
+            direct_branch: None,
         };
         let s = ::toml::to_string(&r).unwrap();
         assert!(s.contains("push_mode = \"direct\""));
@@ -921,5 +939,56 @@ default = true
         };
         let s = toml::to_string(&file).unwrap();
         assert!(s.contains("onboarded = true"));
+    }
+
+    // ── direct_branch field ───────────────────────────────────────────────────
+
+    #[test]
+    fn remote_direct_branch_none_omitted_from_toml() {
+        let r = RemoteConfig {
+            url: "git@example.com:o/r.git".into(),
+            default: false,
+            provider: None,
+            push_mode: PushMode::Direct,
+            direct_branch: None,
+        };
+        let s = toml::to_string(&r).unwrap();
+        assert!(
+            !s.contains("direct_branch"),
+            "None direct_branch should be omitted from TOML, got:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn remote_direct_branch_some_round_trips() {
+        let r = RemoteConfig {
+            url: "git@example.com:o/r.git".into(),
+            default: false,
+            provider: None,
+            push_mode: PushMode::Direct,
+            direct_branch: Some("develop".into()),
+        };
+        let s = toml::to_string(&r).unwrap();
+        assert!(
+            s.contains("direct_branch = \"develop\""),
+            "Some(develop) must serialize, got:\n{}",
+            s
+        );
+        let parsed: RemoteConfig = toml::from_str(&s).unwrap();
+        assert_eq!(parsed.direct_branch.as_deref(), Some("develop"));
+    }
+
+    #[test]
+    fn remote_without_direct_branch_deserializes_as_none() {
+        let toml = r#"
+            url = "git@example.com:o/r.git"
+            push_mode = "direct"
+        "#;
+        let r: RemoteConfig = toml::from_str(toml).unwrap();
+        assert!(
+            r.direct_branch.is_none(),
+            "missing direct_branch must deserialize as None"
+        );
     }
 }

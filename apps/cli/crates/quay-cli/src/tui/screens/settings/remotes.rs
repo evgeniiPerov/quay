@@ -130,6 +130,10 @@ fn build_remote_modal_form(
         quay_core::PushMode::Pr => "pr",
         quay_core::PushMode::Direct => "direct",
     };
+    // Empty string in the form represents `None` (no override).
+    let direct_branch_initial = initial_remote
+        .and_then(|r| r.direct_branch.as_deref())
+        .unwrap_or("");
 
     Form::builder()
         .title(if initial_remote.is_some() {
@@ -163,6 +167,9 @@ fn build_remote_modal_form(
             ("direct", "Direct git push"),
         ])
         .initial_value(push_mode_initial)
+        .done()
+        .text("direct_branch", "Direct branch")
+        .initial_value(direct_branch_initial)
         .done()
         .checkbox("default", "Default remote")
         .checked(default_initial)
@@ -300,6 +307,12 @@ fn handle_form(app: &mut App, code: KeyCode) -> ScreenAction {
             let url = json["url"].as_str().unwrap_or("").trim().to_string();
             let provider = provider_str_to_kind(json["provider"].as_str().unwrap_or("auto"));
             let push_mode = push_mode_str_to_kind(json["push_mode"].as_str().unwrap_or("pr"));
+            // Empty string in the form means "no override" (None).
+            let direct_branch: Option<String> = json["direct_branch"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let default = json["default"].as_bool().unwrap_or(false);
             let editing_name = editing.clone();
 
@@ -309,6 +322,7 @@ fn handle_form(app: &mut App, code: KeyCode) -> ScreenAction {
                 &url,
                 provider,
                 push_mode,
+                direct_branch,
                 default,
                 editing_name.as_deref(),
             ) {
@@ -396,6 +410,7 @@ fn submit_remote(
     url: &str,
     provider: Option<ProviderKind>,
     push_mode: quay_core::PushMode,
+    direct_branch: Option<String>,
     default: bool,
     editing: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -422,6 +437,7 @@ fn submit_remote(
         remote.url = url.to_string();
         remote.provider = provider;
         remote.push_mode = push_mode;
+        remote.direct_branch = direct_branch;
         remote.default = default;
         p.remotes.insert(name.to_string(), remote);
         write_user_file(path, &file)?;
@@ -438,6 +454,7 @@ fn submit_remote(
                 default: p.remotes.is_empty() || default,
                 provider,
                 push_mode,
+                direct_branch,
             },
         );
         write_user_file(path, &file)?;
@@ -619,6 +636,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         file.profiles.insert("work".into(), p);
@@ -781,7 +799,8 @@ mod tests {
         } else {
             panic!("modal should still be open");
         }
-        // Tab through push_mode, checkbox, then to Submit.
+        // Tab through push_mode, direct_branch, checkbox, then to Submit.
+        handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);
@@ -804,6 +823,7 @@ mod tests {
             default: false,
             provider: Some(ProviderKind::Bitbucket),
             push_mode: quay_core::PushMode::default(),
+            direct_branch: None,
         };
         let form = build_remote_modal_form(Some(&remote), Some("my-remote"));
         let json = form.to_json();
@@ -841,7 +861,8 @@ mod tests {
         for c in "https://x".chars() {
             handle_key(&mut a, KeyCode::Char(c));
         }
-        // Tab through provider, push_mode, default checkbox, then Submit.
+        // Tab through provider, push_mode, direct_branch, default checkbox, then Submit.
+        handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);
         handle_key(&mut a, KeyCode::Tab);

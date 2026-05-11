@@ -1311,6 +1311,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1347,6 +1348,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, project.path().to_path_buf(), None);
@@ -1383,6 +1385,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1415,6 +1418,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1447,6 +1451,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1472,6 +1477,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1508,6 +1514,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1539,6 +1546,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1601,6 +1609,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1653,6 +1662,7 @@ mod tests {
                     default: false,
                     provider: None,
                     push_mode: quay_core::PushMode::default(),
+                    direct_branch: None,
                 },
             );
         }
@@ -1680,6 +1690,7 @@ mod tests {
                     default: false,
                     provider: None,
                     push_mode: quay_core::PushMode::default(),
+                    direct_branch: None,
                 },
             );
         }
@@ -1722,6 +1733,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, project.path().to_path_buf(), None);
@@ -1770,6 +1782,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1809,6 +1822,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1892,6 +1906,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, project.path().to_path_buf(), None);
@@ -1940,6 +1955,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -1990,6 +2006,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -2033,6 +2050,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);
@@ -2074,6 +2092,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut a = App::new(cfg, std::path::PathBuf::from("/tmp"), None);

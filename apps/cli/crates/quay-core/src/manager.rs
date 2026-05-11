@@ -70,8 +70,12 @@ where
         };
         let mut matches = BTreeMap::new();
         for remote_name in candidates {
-            let url = &self.config.remotes[&remote_name].url;
-            let registry = self.registry_fetcher.fetch(url)?;
+            let remote_cfg = &self.config.remotes[&remote_name];
+            let url = &remote_cfg.url;
+            let registry = match remote_cfg.direct_branch.as_deref() {
+                Some(b) => self.registry_fetcher.fetch_at(url, b)?,
+                None => self.registry_fetcher.fetch(url)?,
+            };
             if let Some(entry) = registry.entry(skill_name) {
                 matches.insert(remote_name, (registry.clone(), entry.clone()));
             }
@@ -108,7 +112,9 @@ where
         force: bool,
     ) -> Result<()> {
         let (_remote_name, _registry, entry) = self.resolve(skill_name, pinned_remote)?;
-        let hub_url = self.config.remotes[&_remote_name].url.clone();
+        let remote_cfg = &self.config.remotes[&_remote_name];
+        let hub_url = remote_cfg.url.clone();
+        let direct_branch = remote_cfg.direct_branch.clone();
 
         let dest_dir = self.install_dir().join(skill_name);
 
@@ -123,7 +129,10 @@ where
 
         for file_rel in &entry.files {
             let remote_path = format!("{}/{}", entry.path, file_rel);
-            let bytes = self.file_fetcher.fetch_file(&hub_url, &remote_path)?;
+            let bytes = match direct_branch.as_deref() {
+                Some(b) => self.file_fetcher.fetch_file_at(&hub_url, &remote_path, b)?,
+                None => self.file_fetcher.fetch_file(&hub_url, &remote_path)?,
+            };
             let local = dest_dir.join(file_rel);
             if let Some(parent) = local.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
@@ -273,6 +282,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg
@@ -434,6 +444,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg.remotes.insert(
@@ -443,6 +454,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         let entry = crate::registry::RegistryEntry {

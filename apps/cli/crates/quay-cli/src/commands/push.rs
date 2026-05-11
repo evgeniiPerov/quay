@@ -29,11 +29,13 @@ pub struct PushOutcome {
 ///
 /// Returns a [`PushOutcome`] on success so the caller (CLI wrapper or TUI)
 /// can decide how to present the result.
+#[allow(clippy::too_many_arguments)]
 pub fn push_skill(
     skill: &str,
     remote: Option<&str>,
     bump: BumpKind,
     push_mode: Option<quay_core::config::PushMode>,
+    direct_branch: Option<&str>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -84,7 +86,7 @@ pub fn push_skill(
             .map(|p| p.to_path_buf()),
         author: None,
     };
-    let result = pusher.push(skill, remote, bump, &clone_root, push_mode)?;
+    let result = pusher.push(skill, remote, bump, &clone_root, push_mode, direct_branch)?;
 
     // Best-effort cleanup of the temp clone tree.
     let _ = std::fs::remove_dir_all(&clone_root);
@@ -127,6 +129,7 @@ pub fn run_interactive(
     remote: Option<&str>,
     bump: crate::args::BumpArg,
     push_mode: Option<quay_core::config::PushMode>,
+    direct_branch: Option<&str>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -177,6 +180,7 @@ pub fn run_interactive(
             remote,
             bump_kind,
             push_mode,
+            direct_branch,
             profile,
             project,
             user_config,
@@ -222,6 +226,7 @@ pub fn run(
     remote: Option<&str>,
     bump: BumpArg,
     push_mode: Option<quay_core::config::PushMode>,
+    direct_branch: Option<&str>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -239,6 +244,7 @@ pub fn run(
         remote,
         bump_kind,
         push_mode,
+        direct_branch,
         profile,
         project,
         user_config,

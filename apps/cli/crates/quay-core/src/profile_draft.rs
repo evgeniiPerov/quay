@@ -22,6 +22,8 @@ pub struct RemoteDraft {
     pub provider: ProviderKind,
     /// How `quay push` delivers skills; defaults to `Pr`.
     pub push_mode: PushMode,
+    /// Target branch for `push_mode = Direct`. `None` = use hub's default branch.
+    pub direct_branch: Option<String>,
     /// Whether this is the default remote for the profile.
     pub default: bool,
 }
@@ -77,6 +79,7 @@ impl ProfileDraft {
                     default: rd.default,
                     provider: Some(rd.provider),
                     push_mode: rd.push_mode,
+                    direct_branch: rd.direct_branch.clone(),
                 },
             );
         }
@@ -143,6 +146,7 @@ mod tests {
                 url: "git@ssh.dev.azure.com:v3/org/proj/repo".into(),
                 provider: ProviderKind::AzureDevOps,
                 push_mode: PushMode::Direct,
+                direct_branch: None,
                 default: true,
             }],
             activate: true,

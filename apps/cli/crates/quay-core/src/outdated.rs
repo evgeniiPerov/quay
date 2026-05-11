@@ -75,7 +75,10 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
             let registry = match registry_cache.get(remote_name) {
                 Some(r) => r.clone(),
                 None => {
-                    let r = fetcher.fetch(&remote_cfg.url)?;
+                    let r = match remote_cfg.direct_branch.as_deref() {
+                        Some(b) => fetcher.fetch_at(&remote_cfg.url, b)?,
+                        None => fetcher.fetch(&remote_cfg.url)?,
+                    };
                     registry_cache.insert(remote_name.clone(), r.clone());
                     r
                 }
@@ -143,6 +146,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg

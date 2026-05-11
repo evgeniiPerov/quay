@@ -180,6 +180,7 @@ pub fn on_save(
         url: hub_url.to_string(),
         provider,
         push_mode: PushMode::default(),
+        direct_branch: None,
         default: true,
     };
 

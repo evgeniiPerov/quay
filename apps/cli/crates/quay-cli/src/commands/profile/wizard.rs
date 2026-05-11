@@ -13,6 +13,27 @@ use quay_core::{detect_kind_from_url, ProfileDraft, ProviderKind, PushMode, Remo
 ///
 /// Returns an error when stdin is not a TTY or when the user cancels.
 pub fn run_wizard() -> Result<ProfileDraft, Box<dyn std::error::Error>> {
+    run_wizard_inner(None, None)
+}
+
+/// Run the interactive wizard pre-populated with existing values.
+///
+/// Used by `quay profile edit <name> -i`: the name field is pre-filled and
+/// locked to the existing name; email and remotes show current values as
+/// defaults. The user can Tab through and change only what they want.
+///
+/// Returns an error when stdin is not a TTY or when the user cancels.
+pub fn run_wizard_with_defaults(
+    existing_name: &str,
+    existing_email: Option<&str>,
+) -> Result<ProfileDraft, Box<dyn std::error::Error>> {
+    run_wizard_inner(Some(existing_name), existing_email)
+}
+
+fn run_wizard_inner(
+    locked_name: Option<&str>,
+    default_email: Option<&str>,
+) -> Result<ProfileDraft, Box<dyn std::error::Error>> {
     if !is_tty() {
         return Err(
             "interactive mode (-i) requires a TTY; stdin is not a terminal. \
@@ -21,17 +42,26 @@ pub fn run_wizard() -> Result<ProfileDraft, Box<dyn std::error::Error>> {
         );
     }
 
-    // Step 1 — profile name.
-    let name = dialoguer::Input::<String>::new()
-        .with_prompt("Profile name")
-        .validate_with(|s: &String| validate_profile_name(s))
-        .interact_text()?;
+    // Step 1 — profile name (locked when editing).
+    let name = if let Some(n) = locked_name {
+        println!("Editing profile '{}'", n);
+        n.to_string()
+    } else {
+        dialoguer::Input::<String>::new()
+            .with_prompt("Profile name")
+            .validate_with(|s: &String| validate_profile_name(s))
+            .interact_text()?
+    };
 
-    // Step 2 — email.
-    let email = dialoguer::Input::<String>::new()
+    // Step 2 — email (pre-populated when editing).
+    let email_prompt = dialoguer::Input::<String>::new()
         .with_prompt("Author email")
-        .validate_with(|s: &String| validate_email_loose(s))
-        .interact_text()?;
+        .validate_with(|s: &String| validate_email_loose(s));
+    let email = if let Some(e) = default_email {
+        email_prompt.with_initial_text(e).interact_text()?
+    } else {
+        email_prompt.interact_text()?
+    };
 
     // Step 3 — remote loop.
     let mut remotes: Vec<RemoteDraft> = Vec::new();
@@ -149,6 +179,22 @@ fn prompt_remote(existing: &[RemoteDraft]) -> Result<RemoteDraft, Box<dyn std::e
         PushMode::Direct
     };
 
+    // Direct-branch target — only meaningful for direct mode. Empty = default branch.
+    let direct_branch = if matches!(push_mode, PushMode::Direct) {
+        let s: String = dialoguer::Input::new()
+            .with_prompt("Direct push branch (empty = hub default)")
+            .allow_empty(true)
+            .interact_text()?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    };
+
     // Default?
     let is_default = existing.is_empty()
         || dialoguer::Confirm::new()
@@ -161,6 +207,7 @@ fn prompt_remote(existing: &[RemoteDraft]) -> Result<RemoteDraft, Box<dyn std::e
         url: rurl,
         provider,
         push_mode,
+        direct_branch,
         default: is_default,
     })
 }

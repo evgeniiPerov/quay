@@ -3,7 +3,15 @@ use crate::registry::Registry;
 
 /// Fetches the registry.json catalog from a hub.
 pub trait RegistryFetcher {
+    /// Fetch the registry at the hub's default ref (typically the main branch).
     fn fetch(&self, hub_url: &str) -> Result<Registry>;
+
+    /// Fetch the registry pinned to a specific git ref (branch, tag, or SHA).
+    /// Default implementation falls through to [`Self::fetch`]; concrete
+    /// fetchers should override this when they can target a specific ref.
+    fn fetch_at(&self, hub_url: &str, _git_ref: &str) -> Result<Registry> {
+        self.fetch(hub_url)
+    }
 }
 
 /// Fetches a single file (e.g., SKILL.md) from a hub at a given path.

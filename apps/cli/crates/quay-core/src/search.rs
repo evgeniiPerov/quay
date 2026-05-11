@@ -52,8 +52,12 @@ pub fn search<R: RegistryFetcher>(
     };
 
     for remote_name in remote_names {
-        let url = &config.remotes[remote_name].url;
-        let registry = fetcher.fetch(url)?;
+        let remote_cfg = &config.remotes[remote_name];
+        let url = &remote_cfg.url;
+        let registry = match remote_cfg.direct_branch.as_deref() {
+            Some(b) => fetcher.fetch_at(url, b)?,
+            None => fetcher.fetch(url)?,
+        };
         for (name, entry) in &registry.skills {
             if !matches_filters(name, entry, &q, tag.as_deref()) {
                 continue;
@@ -137,6 +141,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg
@@ -253,6 +258,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         let reg = make_registry(&[("a", make_entry("1.0.0", "x", &[], None))]);
@@ -300,6 +306,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg.remotes.insert(
@@ -309,6 +316,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         let reg = make_registry(&[

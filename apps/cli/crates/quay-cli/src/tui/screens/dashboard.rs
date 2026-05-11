@@ -212,6 +212,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg.user.email = Some("dev@example.com".into());

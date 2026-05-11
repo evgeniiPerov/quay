@@ -102,6 +102,16 @@ impl RegistryFetcher for GithubRawFetcher {
         })?;
         Registry::parse(&text)
     }
+
+    fn fetch_at(&self, hub_url: &str, git_ref: &str) -> Result<Registry> {
+        let (owner, repo) = Self::parse_owner_repo(hub_url)?;
+        let bytes =
+            self.fetch_bytes(GITHUB_RAW_BASE, &owner, &repo, git_ref, "registry.json")?;
+        let text = String::from_utf8(bytes).map_err(|e| QuayError::InvalidRegistry {
+            reason: format!("registry.json is not valid UTF-8: {}", e),
+        })?;
+        Registry::parse(&text)
+    }
 }
 
 impl SkillFileFetcher for GithubRawFetcher {
@@ -155,6 +165,15 @@ impl RegistryFetcher for GithubRawFetcherWithBase {
     fn fetch(&self, hub_url: &str) -> Result<Registry> {
         let (owner, repo) = GithubRawFetcher::parse_owner_repo(hub_url)?;
         let bytes = self.fetch_bytes(&owner, &repo, &self.branch, "registry.json")?;
+        let text = String::from_utf8(bytes).map_err(|e| QuayError::InvalidRegistry {
+            reason: format!("registry.json is not valid UTF-8: {}", e),
+        })?;
+        Registry::parse(&text)
+    }
+
+    fn fetch_at(&self, hub_url: &str, git_ref: &str) -> Result<Registry> {
+        let (owner, repo) = GithubRawFetcher::parse_owner_repo(hub_url)?;
+        let bytes = self.fetch_bytes(&owner, &repo, git_ref, "registry.json")?;
         let text = String::from_utf8(bytes).map_err(|e| QuayError::InvalidRegistry {
             reason: format!("registry.json is not valid UTF-8: {}", e),
         })?;

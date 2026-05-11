@@ -129,6 +129,11 @@ pub enum Command {
         /// Values: pr, direct.
         #[arg(long, value_enum)]
         push_mode: Option<PushModeArg>,
+        /// Override the target branch for direct-mode pushes for this invocation.
+        /// Ignored when push mode resolves to `pr`.
+        /// Pass an empty string to explicitly target the default branch.
+        #[arg(long)]
+        direct_branch: Option<String>,
         /// Open an interactive checkbox list of local skills to push.
         /// Mutually exclusive with the positional skill argument.
         #[arg(short = 'i', long)]
@@ -299,6 +304,38 @@ pub enum ProfileAction {
     Show { name: Option<String> },
     /// Rename a profile.
     Rename { old: String, new: String },
+    /// Edit an existing profile.
+    ///
+    /// Three mutually-exclusive modes:
+    ///   * Explicit flags — `quay profile edit <name> --email <e>`
+    ///   * Wizard — `quay profile edit <name> -i` (or `-i` alone to pick a profile first)
+    ///   * TOML ingestion — `quay profile edit <name> --from-toml <path|->`
+    Edit {
+        /// Profile name to edit.
+        /// When `-i` is used without a name, an interactive picker opens first.
+        #[arg(required_unless_present = "interactive")]
+        name: Option<String>,
+        /// Run the multi-step interactive wizard pre-populated with current
+        /// values. Mutually exclusive with `--email` and `--from-toml`.
+        #[arg(
+            short = 'i',
+            long,
+            conflicts_with_all = ["email", "from_toml"]
+        )]
+        interactive: bool,
+        /// Replace the entire profile content from a TOML file or `-` for stdin.
+        /// Mutually exclusive with `-i` and `--email`.
+        #[arg(
+            long,
+            value_name = "PATH|-",
+            conflicts_with_all = ["interactive", "email"]
+        )]
+        from_toml: Option<String>,
+        /// New author email for this profile.
+        /// Mutually exclusive with `-i` and `--from-toml`.
+        #[arg(long, conflicts_with_all = ["interactive", "from_toml"])]
+        email: Option<String>,
+    },
 }
 
 /// Provider kind for explicit remote provider override.
@@ -339,6 +376,10 @@ pub enum RemoteAction {
         /// Push mode for this remote: pr (default) or direct.
         #[arg(long, value_enum)]
         push_mode: Option<PushModeArg>,
+        /// Target branch for direct-mode pushes on this remote.
+        /// Omit to push to the hub's default branch.
+        #[arg(long)]
+        direct_branch: Option<String>,
     },
     /// Test connectivity to a configured remote
     Test {
@@ -349,4 +390,25 @@ pub enum RemoteAction {
     List,
     /// Remove a remote
     Remove { name: String },
+    /// Edit an existing remote
+    Edit {
+        /// Name of the remote to edit.
+        name: String,
+        /// New Git URL for the remote.
+        #[arg(long)]
+        url: Option<String>,
+        /// New provider kind for the remote.
+        #[arg(long, value_enum)]
+        provider: Option<ProviderKindArg>,
+        /// New push mode for the remote (`pr` or `direct`).
+        #[arg(long, value_enum)]
+        push_mode: Option<PushModeArg>,
+        /// Target branch for direct-mode pushes on this remote.
+        /// Pass an empty string (`--direct-branch ""`) to clear/unset the value.
+        #[arg(long)]
+        direct_branch: Option<String>,
+        /// Mark this remote as the default (clears the flag on the previous default).
+        #[arg(long)]
+        default: bool,
+    },
 }

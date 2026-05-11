@@ -25,6 +25,7 @@ pub fn run(
             default,
             provider,
             push_mode,
+            direct_branch,
         } => {
             let mut cfg = load_project(project)?;
             if cfg.remotes.contains_key(&name) {
@@ -36,6 +37,8 @@ pub fn run(
                 }
             }
             let kind: Option<quay_core::ProviderKind> = provider.map(Into::into);
+            // An empty string on the CLI means "no branch override".
+            let direct_branch_value = direct_branch.filter(|s| !s.is_empty());
             cfg.remotes.insert(
                 name.clone(),
                 RemoteConfig {
@@ -43,6 +46,7 @@ pub fn run(
                     default,
                     provider: kind,
                     push_mode: push_mode.map(Into::into).unwrap_or_default(),
+                    direct_branch: direct_branch_value,
                 },
             );
             cfg.write(&project_config_path(project))?;
@@ -167,6 +171,64 @@ pub fn run(
                 println!("removed remote {}", name);
             }
         }
+        RemoteAction::Edit {
+            name,
+            url,
+            provider,
+            push_mode,
+            direct_branch,
+            default,
+        } => {
+            let mut cfg = load_project(project)?;
+            let remote = cfg
+                .remotes
+                .get_mut(&name)
+                .ok_or_else(|| QuayError::RemoteUnknown(name.clone()))?;
+
+            // Patch only the supplied fields.
+            if let Some(new_url) = url {
+                if new_url.is_empty() {
+                    return Err("--url must not be empty".into());
+                }
+                remote.url = new_url;
+            }
+            if let Some(p) = provider {
+                remote.provider = Some(quay_core::ProviderKind::from(p));
+            }
+            if let Some(pm) = push_mode {
+                remote.push_mode = quay_core::PushMode::from(pm);
+            }
+            if let Some(branch) = direct_branch {
+                // Empty string clears the override; any other value sets it.
+                remote.direct_branch = if branch.is_empty() { None } else { Some(branch) };
+            }
+            if default {
+                // Clear the default flag on all other remotes.
+                for (n, r) in cfg.remotes.iter_mut() {
+                    if n != &name {
+                        r.default = false;
+                    }
+                }
+                cfg.remotes.get_mut(&name).unwrap().default = true;
+            }
+
+            cfg.write(&project_config_path(project))?;
+            if json {
+                let r = cfg.remotes.get(&name).unwrap();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "action": "edited",
+                        "name": name,
+                        "url": r.url,
+                        "default": r.default,
+                        "push_mode": format!("{:?}", r.push_mode).to_lowercase(),
+                    }))?
+                );
+            } else {
+                println!("updated remote '{}'", name);
+            }
+        }
     }
     Ok(())
 }
@@ -197,6 +259,7 @@ mod tests {
                 default: false,
                 provider: Some(ProviderKindArg::Gitlab),
                 push_mode: None,
+                direct_branch: None,
             },
             dir.path(),
             None,
@@ -225,6 +288,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: None,
+                direct_branch: None,
             },
             dir.path(),
             None,
@@ -253,6 +317,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: Some(crate::args::PushModeArg::Direct),
+                direct_branch: None,
             },
             dir.path(),
             None,
@@ -281,6 +346,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: None,
+                direct_branch: None,
             },
             dir.path(),
             None,

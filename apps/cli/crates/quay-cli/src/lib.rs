@@ -192,14 +192,20 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             remote,
             bump,
             push_mode,
+            direct_branch,
             interactive,
         } => {
             use commands::interactive::should_auto_interactive;
+            // Empty string on CLI means "no override" (same as unset).
+            let direct_branch_ref: Option<&str> = direct_branch
+                .as_deref()
+                .filter(|s| !s.is_empty());
             if should_auto_interactive(skill.is_some(), interactive) {
                 commands::push::run_interactive(
                     remote.as_deref(),
                     bump,
                     push_mode.map(quay_core::config::PushMode::from),
+                    direct_branch_ref,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),
@@ -211,6 +217,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     remote.as_deref(),
                     bump,
                     push_mode.map(quay_core::config::PushMode::from),
+                    direct_branch_ref,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),

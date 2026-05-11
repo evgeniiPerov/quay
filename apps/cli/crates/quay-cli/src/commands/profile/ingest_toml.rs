@@ -23,6 +23,7 @@ use std::io::Read as _;
 /// url = "git@github.com:org/skills.git"
 /// provider = "github"   # optional, auto-detected if absent
 /// push_mode = "pr"      # optional, defaults to "pr"
+/// direct_branch = "develop"  # optional, target branch for direct-mode pushes (omit = default branch)
 /// default = true        # optional, defaults to false
 /// ```
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,9 @@ struct IngestRemote {
     provider: Option<IngestProvider>,
     #[serde(default)]
     push_mode: IngestPushMode,
+    /// Target branch for direct-mode pushes. None = hub's default branch.
+    #[serde(default)]
+    direct_branch: Option<String>,
     #[serde(default)]
     default: bool,
 }
@@ -135,6 +139,7 @@ pub fn parse(
             url: r.url.clone(),
             provider,
             push_mode: r.push_mode.into(),
+            direct_branch: r.direct_branch.clone(),
             default: r.default,
         });
     }

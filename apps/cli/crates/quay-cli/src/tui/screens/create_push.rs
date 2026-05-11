@@ -2039,6 +2039,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: quay_core::PushMode::default(),
+                direct_branch: None,
             },
         );
         let mut app = App::new(cfg, dir.path().to_path_buf(), None);

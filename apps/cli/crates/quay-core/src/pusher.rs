@@ -68,6 +68,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         bump: BumpKind,
         clone_dest_root: &Path,
         push_mode_override: Option<crate::config::PushMode>,
+        direct_branch_override: Option<&str>,
     ) -> Result<PushResult> {
         // 1. Resolve target remote.
         let remote_name = match target_remote {
@@ -157,6 +158,14 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             }
         }
 
+        // Compute push mode + direct-branch target now (before the clone) so we
+        // can shallow-clone the right branch and avoid non-fast-forward pushes
+        // when a remote `direct_branch` is ahead of the hub's default branch.
+        use crate::config::PushMode;
+        let effective_mode = push_mode_override.unwrap_or(remote_cfg.push_mode);
+        let effective_direct_branch: Option<&str> =
+            direct_branch_override.or(remote_cfg.direct_branch.as_deref());
+
         // 4. Clone the hub.
         let hub_clone = clone_dest_root.join(format!("hub-{}", skill_name));
         if hub_clone.exists() {
@@ -165,7 +174,28 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
                 source,
             })?;
         }
-        self.git.clone(&remote_cfg.url, &hub_clone, None)?;
+        // When pushing to a non-default branch in direct mode, clone that
+        // branch directly so the working tree starts on it and tracks
+        // `origin/<branch>`. If the branch does not exist on the remote yet,
+        // fall back to a default-branch clone — `finish_push_direct` will
+        // auto-create the branch from current HEAD via `checkout -B`.
+        let clone_branch = match effective_mode {
+            PushMode::Direct => effective_direct_branch,
+            PushMode::Pr => None,
+        };
+        match self.git.clone(&remote_cfg.url, &hub_clone, clone_branch) {
+            Ok(()) => {}
+            Err(_) if clone_branch.is_some() => {
+                if hub_clone.exists() {
+                    std::fs::remove_dir_all(&hub_clone).map_err(|source| QuayError::Io {
+                        path: hub_clone.display().to_string(),
+                        source,
+                    })?;
+                }
+                self.git.clone(&remote_cfg.url, &hub_clone, None)?;
+            }
+            Err(e) => return Err(e),
+        }
 
         // 5. Make sure target dir exists in the hub clone (default to flat layout if new).
         let hub_skill_dir = hub_clone.join("skills").join(skill_name);
@@ -238,8 +268,6 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         )?;
 
         // 8 & 9. Mode-aware branch + commit + push (+ optional PR).
-        use crate::config::PushMode;
-        let effective_mode = push_mode_override.unwrap_or(remote_cfg.push_mode);
         let result = match effective_mode {
             PushMode::Pr => self.finish_push_pr(
                 &remote_name,
@@ -248,9 +276,13 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
                 &manifest,
                 &hub_clone,
             )?,
-            PushMode::Direct => {
-                self.finish_push_direct(&remote_name, skill_name, &manifest, &hub_clone)?
-            }
+            PushMode::Direct => self.finish_push_direct(
+                &remote_name,
+                skill_name,
+                &manifest,
+                &hub_clone,
+                effective_direct_branch,
+            )?,
         };
 
         // Best-effort push-log append — note pr_url is "" for direct.
@@ -333,9 +365,19 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         skill_name: &str,
         manifest: &SkillManifest,
         hub_clone: &Path,
+        direct_branch: Option<&str>,
     ) -> Result<PushResult> {
         // The freshly-cloned repo is already on its default branch — read it back.
         let default_branch = self.git.current_branch(hub_clone)?;
+
+        // If a specific branch was requested, switch to it (creating it from
+        // the current default branch if it does not exist yet).
+        let push_branch = if let Some(branch) = direct_branch {
+            self.git.checkout_new_branch(hub_clone, branch)?;
+            branch.to_string()
+        } else {
+            default_branch.clone()
+        };
 
         self.git.add_all(hub_clone)?;
         let (author_name, author_email) = self.author_identity()?;
@@ -353,18 +395,18 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         }
 
         self.git
-            .push(hub_clone, "origin", &default_branch)
+            .push(hub_clone, "origin", &push_branch)
             .map_err(|e| {
                 QuayError::ConfigValidation(format!(
                     "direct push to '{}' failed: {}; if the branch is protected, set this remote's push_mode = pr",
-                    default_branch, e
+                    push_branch, e
                 ))
             })?;
         let commit_sha = self.git.head_sha(hub_clone)?;
 
         Ok(PushResult {
             remote: remote_name.to_string(),
-            branch: default_branch,
+            branch: push_branch,
             version: manifest.version.clone(),
             pr: None,
             commit_sha,
@@ -640,6 +682,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         cfg
@@ -672,6 +715,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
                 None,
             )
             .unwrap();
@@ -708,20 +752,41 @@ mod tests {
         };
 
         let r = pusher
-            .push("csv-parse", None, BumpKind::Patch, clone_root.path(), None)
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::Patch,
+                clone_root.path(),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(r.version, "1.2.4");
 
         // Need a fresh clone-root each call to avoid colliding hub-csv-parse dir.
         let cr2 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push("csv-parse", None, BumpKind::Minor, cr2.path(), None)
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::Minor,
+                cr2.path(),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(r.version, "1.3.0");
 
         let cr3 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push("csv-parse", None, BumpKind::Major, cr3.path(), None)
+            .push(
+                "csv-parse",
+                None,
+                BumpKind::Major,
+                cr3.path(),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(r.version, "2.0.0");
     }
@@ -747,6 +812,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
                 None,
             )
             .unwrap_err();
@@ -783,6 +849,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
                 None,
             )
             .unwrap();
@@ -822,6 +889,7 @@ mod tests {
                 BumpKind::AsWritten,
                 clone_root.path(),
                 None,
+                None,
             )
             .unwrap();
         let title = opener.title.borrow().clone();
@@ -842,6 +910,7 @@ mod tests {
                 default: false,
                 provider: None,
                 push_mode: crate::config::PushMode::default(),
+                direct_branch: None,
             },
         );
         make_local_skill(
@@ -860,7 +929,14 @@ mod tests {
             author: None,
         };
         let err = pusher
-            .push("x", None, BumpKind::AsWritten, clone_root.path(), None)
+            .push(
+                "x",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(matches!(err, QuayError::ConfigValidation(_)));
     }
@@ -892,6 +968,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
                 None,
             )
             .unwrap();
@@ -940,6 +1017,7 @@ mod tests {
                 BumpKind::Patch,
                 clone_root.path(),
                 None,
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, QuayError::ConfigValidation(_)));
@@ -972,6 +1050,7 @@ mod tests {
                 None,
                 BumpKind::AsWritten,
                 clone_root.path(),
+                None,
                 None,
             )
             .unwrap();
@@ -1012,6 +1091,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: PushMode::Direct,
+                direct_branch: None,
             },
         );
         cfg
@@ -1040,7 +1120,14 @@ mod tests {
 
         let clone_root = tempfile::TempDir::new().unwrap();
         let result = pusher
-            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
             .unwrap();
 
         assert!(result.pr.is_none(), "direct mode must not produce a PR");
@@ -1079,7 +1166,14 @@ mod tests {
         };
         let clone_root = tempfile::TempDir::new().unwrap();
         let _ = pusher
-            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
             .unwrap();
 
         let log = crate::push_log::PushLog::load(config_dir.path(), Some(project.path())).unwrap();
@@ -1113,6 +1207,7 @@ mod tests {
                 default: true,
                 provider: None,
                 push_mode: crate::config::PushMode::Pr, // remote default is PR
+                direct_branch: None,
             },
         );
 
@@ -1134,6 +1229,7 @@ mod tests {
                 BumpKind::AsWritten,
                 clone_root.path(),
                 Some(crate::config::PushMode::Direct),
+                None,
             )
             .unwrap();
         assert!(
@@ -1166,7 +1262,14 @@ mod tests {
         };
         let clone_root = tempfile::TempDir::new().unwrap();
         let err = pusher
-            .push("foo", None, BumpKind::AsWritten, clone_root.path(), None)
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1176,6 +1279,171 @@ mod tests {
         assert!(
             msg.contains("push_mode = pr"),
             "expected 'push_mode = pr' hint in error: {msg}"
+        );
+    }
+
+    // ── direct_branch tests ──────────────────────────────────────────────────
+
+    /// Helper that creates a direct-mode config with `direct_branch` set.
+    fn make_direct_config_with_branch(branch: &str) -> crate::config::Config {
+        let mut cfg = crate::config::Config::default();
+        cfg.user.email = Some("dev@example.com".into());
+        cfg.remotes.insert(
+            "hub".into(),
+            crate::config::RemoteConfig {
+                url: "git@example:o/r.git".into(),
+                default: true,
+                provider: None,
+                push_mode: PushMode::Direct,
+                direct_branch: Some(branch.to_string()),
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn direct_mode_with_config_direct_branch_pushes_to_that_branch() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        let cfg = make_direct_config_with_branch("develop");
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let result = pusher
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None, // no per-invocation override; should use config
+            )
+            .unwrap();
+
+        assert!(result.pr.is_none(), "direct mode must not open a PR");
+        assert_eq!(
+            result.branch, "develop",
+            "result.branch must be the configured direct_branch"
+        );
+        assert_eq!(
+            git.last_pushed_branch().as_deref(),
+            Some("develop"),
+            "git push must target 'develop'"
+        );
+        // checkout_new_branch must have been called to switch to the branch.
+        let branches = git.branches.borrow();
+        assert!(
+            branches.iter().any(|(_, b)| b == "develop"),
+            "checkout_new_branch must be called with 'develop'"
+        );
+    }
+
+    #[test]
+    fn direct_branch_override_wins_over_config() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        // Config says "develop" but the per-invocation override is "skills".
+        let cfg = make_direct_config_with_branch("develop");
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let result = pusher
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                Some("skills"), // per-invocation override
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.branch, "skills",
+            "per-invocation override must win over config direct_branch"
+        );
+        assert_eq!(
+            git.last_pushed_branch().as_deref(),
+            Some("skills"),
+            "git push must target 'skills'"
+        );
+    }
+
+    #[test]
+    fn direct_branch_none_falls_back_to_default_branch() {
+        let project = tempfile::TempDir::new().unwrap();
+        make_local_skill(
+            project.path(),
+            "foo",
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\nbody\n",
+        );
+
+        // Config has no direct_branch set.
+        let cfg = make_direct_config();
+        let git = FakeGit::default();
+        let opener = PanickingPrOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+
+        let clone_root = tempfile::TempDir::new().unwrap();
+        let result = pusher
+            .push(
+                "foo",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None, // no override
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.branch, "main",
+            "None direct_branch must fall back to default branch (FakeGit returns 'main')"
+        );
+        assert_eq!(
+            git.last_pushed_branch().as_deref(),
+            Some("main"),
+            "git push must target default branch"
+        );
+        // checkout_new_branch must NOT have been called (no branch switch).
+        assert!(
+            git.branches.borrow().is_empty(),
+            "checkout_new_branch must NOT be called when direct_branch is None"
         );
     }
 }

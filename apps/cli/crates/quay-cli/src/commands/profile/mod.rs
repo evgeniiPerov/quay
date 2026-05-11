@@ -1,5 +1,6 @@
 //! Implementation of `quay profile <action>`.
 
+pub mod edit;
 pub mod ingest_toml;
 pub mod wizard;
 
@@ -56,6 +57,12 @@ pub fn run(
         ProfileAction::Remove { name } => remove(&name, user_config, json),
         ProfileAction::Show { name } => show(name.as_deref(), user_config, json),
         ProfileAction::Rename { old, new } => rename(&old, &new, user_config, json),
+        ProfileAction::Edit {
+            name,
+            interactive,
+            from_toml,
+            email,
+        } => edit::run(name, interactive, from_toml, email, user_config, json),
     }
 }
 
@@ -170,6 +177,7 @@ fn build_remote_draft(
         url: rurl,
         provider,
         push_mode,
+        direct_branch: None,
         default: is_default,
     })
 }
