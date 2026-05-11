@@ -11,6 +11,8 @@ $ quay push my-skill --bump=patch
 opened PR: https://github.com/acme/skills/pull/142
 ```
 
+**Full documentation:** <https://evgeniiperov.github.io/quay/intro.html>
+
 ## Install
 
 ### Homebrew (macOS, Linux)
