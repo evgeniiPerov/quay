@@ -300,6 +300,44 @@ fn profile_show_prints_active_when_no_arg() {
 }
 
 #[test]
+fn profile_show_reveals_provider_push_mode_and_direct_branch() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let user = write_user(
+        &tmp,
+        r#"
+            active_profile = "azure-work"
+            [profiles.azure-work.user]
+            email = "you@example.com"
+            [profiles.azure-work.remotes.harbour]
+            url = "https://dev.azure.com/example-org/Tooling/_git/frontend-harbour"
+            default = true
+            provider = "azuredevops"
+            push_mode = "direct"
+            direct_branch = "develop"
+        "#,
+    );
+    let project = tmp.child("project");
+    std::fs::create_dir_all(project.path()).unwrap();
+    Command::cargo_bin("quay")
+        .unwrap()
+        .args([
+            "--user-config",
+            user.to_str().unwrap(),
+            "--project",
+            project.path().to_str().unwrap(),
+            "profile",
+            "show",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("profile: azure-work"))
+        .stdout(predicates::str::contains("* harbour"))
+        .stdout(predicates::str::contains("provider: azuredevops"))
+        .stdout(predicates::str::contains("push_mode: direct"))
+        .stdout(predicates::str::contains("direct_branch: develop"));
+}
+
+#[test]
 fn profile_rename_updates_active_when_renaming_active() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let user = write_user(

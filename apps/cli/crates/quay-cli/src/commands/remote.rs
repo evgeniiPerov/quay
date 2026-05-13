@@ -200,7 +200,11 @@ pub fn run(
             }
             if let Some(branch) = direct_branch {
                 // Empty string clears the override; any other value sets it.
-                remote.direct_branch = if branch.is_empty() { None } else { Some(branch) };
+                remote.direct_branch = if branch.is_empty() {
+                    None
+                } else {
+                    Some(branch)
+                };
             }
             if default {
                 // Clear the default flag on all other remotes.

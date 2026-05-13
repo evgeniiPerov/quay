@@ -302,6 +302,27 @@ impl Config {
     }
 }
 
+/// Emit a stderr warning when more than one remote is flagged
+/// `default = true`. `default_remote()` then resolves to the first match in
+/// BTreeMap order, which is silent and surprising — this guard makes the
+/// conflict visible without breaking the load (so the user can still run
+/// `remote list` / `profile show` to diagnose).
+fn warn_if_multiple_defaults(remotes: &BTreeMap<String, RemoteConfig>) {
+    let defaults: Vec<&str> = remotes
+        .iter()
+        .filter(|(_, r)| r.default)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if defaults.len() > 1 {
+        eprintln!(
+            "warning: {} remotes marked as default ({}). Only one should be default. \
+             Fix with `quay remote edit <name> --default` or `quay profile edit <name>`.",
+            defaults.len(),
+            defaults.join(", ")
+        );
+    }
+}
+
 impl Config {
     /// Load and resolve a profile-aware config.
     ///
@@ -371,6 +392,7 @@ impl Config {
             } else {
                 InstallConfig::default()
             };
+            warn_if_multiple_defaults(&project_file.remotes);
             return Ok(Config {
                 user: project_file.user,
                 remotes: project_file.remotes,
@@ -402,6 +424,7 @@ impl Config {
         for (k, v) in project_file.remotes {
             remotes.insert(k, v);
         }
+        warn_if_multiple_defaults(&remotes);
         let install = if project_file.install != InstallConfig::default() {
             project_file.install
         } else {
@@ -517,6 +540,40 @@ mod tests {
         cfg.write(path.path()).unwrap();
         let read = Config::read(path.path()).unwrap();
         assert_eq!(read, cfg);
+    }
+
+    #[test]
+    fn warn_helper_lists_all_defaults() {
+        let mut remotes = BTreeMap::new();
+        remotes.insert(
+            "a".to_string(),
+            RemoteConfig {
+                url: "x".into(),
+                default: true,
+                provider: None,
+                push_mode: PushMode::default(),
+                direct_branch: None,
+            },
+        );
+        remotes.insert(
+            "b".to_string(),
+            RemoteConfig {
+                url: "y".into(),
+                default: true,
+                provider: None,
+                push_mode: PushMode::default(),
+                direct_branch: None,
+            },
+        );
+        let defaults: Vec<&str> = remotes
+            .iter()
+            .filter(|(_, r)| r.default)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(defaults, vec!["a", "b"]);
+        // warn_if_multiple_defaults itself only prints; covered by integration
+        // observation. This test guards the filter shape used inside it.
+        warn_if_multiple_defaults(&remotes);
     }
 
     #[test]

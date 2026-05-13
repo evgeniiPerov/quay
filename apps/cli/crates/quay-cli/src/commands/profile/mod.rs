@@ -173,10 +173,7 @@ fn build_remote_draft(
         .map(PushMode::from)
         .unwrap_or_default();
 
-    let direct_branch = direct_branches
-        .get(i)
-        .filter(|s| !s.is_empty())
-        .cloned();
+    let direct_branch = direct_branches.get(i).filter(|s| !s.is_empty()).cloned();
 
     // remote[i] is the default if i < default_count
     let is_default = (i as u8) < default_count;
@@ -233,6 +230,9 @@ fn add(
     // Explicit-flags mode.
     let profile_name = name.ok_or("profile name is required")?;
     validate_profile_name(&profile_name)?;
+    if let Some(ref e) = email {
+        quay_core::validate::email_loose(e)?;
+    }
 
     // Validate provider/push_mode counts don't exceed remote count.
     if providers.len() > remotes_raw.len() {
@@ -291,33 +291,9 @@ fn add(
     Ok(())
 }
 
-/// Validate profile name against `^[a-z0-9][a-z0-9_-]*$` or single char `[a-z0-9]`.
+/// Thin error-conversion adapter over [`quay_core::validate::profile_name`].
 fn validate_profile_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if name.is_empty() {
-        return Err("profile name must not be empty".into());
-    }
-    let first = name.chars().next().unwrap();
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return Err(format!(
-            "profile name '{}' must start with a lowercase letter or digit",
-            name
-        )
-        .into());
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    {
-        return Err(format!(
-            "profile name '{}' must only contain lowercase letters, digits, hyphens, or underscores",
-            name
-        )
-        .into());
-    }
-    if name.len() > 64 {
-        return Err(format!("profile name '{}' exceeds 64 characters", name).into());
-    }
-    Ok(())
+    quay_core::validate::profile_name(name).map_err(Into::into)
 }
 
 fn print_add_result(
@@ -470,6 +446,16 @@ fn show(
             for (rname, r) in &p.remotes {
                 let star = if r.default { "*" } else { " " };
                 println!("    {} {}\t{}", star, rname, r.url);
+                let provider = r
+                    .provider
+                    .map(|k| format!("{:?}", k).to_lowercase())
+                    .unwrap_or_else(|| "(auto)".to_string());
+                let push_mode = format!("{:?}", r.push_mode).to_lowercase();
+                println!("        provider: {}", provider);
+                println!("        push_mode: {}", push_mode);
+                if let Some(b) = r.direct_branch.as_deref() {
+                    println!("        direct_branch: {}", b);
+                }
             }
         }
     }

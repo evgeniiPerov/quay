@@ -766,27 +766,13 @@ mod tests {
         // Need a fresh clone-root each call to avoid colliding hub-csv-parse dir.
         let cr2 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push(
-                "csv-parse",
-                None,
-                BumpKind::Minor,
-                cr2.path(),
-                None,
-                None,
-            )
+            .push("csv-parse", None, BumpKind::Minor, cr2.path(), None, None)
             .unwrap();
         assert_eq!(r.version, "1.3.0");
 
         let cr3 = assert_fs::TempDir::new().unwrap();
         let r = pusher
-            .push(
-                "csv-parse",
-                None,
-                BumpKind::Major,
-                cr3.path(),
-                None,
-                None,
-            )
+            .push("csv-parse", None, BumpKind::Major, cr3.path(), None, None)
             .unwrap();
         assert_eq!(r.version, "2.0.0");
     }

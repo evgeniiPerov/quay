@@ -20,6 +20,7 @@ pub mod registry;
 pub mod registry_builder;
 pub mod scanner;
 pub mod search;
+pub mod validate;
 
 pub use add_plan::{
     build_plan, build_plan_with_prompt, collision_names, CollisionStrategy, SkillAction,

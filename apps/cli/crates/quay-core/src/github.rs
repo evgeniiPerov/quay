@@ -105,8 +105,7 @@ impl RegistryFetcher for GithubRawFetcher {
 
     fn fetch_at(&self, hub_url: &str, git_ref: &str) -> Result<Registry> {
         let (owner, repo) = Self::parse_owner_repo(hub_url)?;
-        let bytes =
-            self.fetch_bytes(GITHUB_RAW_BASE, &owner, &repo, git_ref, "registry.json")?;
+        let bytes = self.fetch_bytes(GITHUB_RAW_BASE, &owner, &repo, git_ref, "registry.json")?;
         let text = String::from_utf8(bytes).map_err(|e| QuayError::InvalidRegistry {
             reason: format!("registry.json is not valid UTF-8: {}", e),
         })?;

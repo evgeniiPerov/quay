@@ -234,9 +234,30 @@ pub enum ProfileAction {
     /// Add a new profile.
     ///
     /// Three mutually-exclusive modes:
-    ///   * Explicit flags  — `quay profile add <name> --email <e> --remote n=url …`
-    ///   * Wizard          — `quay profile add -i`
-    ///   * TOML ingestion  — `quay profile add <name> --from-toml <path|->`
+    ///   - Explicit flags:  quay profile add <name> --email <e> --remote n=url ...
+    ///   - Wizard:          quay profile add -i           (recommended first time)
+    ///   - TOML ingestion:  quay profile add <name> --from-toml <path|->
+    ///
+    /// EXAMPLES
+    ///
+    /// Single remote, GitHub PR mode (provider auto-detected from URL):
+    ///   quay profile add work --email me@work.com \
+    ///     --remote gh=git@github.com:org/skills.git --activate
+    ///
+    /// Azure DevOps, direct push to non-default branch (e.g. develop):
+    ///   quay profile add team --email me@team.com \
+    ///     --remote hub=https://dev.azure.com/org/proj/_git/repo \
+    ///     --provider azuredevops --push-mode direct --direct-branch develop
+    ///
+    /// Multiple remotes — each --provider / --push-mode / --direct-branch /
+    /// --default applies to the most recently specified --remote:
+    ///   quay profile add multi --email me@x.com \
+    ///     --remote a=git@github.com:org/a.git --default \
+    ///     --remote b=git@gitlab.com:org/b.git --push-mode direct --direct-branch main
+    ///
+    /// PowerShell note: URLs with `&` or `?` must be single-quoted; backtick (`)
+    /// at end of line continues the command on the next line.
+    #[command(verbatim_doc_comment)]
     Add {
         /// Profile name (required unless `-i` / `--interactive` is used).
         #[arg(
@@ -265,27 +286,35 @@ pub enum ProfileAction {
         #[arg(long, conflicts_with_all = ["interactive", "from_toml"])]
         email: Option<String>,
         /// Seed a remote: `--remote <name>=<url>` (repeatable).
-        /// Each `--provider`, `--push-mode`, and `--default` applies to the
-        /// most recently specified `--remote`.
+        /// All following `--provider`, `--push-mode`, `--direct-branch`,
+        /// `--default` flags apply to THIS remote until the next `--remote`.
         /// Mutually exclusive with `-i` and `--from-toml`.
         #[arg(
             long,
+            value_name = "NAME=URL",
             action = clap::ArgAction::Append,
             conflicts_with_all = ["interactive", "from_toml"]
         )]
         remote: Vec<String>,
-        /// Provider for the most recently specified `--remote`.
+        /// Provider for the most recently specified `--remote`. When omitted,
+        /// the provider is auto-detected from the URL (github / gitlab /
+        /// bitbucket / azuredevops / github-enterprise).
         #[arg(long, value_enum, conflicts_with_all = ["interactive", "from_toml"])]
         provider: Vec<ProviderKindArg>,
-        /// Push mode for the most recently specified `--remote` (`pr` or `direct`).
+        /// Push mode for the most recently specified `--remote`:
+        ///   `pr`     — open a pull request (default)
+        ///   `direct` — git push directly to a branch (see `--direct-branch`)
         #[arg(long, value_enum, action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
         push_mode: Vec<PushModeArg>,
-        /// Target branch for direct-mode pushes on the most recently specified
-        /// `--remote`. Omit to push to the hub's default branch. Repeatable;
-        /// applies positionally to each `--remote`.
-        #[arg(long, action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
+        /// Branch for direct-mode pushes. Applies to the most recently
+        /// specified `--remote`. Omit to push to the hub's default branch
+        /// (e.g. `main`/`master`). Use this when your team merges to a
+        /// non-default integration branch like `develop` or `staging`.
+        /// Repeatable; positional per `--remote`.
+        #[arg(long, value_name = "BRANCH", action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
         direct_branch: Vec<String>,
-        /// Mark the most recently specified `--remote` as the default remote.
+        /// Mark the most recently specified `--remote` as the default remote
+        /// for this profile. Only one remote should be default per profile.
         /// Repeat once per `--remote` that should be the default.
         #[arg(long, action = clap::ArgAction::Count, conflicts_with_all = ["interactive", "from_toml"])]
         default: u8,

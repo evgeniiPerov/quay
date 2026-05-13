@@ -197,9 +197,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             use commands::interactive::should_auto_interactive;
             // Empty string on CLI means "no override" (same as unset).
-            let direct_branch_ref: Option<&str> = direct_branch
-                .as_deref()
-                .filter(|s| !s.is_empty());
+            let direct_branch_ref: Option<&str> =
+                direct_branch.as_deref().filter(|s| !s.is_empty());
             if should_auto_interactive(skill.is_some(), interactive) {
                 commands::push::run_interactive(
                     remote.as_deref(),

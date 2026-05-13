@@ -124,7 +124,8 @@ impl RegistryFetcher for CloneFetcher {
 
     fn fetch_at(&self, hub_url: &str, git_ref: &str) -> Result<Registry> {
         // Branch-pinned clone — re-uses fetch_file_at's clone-with-branch trick.
-        let bytes = <Self as SkillFileFetcher>::fetch_file_at(self, hub_url, "registry.json", git_ref)?;
+        let bytes =
+            <Self as SkillFileFetcher>::fetch_file_at(self, hub_url, "registry.json", git_ref)?;
         let text = String::from_utf8(bytes).map_err(|e| QuayError::InvalidRegistry {
             reason: format!("registry.json is not valid UTF-8: {e}"),
         })?;

@@ -340,7 +340,14 @@ fn direct_push_to_diverged_develop_fast_forwards() {
     };
 
     let result = pusher
-        .push("my-skill", None, BumpKind::AsWritten, &clone_root, None, None)
+        .push(
+            "my-skill",
+            None,
+            BumpKind::AsWritten,
+            &clone_root,
+            None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(result.branch, "develop");

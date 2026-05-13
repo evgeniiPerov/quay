@@ -71,6 +71,52 @@ fn add_duplicate_fails() {
 }
 
 #[test]
+fn warns_when_multiple_remotes_marked_default() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let p = dir.path().to_str().unwrap();
+    let user_cfg = dir.path().join("user.toml");
+    std::fs::write(&user_cfg, "").unwrap();
+
+    quay()
+        .args([
+            "--project",
+            p,
+            "--user-config",
+            user_cfg.to_str().unwrap(),
+            "init",
+        ])
+        .assert()
+        .success();
+
+    // Hand-write a project config with two defaults (the CLI normally clears
+    // the prior default, but hand-edited / migrated configs can still hit this).
+    let cfg = r#"[remotes.alpha]
+url = "https://github.com/a/b.git"
+default = true
+
+[remotes.beta]
+url = "https://github.com/c/d.git"
+default = true
+"#;
+    std::fs::write(format!("{}/.quay/config.toml", p), cfg).unwrap();
+
+    quay()
+        .args([
+            "--project",
+            p,
+            "--user-config",
+            user_cfg.to_str().unwrap(),
+            "remote",
+            "list",
+        ])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("2 remotes marked as default"))
+        .stderr(predicates::str::contains("alpha"))
+        .stderr(predicates::str::contains("beta"));
+}
+
+#[test]
 fn second_default_unsets_first() {
     let dir = assert_fs::TempDir::new().unwrap();
     let p = dir.path().to_str().unwrap();

@@ -17,7 +17,7 @@ use super::ingest_toml;
 use super::wizard;
 use crate::commands::interactive::{is_tty, pick_one};
 use crate::config_io::{read_user_file, write_user_file};
-use quay_core::{QuayError, RemoteConfig};
+use quay_core::{detect_kind_from_url, QuayError, RemoteConfig, RemoteDraft};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -49,8 +49,21 @@ pub fn run(
             .get(&profile_name)
             .ok_or_else(|| QuayError::ProfileUnknown(profile_name.clone()))?;
         let current_email = current.user.email.as_deref();
+        let existing_remotes: Vec<RemoteDraft> = current
+            .remotes
+            .iter()
+            .map(|(name, r)| RemoteDraft {
+                name: name.clone(),
+                url: r.url.clone(),
+                provider: r.provider.unwrap_or_else(|| detect_kind_from_url(&r.url)),
+                push_mode: r.push_mode,
+                direct_branch: r.direct_branch.clone(),
+                default: r.default,
+            })
+            .collect();
 
-        let draft = wizard::run_wizard_with_defaults(&profile_name, current_email)?;
+        let draft =
+            wizard::run_wizard_with_defaults(&profile_name, current_email, existing_remotes)?;
 
         // Apply the wizard result: replace the profile's email and remotes.
         apply_wizard_draft(path, &profile_name, &draft.email, &draft.remotes, json)?;
@@ -65,13 +78,18 @@ pub fn run(
         let toml_text = ingest_toml::read_from_arg(from_toml_arg)?;
         // parse() builds a ProfileDraft; we use its email + remotes fields.
         let draft = ingest_toml::parse(&toml_text, &profile_name, false)?;
+        if !draft.email.is_empty() {
+            quay_core::validate::email_loose(&draft.email)?;
+        }
 
         let mut file = read_user_file(Some(path))?;
         if !file.profiles.contains_key(&profile_name) {
             return Err(QuayError::ProfileUnknown(profile_name).into());
         }
 
-        // Build new remotes map from the draft.
+        // Build new remotes map from the draft. Every RemoteConfig field must
+        // be carried through here — adding a field without updating this loop
+        // silently drops it on edit-via-TOML.
         let mut new_remotes: BTreeMap<String, RemoteConfig> = BTreeMap::new();
         for rd in &draft.remotes {
             new_remotes.insert(
@@ -81,7 +99,7 @@ pub fn run(
                     default: rd.default,
                     provider: Some(rd.provider),
                     push_mode: rd.push_mode,
-                    direct_branch: None,
+                    direct_branch: rd.direct_branch.clone(),
                 },
             );
         }
@@ -112,9 +130,7 @@ pub fn run(
 
     let p = file.profiles.get_mut(&profile_name).unwrap();
     if let Some(ref new_email) = email {
-        if new_email.is_empty() {
-            return Err("--email must not be empty".into());
-        }
+        quay_core::validate::email_loose(new_email)?;
         p.user.email = Some(new_email.clone());
     }
 
@@ -147,7 +163,7 @@ fn apply_wizard_draft(
                 default: rd.default,
                 provider: Some(rd.provider),
                 push_mode: rd.push_mode,
-                direct_branch: None,
+                direct_branch: rd.direct_branch.clone(),
             },
         );
     }

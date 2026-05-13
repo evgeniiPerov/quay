@@ -246,9 +246,9 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
                 &skill,
                 remote.as_deref(),
                 bump,
-                None,  // push_mode: use remote default
-                None,  // direct_branch: use remote config value
-                None,  // profile
+                None, // push_mode: use remote default
+                None, // direct_branch: use remote config value
+                None, // profile
                 &app.project_root,
                 app.user_config_path.as_deref(),
             );

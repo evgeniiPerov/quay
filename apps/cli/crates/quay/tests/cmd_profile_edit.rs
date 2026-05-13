@@ -267,3 +267,74 @@ fn edit_json_output_shape() {
     assert_eq!(v["profile"], "work", "json.profile: {text}");
     assert_eq!(v["email"], "json@work", "json.email: {text}");
 }
+
+// ── regression guards ─────────────────────────────────────────────────────────
+
+/// Regression: edit-via-TOML used to hardcode `direct_branch: None`, silently
+/// discarding the field even when the input TOML set it. Verifies that a
+/// `direct_branch = "develop"` round-trips through `quay profile edit
+/// --from-toml`.
+#[test]
+fn edit_from_toml_preserves_direct_branch() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let cfg = two_profile_config(&tmp);
+
+    let toml = r#"
+email = "e@work"
+[remotes.hub]
+url = "https://dev.azure.com/example-org/proj/_git/repo"
+provider = "azuredevops"
+push_mode = "direct"
+direct_branch = "develop"
+default = true
+"#;
+    let toml_file = tmp.child("edit.toml");
+    toml_file.write_str(toml).unwrap();
+
+    quay_edit(
+        &cfg,
+        &["work", "--from-toml", toml_file.path().to_str().unwrap()],
+    )
+    .success();
+
+    let saved = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        saved.contains("direct_branch = \"develop\""),
+        "direct_branch was dropped on disk: {saved}"
+    );
+}
+
+/// Regression: `quay profile edit X --email <bad>` used to accept anything
+/// non-empty. Now must reject inputs missing `@` or containing whitespace.
+#[test]
+fn edit_email_rejects_invalid_format() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let cfg = two_profile_config(&tmp);
+
+    quay_edit(&cfg, &["work", "--email", "no-at-sign"])
+        .failure()
+        .stderr(predicate::str::contains("email must contain '@'"));
+
+    quay_edit(&cfg, &["work", "--email", "has space@x.com"])
+        .failure()
+        .stderr(predicate::str::contains("email must not contain whitespace"));
+}
+
+/// Regression: edit-via-TOML used to skip email validation; ingesting a TOML
+/// with `email = "no at sign"` silently wrote garbage to disk.
+#[test]
+fn edit_from_toml_rejects_invalid_email() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let cfg = two_profile_config(&tmp);
+
+    let toml = r#"email = "no-at-sign""#;
+    let toml_file = tmp.child("edit.toml");
+    toml_file.write_str(toml).unwrap();
+
+    quay_edit(
+        &cfg,
+        &["work", "--from-toml", toml_file.path().to_str().unwrap()],
+    )
+    .failure()
+    .stderr(predicate::str::contains("email must contain '@'"));
+}
