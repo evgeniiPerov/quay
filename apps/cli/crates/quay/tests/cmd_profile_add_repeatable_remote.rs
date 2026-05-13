@@ -112,6 +112,72 @@ fn add_with_single_remote_and_provider_auto_detected() {
 }
 
 #[test]
+fn add_with_direct_branch_writes_branch_into_toml() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let cfg = empty_config(&tmp);
+
+    Command::cargo_bin("quay")
+        .unwrap()
+        .args([
+            "profile",
+            "add",
+            "oriflame-frontend",
+            "--email",
+            "you@oriflame.com",
+            "--remote",
+            "harbour=https://dev.azure.com/oriflame/Tooling/_git/skills-frontend-harbour",
+            "--provider",
+            "azuredevops",
+            "--push-mode",
+            "direct",
+            "--direct-branch",
+            "develop",
+            "--user-config",
+            cfg.to_str().unwrap(),
+            "--activate",
+        ])
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        saved.contains("push_mode = \"direct\""),
+        "missing direct push_mode: {saved}"
+    );
+    assert!(
+        saved.contains("direct_branch = \"develop\""),
+        "missing direct_branch: {saved}"
+    );
+}
+
+#[test]
+fn add_direct_branch_count_exceeding_remotes_errors() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let cfg = empty_config(&tmp);
+
+    Command::cargo_bin("quay")
+        .unwrap()
+        .args([
+            "profile",
+            "add",
+            "demo",
+            "--email",
+            "x@y",
+            "--remote",
+            "gh=git@github.com:org/skills.git",
+            "--direct-branch",
+            "develop",
+            "--direct-branch",
+            "main",
+            "--user-config",
+            cfg.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--direct-branch specified 2"));
+}
+
+#[test]
 fn backward_compatible_single_remote_still_works() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let cfg = empty_config(&tmp);

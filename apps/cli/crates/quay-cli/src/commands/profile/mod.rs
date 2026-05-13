@@ -31,6 +31,7 @@ pub fn run(
             remote,
             provider,
             push_mode,
+            direct_branch,
             default,
             activate,
         } => add(
@@ -41,6 +42,7 @@ pub fn run(
             remote,
             provider,
             push_mode,
+            direct_branch,
             default,
             activate,
             user_config,
@@ -144,12 +146,14 @@ fn current(
 }
 
 /// Build a `RemoteDraft` from the `i`-th `--remote name=url` spec, looking up
-/// optional parallel `--provider`, `--push-mode`, `--default` by index.
+/// optional parallel `--provider`, `--push-mode`, `--direct-branch`, `--default`
+/// by index.
 fn build_remote_draft(
     i: usize,
     spec: &str,
     providers: &[ProviderKindArg],
     push_modes: &[PushModeArg],
+    direct_branches: &[String],
     default_count: u8,
 ) -> Result<RemoteDraft, Box<dyn std::error::Error>> {
     let (rname, rurl) = match spec.split_once('=') {
@@ -169,6 +173,11 @@ fn build_remote_draft(
         .map(PushMode::from)
         .unwrap_or_default();
 
+    let direct_branch = direct_branches
+        .get(i)
+        .filter(|s| !s.is_empty())
+        .cloned();
+
     // remote[i] is the default if i < default_count
     let is_default = (i as u8) < default_count;
 
@@ -177,7 +186,7 @@ fn build_remote_draft(
         url: rurl,
         provider,
         push_mode,
-        direct_branch: None,
+        direct_branch,
         default: is_default,
     })
 }
@@ -191,6 +200,7 @@ fn add(
     remotes_raw: Vec<String>,
     providers: Vec<ProviderKindArg>,
     push_modes: Vec<PushModeArg>,
+    direct_branches: Vec<String>,
     default_count: u8,
     activate: bool,
     user_config: Option<&Path>,
@@ -241,6 +251,14 @@ fn add(
         )
         .into());
     }
+    if direct_branches.len() > remotes_raw.len() {
+        return Err(format!(
+            "--direct-branch specified {} times but only {} --remote(s) given",
+            direct_branches.len(),
+            remotes_raw.len()
+        )
+        .into());
+    }
 
     // Auto-mark the first remote as default when there is exactly one remote
     // and the user did not pass --default, preserving backward compatibility.
@@ -257,6 +275,7 @@ fn add(
             spec,
             &providers,
             &push_modes,
+            &direct_branches,
             effective_default_count,
         )?);
     }

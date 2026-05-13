@@ -280,6 +280,11 @@ pub enum ProfileAction {
         /// Push mode for the most recently specified `--remote` (`pr` or `direct`).
         #[arg(long, value_enum, action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
         push_mode: Vec<PushModeArg>,
+        /// Target branch for direct-mode pushes on the most recently specified
+        /// `--remote`. Omit to push to the hub's default branch. Repeatable;
+        /// applies positionally to each `--remote`.
+        #[arg(long, action = clap::ArgAction::Append, conflicts_with_all = ["interactive", "from_toml"])]
+        direct_branch: Vec<String>,
         /// Mark the most recently specified `--remote` as the default remote.
         /// Repeat once per `--remote` that should be the default.
         #[arg(long, action = clap::ArgAction::Count, conflicts_with_all = ["interactive", "from_toml"])]
