@@ -157,13 +157,77 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 - Code style: see per-package configs (Cargo `clippy` for Rust, Biome for TS)
 - Commits: user handles git themselves — assistants must NEVER run `git commit` or `git push`
 
+## Agent skills
+
+This repo uses the [mattpocock/skills](https://github.com/mattpocock/skills) engineering toolkit (installed under `.agents/skills/`). The three files below tell those skills how *this* repo works — read the relevant one before a skill needs it.
+
+### Issue tracker
+
+Issues + PRDs live as **GitHub issues** on `evgeniiPerov/quay`, driven by the `gh` CLI. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) mapped 1:1 to GitHub labels — create them once before first triage. See [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+**Single-context.** `CONTEXT.md` / `docs/adr/` created lazily by `/grill-with-docs`; until then follow vocabulary in this file + `docs/superpowers/`. See [`docs/agents/domain.md`](docs/agents/domain.md).
+
+### How to start a job — skill routing
+
+Pick the entry skill by the *kind* of work. Process skills run **before** implementation. `brainstorming` runs **before** entering plan mode.
+
+```mermaid
+flowchart TD
+    A[New task arrives] --> B{What kind?}
+
+    B -->|Build / add a feature| C[brainstorming]
+    C --> C2[writing-plans]
+    C2 --> C3{Stakeholder doc needed?}
+    C3 -->|yes| C4[to-prd] --> D[to-issues]
+    C3 -->|no| D
+    D --> E[tdd]
+
+    B -->|Pick up / continue an issue| F{Triaged?}
+    F -->|no| G[triage] --> H
+    F -->|yes| H{Feature or bug?}
+    H -->|feature| E
+    H -->|bug| I
+
+    B -->|Something broken / test failing| I[diagnose]
+
+    B -->|Refactor / tech debt| J[improve-codebase-architecture]
+    B -->|Lost the big picture| K[zoom-out]
+
+    B -->|Stress-test a plan| L{Against docs?}
+    L -->|yes| L1[grill-with-docs]
+    L -->|no| L2[grill-me]
+
+    B -->|Throwaway exploration| M[prototype]
+    B -->|Plan/spec → tickets| D
+```
+
+Quick lookup:
+
+| Job | Start with | Then |
+|-----|-----------|------|
+| Build a new feature | `brainstorming` | → `writing-plans` → `to-issues` → `tdd` |
+| Continue an open issue | `triage` (if unsorted) | → `tdd` (feature) / `diagnose` (bug) |
+| Bug, crash, failing test | `diagnose` | systematic repro → fix → regression test |
+| Refactor / reduce tech debt | `improve-codebase-architecture` | informed by `docs/agents/domain.md` |
+| Re-orient on the whole repo | `zoom-out` | — |
+| Pressure-test a design | `grill-me` / `grill-with-docs` | resolve every branch first |
+| Try an idea cheaply | `prototype` | throwaway, then real plan |
+| Turn a plan into tickets | `to-issues` | vertical tracer-bullet slices |
+| Capture discussion as a PRD | `to-prd` | publishes a GitHub issue |
+
 ## Brainstorming / Design Workflow
 
-When iterating on design:
-1. Discussion happens in the working session
+The `brainstorming` skill drives design iteration. Capture outputs here:
+1. Discussion happens in the working session (use the `brainstorming` skill)
 2. Decisions captured here in AGENTS.md
 3. Final spec written to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
-4. Implementation plans written to `docs/superpowers/plans/`
+4. Implementation plans written to `docs/superpowers/plans/` (use `writing-plans`)
 5. Code lives under `apps/`
 
 ## See Also
