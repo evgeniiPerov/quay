@@ -1385,7 +1385,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "toml",
  "tui-textarea",
 ]
@@ -1406,7 +1406,7 @@ dependencies = [
  "sha2",
  "similar",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "toml",
  "wiremock",
