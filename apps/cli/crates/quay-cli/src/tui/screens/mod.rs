@@ -6,6 +6,7 @@ pub mod local;
 pub mod modal_profile_switcher;
 pub mod onboarding;
 pub mod push_modal;
+pub mod reconcile_modal;
 pub mod remote;
 pub mod search;
 pub mod search_query;

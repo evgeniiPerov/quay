@@ -54,7 +54,7 @@ where
     }
 
     /// Resolve a skill name across all configured remotes (or one if `pinned_remote` is given).
-    fn resolve(
+    pub fn resolve(
         &self,
         skill_name: &str,
         pinned_remote: Option<&str>,
@@ -86,6 +86,7 @@ where
                 remote: pinned_remote.unwrap_or("any").into(),
             }),
             1 => {
+                // SAFETY: match arm guarantees exactly one candidate.
                 let (remote, (reg, entry)) = matches.into_iter().next().unwrap();
                 Ok((remote, reg, entry))
             }

@@ -272,7 +272,136 @@ fn run_blocking_action(action: BlockingAction, app: &mut App) {
         BlockingAction::FetchRegistry { remote_name } => {
             screens::remote::run_fetch(app, &remote_name);
         }
+        BlockingAction::Reconcile { skill, remote } => {
+            run_reconcile(app, skill, remote);
+        }
     }
+}
+
+/// Absolute path to a locally-installed skill's SKILL.md (the .agents mirror).
+pub(crate) fn local_skill_path(project_root: &std::path::Path, skill: &str) -> std::path::PathBuf {
+    project_root
+        .join(".agents/skills")
+        .join(skill)
+        .join("SKILL.md")
+}
+
+/// Execute the reconcile blocking action: clone the harbor and compute the
+/// [`ReconcileReport`], then surface it as `RemoteModal::Reconcile`.
+///
+/// If the verdict is [`Verdict::Identical`] the modal is NOT shown; a status
+/// message is set instead (matching the CLI's `handle_collision` wording).
+fn run_reconcile(app: &mut App, skill: String, remote: Option<String>) {
+    use quay_core::reconcile::harbor_history::GitHarborHistory;
+    use quay_core::reconcile::verdict::Verdict;
+    use quay_core::{CloneFetcher, SkillManager};
+    use screens::remote::RemoteModal;
+
+    // Resolve remote name from config.
+    let remote_name = match &remote {
+        Some(n) => n.as_str(),
+        None => {
+            // Fall back to the first configured remote.
+            let mut names: Vec<&str> = app.cfg.remotes.keys().map(|s| s.as_str()).collect();
+            names.sort();
+            match names.into_iter().next() {
+                Some(n) => n,
+                None => {
+                    app.set_status("reconcile failed: no remote configured".to_string());
+                    return;
+                }
+            }
+        }
+    };
+
+    // Single lookup: get remote config (URL + direct_branch).
+    let remote_cfg = match app.cfg.remotes.get(remote_name) {
+        Some(r) => r,
+        None => {
+            app.set_status(format!(
+                "reconcile failed: remote '{remote_name}' not found"
+            ));
+            return;
+        }
+    };
+    let url = remote_cfg.url.clone();
+    let direct_branch = remote_cfg.direct_branch.clone();
+
+    // Fix 4: resolve the registry entry to obtain the canonical harbor-relative
+    // skill directory (entry.path), mirroring CLI handle_collision behavior.
+    let f = CloneFetcher::new();
+    let mgr = SkillManager::new(&app.cfg, &f, &f, app.project_root.clone());
+    let entry_path = match mgr.resolve(&skill, Some(remote_name)) {
+        Ok((_resolved_remote, _registry, entry)) => format!("{}/SKILL.md", entry.path),
+        Err(e) => {
+            app.set_status(format!(
+                "reconcile failed: cannot resolve skill '{skill}': {e}"
+            ));
+            return;
+        }
+    };
+
+    // Read local file bytes.
+    let local_path = local_skill_path(&app.project_root, &skill);
+
+    let local_bytes = match std::fs::read(&local_path) {
+        Ok(b) => b,
+        Err(e) => {
+            app.set_status(format!("reconcile failed: cannot read local file: {e}"));
+            return;
+        }
+    };
+    let local_sha = quay_core::sha256_hex(&local_bytes);
+
+    // Determine hub version from the remote rows (advisory; falls back to "?").
+    let hub_version = app
+        .remote
+        .rows
+        .iter()
+        .find(|r| r.name == skill)
+        .map(|r| r.version.clone())
+        .unwrap_or_else(|| "?".to_string());
+
+    // Parse local frontmatter version (advisory).
+    let local_version = std::str::from_utf8(&local_bytes)
+        .ok()
+        .and_then(|s| quay_core::parse_skill(s, &local_path.to_string_lossy()).ok())
+        .map(|(m, _)| m.version)
+        .unwrap_or_else(|| "?".to_string());
+
+    // Fix 1: clone the harbor, passing direct_branch (not hardcoded None).
+    let harbor = match GitHarborHistory::clone_harbor(&url, direct_branch.as_deref()) {
+        Ok(h) => h,
+        Err(e) => {
+            app.set_status(format!("reconcile failed: {e}"));
+            return;
+        }
+    };
+
+    let report = match quay_core::reconcile::reconcile(
+        &local_bytes,
+        &local_sha,
+        &harbor,
+        &entry_path,
+        &hub_version,
+        &local_version,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            app.set_status(format!("reconcile failed: {e}"));
+            return;
+        }
+    };
+
+    // Fix 2: Identical is a silent no-op — no modal; match CLI wording exactly.
+    if report.verdict == Verdict::Identical {
+        app.set_status(format!("{skill}: identical to harbor — nothing to do."));
+        return;
+    }
+
+    app.remote.modal =
+        RemoteModal::Reconcile(screens::reconcile_modal::ReconcileModal::new(skill, report));
+    app.set_status(String::new());
 }
 
 /// Translate a pasted string into synthetic [`KeyEvent`]s that form handlers

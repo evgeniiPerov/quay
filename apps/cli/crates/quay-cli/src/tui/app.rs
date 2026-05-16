@@ -49,6 +49,16 @@ pub enum BlockingAction {
         /// The configured remote name to fetch.
         remote_name: String,
     },
+    /// Clone the harbor and run full reconcile for a colliding skill.
+    ///
+    /// Produces a [`ReconcileReport`] that is surfaced as a
+    /// `RemoteModal::Reconcile` on completion.
+    Reconcile {
+        /// Skill name (relative path under `skills/`).
+        skill: String,
+        /// The configured remote name to clone from.
+        remote: Option<String>,
+    },
 }
 
 /// Top-level screen selection.

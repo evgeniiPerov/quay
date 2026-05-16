@@ -62,6 +62,8 @@ pub enum QuayError {
     Timeout(String),
     #[error("invalid push log at {path}: {reason}")]
     InvalidPushLog { path: String, reason: String },
+    #[error("reconcile error: {0}")]
+    Reconcile(String),
 }
 
 pub type Result<T> = std::result::Result<T, QuayError>;

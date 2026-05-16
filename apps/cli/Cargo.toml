@@ -33,6 +33,8 @@ tui-textarea = "0.7"
 nucleo-matcher = "0.3"
 ratatui-form = "=0.1.1"
 dialoguer = "0.11"
+similar = "2"
+insta = "1"
 
 # The profile that 'dist' will build with.
 # Dist config lives at <repo-root>/dist-workspace.toml because the cargo

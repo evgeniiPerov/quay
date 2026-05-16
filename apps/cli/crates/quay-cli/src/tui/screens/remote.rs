@@ -136,6 +136,10 @@ pub enum RemoteModal {
         /// Which option is highlighted: 0=Update, 1=Skip.
         highlighted: usize,
     },
+    /// Reconcile collision modal — shown after `BlockingAction::Reconcile`
+    /// completes. Displays the verdict + diff and lets the user pick
+    /// Replace / Keep / Skip.
+    Reconcile(crate::tui::screens::reconcile_modal::ReconcileModal),
 }
 
 /// Trigger an async fetch for the currently-selected remote if not yet loaded.
@@ -403,6 +407,61 @@ pub fn handle_key(app: &mut App, code: KeyCode) -> ScreenAction {
                         highlighted,
                     };
                 }
+            }
+            return ScreenAction::Stay;
+        }
+        RemoteModal::Reconcile(mut modal) => {
+            if let KeyCode::Char(c) = code {
+                use crate::tui::screens::reconcile_modal::ModalOutcome;
+                match modal.on_key(c) {
+                    ModalOutcome::Resolved(action) => {
+                        // Apply the chosen action to the local file.
+                        let local_path =
+                            crate::tui::local_skill_path(&app.project_root, &modal.skill);
+                        if let Err(e) = quay_core::reconcile::action::apply(
+                            action,
+                            &local_path,
+                            &modal.report.head_bytes,
+                        ) {
+                            app.set_status(format!("reconcile apply failed: {e}"));
+                        } else {
+                            match action {
+                                quay_core::reconcile::action::ResolveAction::Replace => {
+                                    app.reload_local_skills();
+                                    app.set_status(format!(
+                                        "replaced {} with harbor copy",
+                                        modal.skill
+                                    ));
+                                }
+                                quay_core::reconcile::action::ResolveAction::Keep => {
+                                    app.set_status(format!("kept local {} unchanged", modal.skill));
+                                }
+                                quay_core::reconcile::action::ResolveAction::Skip => {
+                                    app.set_status(format!("skipped {}", modal.skill));
+                                }
+                            }
+                        }
+                        // Modal is consumed — leave RemoteModal::None (already set above).
+                    }
+                    ModalOutcome::Dismissed => {
+                        app.set_status(format!("reconcile dismissed for {}", modal.skill));
+                        // Modal is consumed — leave RemoteModal::None.
+                    }
+                    ModalOutcome::Continue => {
+                        // Key consumed but no terminal outcome; restore modal.
+                        // We reconstruct RemoteModal::Reconcile(modal) rather than
+                        // restoring the original `modal` binding because the
+                        // ReconcileModal was unwrapped from the variant at the top of
+                        // this arm — the outer RemoteModal value was already moved.
+                        app.remote.modal = RemoteModal::Reconcile(modal);
+                    }
+                }
+            } else if code == KeyCode::Esc {
+                app.set_status(format!("reconcile dismissed for {}", modal.skill));
+                // Modal consumed — RemoteModal::None stays.
+            } else {
+                // Non-char key: restore modal unchanged.
+                app.remote.modal = RemoteModal::Reconcile(modal);
             }
             return ScreenAction::Stay;
         }
@@ -703,9 +762,13 @@ fn pull_skill(app: &mut App, skill_name: &str, force: bool) {
             .join(skill_name)
             .join("SKILL.md");
         if local_path.exists() {
-            app.set_status(format!(
-                "'{skill_name}' already exists locally — press [A] to overwrite"
-            ));
+            // Trigger a full reconcile so the user can inspect the diff
+            // and choose Replace / Keep / Skip.
+            app.set_status(format!("reconciling {skill_name}\u{2026}"));
+            app.defer_blocking_action(BlockingAction::Reconcile {
+                skill: skill_name.to_string(),
+                remote,
+            });
             return;
         }
     }
@@ -715,7 +778,7 @@ fn pull_skill(app: &mut App, skill_name: &str, force: bool) {
         remote,
         force,
     });
-    app.set_status(format!("pulling {skill_name}…"));
+    app.set_status(format!("pulling {skill_name}\u{2026}"));
 }
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -872,6 +935,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 total_collisions,
                 *highlighted,
             );
+        }
+        RemoteModal::Reconcile(modal) => {
+            render_reconcile_modal(frame, area, modal);
         }
         RemoteModal::None => {}
     }
@@ -1184,6 +1250,104 @@ fn render_bulk_add_done(frame: &mut Frame, area: Rect, results: &[BulkAddResult]
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_reconcile_modal(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &crate::tui::screens::reconcile_modal::ReconcileModal,
+) {
+    use quay_core::reconcile::diff::Diff;
+    use quay_core::reconcile::verdict::Verdict;
+    use ratatui::widgets::Clear;
+
+    let modal_width = 72_u16;
+    let modal_height = 16_u16.min(area.height.saturating_sub(2));
+    let modal_x = area.x + area.width.saturating_sub(modal_width) / 2;
+    let modal_y = area.y + area.height.saturating_sub(modal_height) / 2;
+    let modal_area = Rect {
+        x: modal_x,
+        y: modal_y,
+        width: modal_width.min(area.width),
+        height: modal_height,
+    };
+    frame.render_widget(Clear, modal_area);
+
+    let title = format!(" Reconcile: {} ", modal.skill);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .title(title);
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+
+    // Verdict line.
+    let verdict_line = match &modal.report.verdict {
+        Verdict::Identical => " Verdict: Identical (no change needed)".to_string(),
+        Verdict::HubNewer {
+            commits_ahead,
+            last_commit_date,
+            ..
+        } => format!(" Verdict: Hub newer (+{commits_ahead} commit(s), last {last_commit_date})"),
+        Verdict::LocalAheadOrDiverged { .. } => " Verdict: Local ahead or diverged".to_string(),
+        Verdict::ChangedUnknownDirection { local_edited } => {
+            if *local_edited {
+                " Verdict: Changed — direction unknown (locally edited)".to_string()
+            } else {
+                " Verdict: Skill absent on harbor HEAD".to_string()
+            }
+        }
+    };
+
+    // Diff body (scrollable).
+    let diff_lines: Vec<Line> = match &modal.report.diff {
+        Diff::Text(s) if s.is_empty() => vec![Line::from(" (no diff)")],
+        Diff::Text(s) => {
+            let all: Vec<Line> = s
+                .lines()
+                .map(|l| {
+                    if l.starts_with('+') {
+                        Line::from(Span::styled(
+                            l.to_string(),
+                            Style::default().fg(Color::Green),
+                        ))
+                    } else if l.starts_with('-') {
+                        Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Red)))
+                    } else {
+                        Line::from(l.to_string())
+                    }
+                })
+                .collect();
+            let skip = (modal.scroll as usize).min(all.len().saturating_sub(1));
+            all.into_iter().skip(skip).collect()
+        }
+        Diff::Binary {
+            hub_bytes,
+            local_bytes,
+        } => vec![Line::from(format!(
+            " (binary: hub {hub_bytes}B / local {local_bytes}B)"
+        ))],
+    };
+
+    let replace_hint = if modal.report.absent_on_head {
+        "[r] replace (disabled — absent on hub)"
+    } else {
+        "[r] replace"
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(verdict_line, theme::accent())),
+        Line::from(""),
+    ];
+    lines.extend(diff_lines);
+    // Ensure footer always visible by padding if inner is tall enough.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(" {replace_hint}   [k] keep   [s] skip   [j] down   [u] up   [q] dismiss"),
+        theme::dim(),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -1363,15 +1527,25 @@ mod tests {
 
         pull_skill(&mut a, "foo", false);
 
-        // Should have set a status about already existing, NOT deferred a BlockingAction.
+        // With the reconcile feature: a collision defers BlockingAction::Reconcile
+        // so the user can inspect the diff and choose Replace / Keep / Skip.
         assert!(
-            a.next_blocking.is_none(),
-            "should not queue action on collision"
+            a.next_blocking.is_some(),
+            "expected a BlockingAction to be queued for collision"
         );
+        assert!(
+            matches!(
+                a.next_blocking.as_ref().unwrap(),
+                crate::tui::app::BlockingAction::Reconcile { skill, .. } if skill == "foo"
+            ),
+            "expected BlockingAction::Reconcile for foo; got {:?}",
+            a.next_blocking
+        );
+        // Status must indicate reconcile is in progress.
         let status = a.status_message.as_deref().unwrap_or("");
         assert!(
-            status.contains("already exists") || status.contains("[A]"),
-            "expected collision message, got: {status}"
+            status.contains("reconcil"),
+            "expected reconcile status message, got: {status}"
         );
     }
 

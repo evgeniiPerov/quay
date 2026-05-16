@@ -47,6 +47,9 @@ pub enum Command {
         /// Mutually exclusive with the positional skill argument.
         #[arg(short = 'i', long)]
         interactive: bool,
+        /// Suppress the diff body on a collision (still prints the verdict line).
+        #[arg(long)]
+        no_diff: bool,
     },
     /// List installed skills
     List,
