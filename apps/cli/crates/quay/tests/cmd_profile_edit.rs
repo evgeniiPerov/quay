@@ -317,7 +317,9 @@ fn edit_email_rejects_invalid_format() {
 
     quay_edit(&cfg, &["work", "--email", "has space@x.com"])
         .failure()
-        .stderr(predicate::str::contains("email must not contain whitespace"));
+        .stderr(predicate::str::contains(
+            "email must not contain whitespace",
+        ));
 }
 
 /// Regression: edit-via-TOML used to skip email validation; ingesting a TOML

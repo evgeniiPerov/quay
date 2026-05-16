@@ -41,6 +41,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             remote,
             force,
             interactive,
+            no_diff,
         } => {
             use commands::interactive::should_auto_interactive;
             if should_auto_interactive(skill.is_some(), interactive) {
@@ -57,6 +58,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &skill,
                     remote.as_deref(),
                     force,
+                    no_diff,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),

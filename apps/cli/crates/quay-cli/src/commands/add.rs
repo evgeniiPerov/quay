@@ -4,10 +4,53 @@ use quay_core::{
     },
     apply_all,
     push_log::PushLog,
+    reconcile::{
+        action::{apply as reconcile_apply, ResolveAction},
+        diff::Diff,
+        harbor_history::GitHarborHistory,
+        reconcile,
+        verdict::{SemverRel, Verdict},
+    },
     scanner::scan_local,
     CloneFetcher, Config, MirrorAction, QuayError, RegistryFetcher, SkillFileFetcher, SkillManager,
 };
+use std::collections::HashMap;
+use std::io::IsTerminal as _;
 use std::path::Path;
+
+/// Per-URL cache of harbor clones for the batch `PromptEach` flow.
+///
+/// Clones each remote URL at most once; a failed clone is recorded as `None`
+/// so the warning is only printed once per URL.
+struct HarborCache {
+    map: HashMap<String, Option<GitHarborHistory>>,
+}
+
+impl HarborCache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
+    /// Return a reference to the cached harbor for `url` (cloning on first
+    /// access).  Returns `None` when the clone failed; the error is printed
+    /// once and then the absence is cached so subsequent calls are silent.
+    fn get_or_clone(&mut self, url: &str, branch: Option<&str>) -> Option<&GitHarborHistory> {
+        if !self.map.contains_key(url) {
+            match GitHarborHistory::clone_harbor(url, branch) {
+                Ok(h) => {
+                    self.map.insert(url.to_string(), Some(h));
+                }
+                Err(e) => {
+                    eprintln!("warning: could not clone harbor '{}': {}", url, e);
+                    self.map.insert(url.to_string(), None);
+                }
+            }
+        }
+        self.map.get(url).and_then(|opt| opt.as_ref())
+    }
+}
 
 /// Add one or more remote skills selected interactively via `dialoguer::MultiSelect`.
 ///
@@ -114,24 +157,122 @@ pub fn run_interactive(
                     build_plan(&pick_names, &locals, CollisionStrategy::SkipAll)
                 }
                 CollisionStrategy::PromptEach => {
-                    build_plan_with_prompt(&pick_names, &locals, |name, is_modified| {
-                        let label = if is_modified {
-                            format!("skill `{}` exists locally (modified). What to do?", name)
-                        } else {
-                            format!("skill `{}` exists locally. What to do?", name)
+                    // One CloneFetcher + one SkillManager for all resolve() calls in the closure.
+                    // Constructing SkillManager here (not inside the closure) ensures
+                    // check_legacy_lockfile runs at most once, not once per colliding skill.
+                    let resolve_fetcher = CloneFetcher::new();
+                    let mgr = SkillManager::new(
+                        &cfg,
+                        &resolve_fetcher,
+                        &resolve_fetcher,
+                        project.to_path_buf(),
+                    );
+                    let mut harbor_cache = HarborCache::new();
+                    build_plan_with_prompt(&pick_names, &locals, |name, _is_modified| {
+                        // Resolve which remote + registry entry owns this skill.
+                        let (resolved_remote, _registry, entry) = match mgr
+                            .resolve(name, Some(remote_name.as_str()))
+                        {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("warning: could not resolve '{}': {}; skipping", name, e);
+                                return SkillAction::Skip;
+                            }
                         };
-                        let choices = ["Update (overwrite from remote)", "Skip (keep local)"];
-                        // In test environments dialoguer is bypassed via env var.
-                        let idx = dialoguer::Select::new()
-                            .with_prompt(label)
-                            .items(&choices)
-                            .default(0)
-                            .interact()
-                            .unwrap_or(1); // default to Skip on error
-                        if idx == 0 {
-                            SkillAction::UpdateForce
-                        } else {
-                            SkillAction::Skip
+
+                        // Find the local skill.
+                        let local = match locals.iter().find(|l| l.meta.name == name) {
+                            Some(l) => l,
+                            None => {
+                                eprintln!(
+                                    "warning: '{}' reported as collision but not found locally; skipping",
+                                    name
+                                );
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Read local bytes.
+                        let local_bytes = match std::fs::read(local.canonical_path()) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: could not read local '{}': {}; skipping",
+                                    name, e
+                                );
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Look up remote config for URL + branch.
+                        let remote_cfg = match cfg.remotes.get(&resolved_remote) {
+                            Some(r) => r,
+                            None => {
+                                eprintln!(
+                                    "warning: remote '{}' not in config for '{}'; skipping",
+                                    resolved_remote, name
+                                );
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Get or clone the harbor (one clone per URL for the whole batch).
+                        let harbor = match harbor_cache
+                            .get_or_clone(&remote_cfg.url, remote_cfg.direct_branch.as_deref())
+                        {
+                            Some(h) => h,
+                            None => {
+                                eprintln!("warning: could not reconcile '{}'; skipping", name);
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Reconcile.
+                        let skill_path = format!("{}/SKILL.md", entry.path);
+                        let report = match reconcile(
+                            &local_bytes,
+                            local.canonical_sha256(),
+                            harbor,
+                            &skill_path,
+                            &entry.version,
+                            &local.meta.version,
+                        ) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: reconcile failed for '{}': {}; skipping",
+                                    name, e
+                                );
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Identical — nothing to do.
+                        if report.verdict == Verdict::Identical {
+                            println!("{}: identical to harbor — nothing to do.", name);
+                            return SkillAction::Skip;
+                        }
+
+                        // Print verdict + diff.
+                        print_verdict_line(name, &report.verdict, report.semver);
+                        print_diff(&report.diff);
+
+                        // Prompt user.
+                        let action = match prompt_resolve(report.absent_on_head) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                eprintln!("warning: prompt failed for '{}': {}; skipping", name, e);
+                                return SkillAction::Skip;
+                            }
+                        };
+
+                        // Map to SkillAction.
+                        // Replace → UpdateForce: the post-plan executor calls run_with with
+                        //   do_force=true which overwrites the local file from remote.
+                        // Keep / Skip → SkillAction::Skip: local file is left untouched.
+                        match action {
+                            ResolveAction::Replace => SkillAction::UpdateForce,
+                            ResolveAction::Keep | ResolveAction::Skip => SkillAction::Skip,
                         }
                     })
                 }
@@ -163,6 +304,7 @@ pub fn run_interactive(
                     skill_name,
                     Some(remote_name.as_str()),
                     do_force,
+                    false,
                     project,
                     json,
                 ) {
@@ -230,14 +372,14 @@ fn resolve_collision_strategy() -> Result<CollisionStrategy, Box<dyn std::error:
         };
     }
 
-    let options = [
-        "Update all (overwrite from remote)",
-        "Skip all (only install new ones)",
-        "Prompt per skill",
+    let items = [
+        "Replace all from harbor",
+        "Keep all local",
+        "Decide per skill",
     ];
     let idx = dialoguer::Select::new()
         .with_prompt("What should we do with the existing ones?")
-        .items(&options)
+        .items(&items)
         .default(0)
         .interact()?;
 
@@ -248,10 +390,12 @@ fn resolve_collision_strategy() -> Result<CollisionStrategy, Box<dyn std::error:
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     skill: &str,
     remote: Option<&str>,
     force: bool,
+    no_diff: bool,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -263,7 +407,7 @@ pub fn run(
     crate::commands::ensure_remotes_configured(&cfg)?;
 
     let f = CloneFetcher::new();
-    run_with(&cfg, &f, &f, skill, remote, force, project, json)
+    run_with(&cfg, &f, &f, skill, remote, force, no_diff, project, json)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -274,14 +418,46 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     skill: &str,
     remote: Option<&str>,
     force: bool,
+    no_diff: bool,
     project: &Path,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
     if force {
+        // Fast path: unconditional overwrite, no reconcile, no harbor clone.
         mgr.add_with_force(skill, remote, true)?;
     } else {
-        mgr.add(skill, remote)?;
+        match mgr.add(skill, remote) {
+            Ok(()) => {
+                // Fresh install — nothing to reconcile.
+            }
+            Err(QuayError::AlreadyExists(_)) => {
+                // Skill already exists locally — attempt reconcile before erroring.
+                handle_collision(
+                    cfg,
+                    reg_fetcher,
+                    file_fetcher,
+                    skill,
+                    remote,
+                    no_diff,
+                    project,
+                )?;
+                // handle_collision either returns Ok (identical/resolved) or propagates Err.
+                // If it returned Ok we skip the rest of the install block.
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "action": "reconciled",
+                            "skill": skill,
+                        }))?
+                    );
+                }
+                apply_mirrors_after_install(cfg, project, skill, json);
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
     if json {
         println!(
@@ -296,6 +472,172 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     }
     apply_mirrors_after_install(cfg, project, skill, json);
     Ok(())
+}
+
+/// Handle a single-skill `AlreadyExists` collision via the reconcile engine.
+///
+/// Returns `Ok(())` when the collision is resolved (Identical / Replace / Keep /
+/// Skip) or propagates the original `AlreadyExists`-style error when the caller
+/// should treat this as a blocking collision (non-TTY without resolution).
+fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
+    cfg: &Config,
+    reg_fetcher: &R,
+    file_fetcher: &F,
+    skill: &str,
+    pinned_remote: Option<&str>,
+    no_diff: bool,
+    project: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve which remote + registry entry owns this skill.
+    let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
+    let (remote_name, _registry, entry) = mgr
+        .resolve(skill, pinned_remote)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let remote_cfg = &cfg.remotes[&remote_name];
+
+    // Find the local skill for sha + canonical path.
+    let config_dir = crate::config_io::default_config_dir();
+    let log =
+        PushLog::load(config_dir.as_deref().unwrap_or(project), Some(project)).unwrap_or_default();
+    let locals = scan_local(project, &log);
+    let local = locals
+        .iter()
+        .find(|s| s.meta.name == skill)
+        .ok_or_else(|| format!("collision reported but skill '{}' not found locally", skill))?;
+
+    let local_bytes = std::fs::read(local.canonical_path())?;
+    let local_sha = local.canonical_sha256();
+    let skill_path = format!("{}/SKILL.md", entry.path);
+
+    // Try to clone the harbor and reconcile.
+    let harbor_result =
+        GitHarborHistory::clone_harbor(&remote_cfg.url, remote_cfg.direct_branch.as_deref());
+
+    let harbor = match harbor_result {
+        Err(e) => {
+            // Harbor unreachable — warn and fall through to original collision error.
+            eprintln!(
+                "warning: could not reach harbor to compare {}: {}",
+                skill, e
+            );
+            return Err(
+                QuayError::AlreadyExists(local.canonical_path().display().to_string()).into(),
+            );
+        }
+        Ok(h) => h,
+    };
+
+    let report = reconcile(
+        &local_bytes,
+        local_sha,
+        &harbor,
+        &skill_path,
+        &entry.version,
+        &local.meta.version,
+    )?;
+
+    if report.verdict == Verdict::Identical {
+        println!("{}: identical to harbor — nothing to do.", skill);
+        return Ok(());
+    }
+
+    // Print verdict line.
+    print_verdict_line(skill, &report.verdict, report.semver);
+
+    // Optionally print diff.
+    if !no_diff {
+        print_diff(&report.diff);
+    }
+
+    // Prompt or non-TTY error.
+    let action = if std::io::stdin().is_terminal() {
+        prompt_resolve(report.absent_on_head)?
+    } else {
+        eprintln!(
+            "{}: skill differs from harbor. Re-run with --force to overwrite, or interactively to reconcile.",
+            skill
+        );
+        return Err(QuayError::AlreadyExists(local.canonical_path().display().to_string()).into());
+    };
+
+    reconcile_apply(action, local.canonical_path(), &report.head_bytes)?;
+
+    match action {
+        ResolveAction::Replace => println!("{}: replaced with harbor copy.", skill),
+        ResolveAction::Keep => println!("{}: kept local copy.", skill),
+        ResolveAction::Skip => println!("{}: skipped.", skill),
+    }
+
+    Ok(())
+}
+
+/// Print a human-readable verdict line for a colliding skill.
+fn print_verdict_line(name: &str, verdict: &Verdict, semver: SemverRel) {
+    let verdict_str = match verdict {
+        Verdict::Identical => "identical".to_string(),
+        Verdict::HubNewer {
+            commits_ahead,
+            last_commit_date,
+            ..
+        } => format!(
+            "HARBOR NEWER — {} commit(s) ahead, last {}",
+            commits_ahead, last_commit_date
+        ),
+        Verdict::LocalAheadOrDiverged { .. } => "LOCAL diverged from harbor".to_string(),
+        Verdict::ChangedUnknownDirection { local_edited } => {
+            if *local_edited {
+                "CHANGED — differs from harbor (direction unknown, local edits present)".to_string()
+            } else {
+                "CHANGED — differs from harbor (direction unknown)".to_string()
+            }
+        }
+    };
+    println!("{}: {}  [semver: {:?}]", name, verdict_str, semver);
+}
+
+/// Print the diff body.
+fn print_diff(diff: &Diff) {
+    match diff {
+        Diff::Text(s) => print!("{}", s),
+        Diff::Binary {
+            hub_bytes,
+            local_bytes,
+        } => println!(
+            "(binary/non-UTF8: {} bytes harbor vs {} local)",
+            hub_bytes, local_bytes
+        ),
+    }
+}
+
+/// Prompt the user to choose a resolve action via `dialoguer::Select`.
+///
+/// When `absent_on_head` is true, Replace is omitted (nothing on harbor HEAD).
+fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::error::Error>> {
+    if absent_on_head {
+        let items = ["Keep local", "Skip"];
+        let idx = dialoguer::Select::new()
+            .with_prompt("How should this collision be resolved?")
+            .items(&items)
+            .default(0)
+            .interact()?;
+        Ok(if idx == 0 {
+            ResolveAction::Keep
+        } else {
+            ResolveAction::Skip
+        })
+    } else {
+        let items = ["Replace with harbor", "Keep local", "Skip"];
+        let idx = dialoguer::Select::new()
+            .with_prompt("How should this collision be resolved?")
+            .items(&items)
+            .default(0)
+            .interact()?;
+        Ok(match idx {
+            0 => ResolveAction::Replace,
+            1 => ResolveAction::Keep,
+            _ => ResolveAction::Skip,
+        })
+    }
 }
 
 fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {

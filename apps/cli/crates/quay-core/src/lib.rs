@@ -16,6 +16,7 @@ pub mod provider;
 pub mod providers;
 pub mod push_log;
 pub mod pusher;
+pub mod reconcile;
 pub mod registry;
 pub mod registry_builder;
 pub mod scanner;
