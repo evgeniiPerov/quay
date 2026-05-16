@@ -32,7 +32,7 @@ crossterm = "0.28"
 tui-textarea = "0.7"
 nucleo-matcher = "0.3"
 ratatui-form = "=0.1.1"
-dialoguer = "0.11"
+dialoguer = "0.12"
 similar = "3"
 insta = "1"
 

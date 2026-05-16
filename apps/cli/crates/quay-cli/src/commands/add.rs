@@ -379,7 +379,7 @@ fn resolve_collision_strategy() -> Result<CollisionStrategy, Box<dyn std::error:
     ];
     let idx = dialoguer::Select::new()
         .with_prompt("What should we do with the existing ones?")
-        .items(&items)
+        .items(items)
         .default(0)
         .interact()?;
 
@@ -617,7 +617,7 @@ fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::er
         let items = ["Keep local", "Skip"];
         let idx = dialoguer::Select::new()
             .with_prompt("How should this collision be resolved?")
-            .items(&items)
+            .items(items)
             .default(0)
             .interact()?;
         Ok(if idx == 0 {
@@ -629,7 +629,7 @@ fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::er
         let items = ["Replace with harbor", "Keep local", "Skip"];
         let idx = dialoguer::Select::new()
             .with_prompt("How should this collision be resolved?")
-            .items(&items)
+            .items(items)
             .default(0)
             .interact()?;
         Ok(match idx {

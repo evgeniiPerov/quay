@@ -165,7 +165,7 @@ fn prompt_remote(existing: &[RemoteDraft]) -> Result<RemoteDraft, Box<dyn std::e
             "Provider (auto-detected: {})",
             provider_labels[default_provider_idx]
         ))
-        .items(&provider_labels)
+        .items(provider_labels)
         .default(default_provider_idx)
         .interact()?;
     let provider = provider_choices[provider_idx];
@@ -204,7 +204,7 @@ fn prompt_push_mode_and_branch(
     };
     let mode_idx = dialoguer::Select::new()
         .with_prompt("Push mode")
-        .items(&mode_labels)
+        .items(mode_labels)
         .default(default_idx)
         .interact()?;
     let push_mode = if mode_idx == 0 {
@@ -261,7 +261,7 @@ fn prompt_existing_remote(
     ];
     let choice = dialoguer::Select::new()
         .with_prompt("What to do with this remote?")
-        .items(&actions)
+        .items(actions)
         .default(0)
         .interact()?;
 
