@@ -34,6 +34,7 @@ pub enum Command {
         action: RemoteAction,
     },
     /// Install a skill from a configured remote
+    #[command(visible_alias = "ls")]
     Add {
         /// Skill name(s) to install. Omit when using --interactive (-i).
         #[arg(conflicts_with = "interactive")]
