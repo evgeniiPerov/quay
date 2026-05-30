@@ -1,8 +1,11 @@
-//! `quay remove` — delete a skill from all local mirror roots.
+//! `quay remove` — delete a skill locally, from the hub, or both.
 //!
-//! With `--everywhere`, also pushes a deletion commit to each configured
-//! remote that publishes the skill (requires git + push access).
-//! With `-i` / `--interactive`, opens a multi-select picker over local skills.
+//! Default: delete from all local mirror roots only.
+//! With `--remote`: delete from the hub (active profile's default remote) only,
+//! keeping the local copy (requires git + push access).
+//! With `--everywhere`: delete both locally and from the hub.
+//! With `-i` / `--interactive`: opens a 3-way scope picker (Local / Remote /
+//! Everywhere); a bare `--remote` jumps straight to the hub picker.
 
 use quay_core::{CloneFetcher, Config, SkillManager};
 use serde_json::json;
@@ -162,6 +165,8 @@ pub fn run_interactive(
     Ok(())
 }
 
+/// Non-interactive remove of a single named `skill` at the given [`RemoveScope`]:
+/// local mirror dirs, the default remote's hub, or both.
 pub fn run(
     skill: &str,
     scope: RemoveScope,
@@ -237,7 +242,8 @@ fn remove_from_default_remote(
         .clone()
         .ok_or("no author email in config — run `quay profile add` first")?;
 
-    let clone_root = std::env::temp_dir().join(format!("quay-delete-{skill}"));
+    let clone_root =
+        std::env::temp_dir().join(format!("quay-delete-{}-{skill}", std::process::id()));
     if clone_root.exists() {
         std::fs::remove_dir_all(&clone_root)?;
     }
