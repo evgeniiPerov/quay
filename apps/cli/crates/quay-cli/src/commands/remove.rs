@@ -8,6 +8,31 @@ use quay_core::{CloneFetcher, Config, SkillManager};
 use serde_json::json;
 use std::path::Path;
 
+/// Where a `quay remove` should delete the skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveScope {
+    /// Delete local mirror dirs only; hub untouched.
+    Local,
+    /// Delete from the default remote's hub only; local copy untouched.
+    Remote,
+    /// Delete both local and hub.
+    Everywhere,
+}
+
+impl RemoveScope {
+    /// Resolve scope from the two boolean flags. `--remote` and `--everywhere`
+    /// are mutually exclusive at the clap layer, so at most one is true here.
+    pub fn from_flags(remote: bool, everywhere: bool) -> Self {
+        if everywhere {
+            Self::Everywhere
+        } else if remote {
+            Self::Remote
+        } else {
+            Self::Local
+        }
+    }
+}
+
 /// Remove one or more local skills selected interactively via `dialoguer::MultiSelect`.
 ///
 /// When `everywhere` is `true`, prompts for confirmation then pushes a deletion
@@ -276,5 +301,17 @@ mod tests {
             matches!(err, quay_core::QuayError::SkillNotFound { .. }),
             "expected SkillNotFound, got: {err}"
         );
+    }
+
+    #[test]
+    fn scope_from_flags_maps_correctly() {
+        assert_eq!(RemoveScope::from_flags(false, false), RemoveScope::Local);
+        assert_eq!(RemoveScope::from_flags(true, false), RemoveScope::Remote);
+        assert_eq!(
+            RemoveScope::from_flags(false, true),
+            RemoveScope::Everywhere
+        );
+        // everywhere wins if both somehow set (clap prevents this, defensive).
+        assert_eq!(RemoveScope::from_flags(true, true), RemoveScope::Everywhere);
     }
 }
