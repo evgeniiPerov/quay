@@ -232,28 +232,26 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         })?;
         let skill_md_sha = sha256_of_bytes(&bytes_to_write);
 
-        // 7. Copy any extra files alongside SKILL.md from local.
-        for entry in std::fs::read_dir(&local_skill_dir).map_err(|source| QuayError::Io {
-            path: local_skill_dir.display().to_string(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| QuayError::Io {
-                path: local_skill_dir.display().to_string(),
-                source,
-            })?;
-            let name = entry.file_name();
-            if name == "SKILL.md" {
-                continue;
+        // 7. Copy the whole skill tree (including nested dirs) into the hub clone.
+        // `skill_files` is reused below to populate registry.json `files`, so the
+        // copied set and the indexed set are guaranteed identical.
+        let skill_files = crate::skill_files::collect_skill_files(&local_skill_dir)?;
+        for rel in &skill_files {
+            if rel == "SKILL.md" {
+                continue; // already written above (possibly with bumped frontmatter)
             }
-            let from = entry.path();
-            let to = hub_skill_dir.join(&name);
-            if from.is_file() {
-                std::fs::copy(&from, &to).map_err(|source| QuayError::Io {
-                    path: to.display().to_string(),
+            let from = local_skill_dir.join(rel);
+            let to = hub_skill_dir.join(rel);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
+                    path: parent.display().to_string(),
                     source,
                 })?;
             }
-            // Subdirectories (resources/, scripts/) are not yet supported here — flag for Plan 4.
+            std::fs::copy(&from, &to).map_err(|source| QuayError::Io {
+                path: to.display().to_string(),
+                source,
+            })?;
         }
 
         // 7.5. Update registry.json so consumers (`quay search`, Browse,
@@ -265,6 +263,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             skill_name,
             &manifest,
             &skill_md_sha,
+            &skill_files,
         )?;
 
         // 8 & 9. Mode-aware branch + commit + push (+ optional PR).
@@ -463,6 +462,7 @@ fn update_hub_registry(
     skill_name: &str,
     manifest: &SkillManifest,
     skill_md_sha: &str,
+    files: &[String],
 ) -> Result<()> {
     use crate::registry::{Registry, RegistryEntry};
     use std::collections::BTreeMap;
@@ -491,7 +491,7 @@ fn update_hub_registry(
         tags: manifest.tags.clone(),
         path: format!("skills/{}", skill_name),
         sha: skill_md_sha.to_string(),
-        files: vec!["SKILL.md".to_string()],
+        files: files.to_vec(),
         source_format: manifest.source_format,
     };
     registry.skills.insert(skill_name.to_string(), entry);
@@ -925,6 +925,99 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, QuayError::ConfigValidation(_)));
+    }
+
+    #[test]
+    fn push_copies_nested_subdir_files_into_hub_clone() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        // Local skill with a nested script + agent file.
+        let dir = project.path().join(".agents/skills/nested");
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: nested\ndescription: n\nversion: 0.1.0\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("scripts/sync.mjs"), "code").unwrap();
+        std::fs::write(dir.join("agents/openai.yaml"), "cfg").unwrap();
+
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+        pusher
+            .push(
+                "nested",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let hub = clone_root.path().join("hub-nested/skills/nested");
+        assert_eq!(
+            std::fs::read_to_string(hub.join("scripts/sync.mjs")).unwrap(),
+            "code"
+        );
+        assert_eq!(
+            std::fs::read_to_string(hub.join("agents/openai.yaml")).unwrap(),
+            "cfg"
+        );
+    }
+
+    #[test]
+    fn push_writes_nested_files_into_hub_registry() {
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        let dir = project.path().join(".agents/skills/nested");
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: nested\ndescription: n\nversion: 0.1.0\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("scripts/sync.mjs"), "code").unwrap();
+
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+        pusher
+            .push(
+                "nested",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let registry_json = clone_root.path().join("hub-nested/registry.json");
+        let text = std::fs::read_to_string(&registry_json).unwrap();
+        let reg = crate::registry::Registry::parse(&text).unwrap();
+        assert_eq!(
+            reg.entry("nested").unwrap().files,
+            vec!["SKILL.md".to_string(), "scripts/sync.mjs".to_string()]
+        );
     }
 
     #[test]
