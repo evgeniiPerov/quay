@@ -73,13 +73,18 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::List => commands::list::run(&project, cli.json)?,
         Command::Remove {
             skill,
+            remote,
             everywhere,
             interactive,
         } => {
             use commands::interactive::should_auto_interactive;
+            let scope = commands::remove::RemoveScope::from_flags(remote, everywhere);
             if should_auto_interactive(skill.is_some(), interactive) {
+                // `-i` (explicit) opens the 3-way menu; a bare scope flag with no
+                // skill (e.g. `quay remove --remote`) jumps straight to that scope.
+                let forced = if interactive { None } else { Some(scope) };
                 commands::remove::run_interactive(
-                    everywhere,
+                    forced,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),
@@ -88,7 +93,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else if let Some(skill) = skill {
                 commands::remove::run(
                     &skill,
-                    everywhere,
+                    scope,
                     cli.profile.as_deref(),
                     &project,
                     user_config.as_deref(),

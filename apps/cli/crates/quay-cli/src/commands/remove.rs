@@ -8,6 +8,16 @@ use quay_core::{CloneFetcher, Config, SkillManager};
 use serde_json::json;
 use std::path::Path;
 
+/// Removes a directory when dropped, so a temp clone is cleaned up on every
+/// exit path (including `?` early returns and panics).
+struct TempDirGuard(std::path::PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Where a `quay remove` should delete the skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoveScope {
@@ -33,90 +43,128 @@ impl RemoveScope {
     }
 }
 
-/// Remove one or more local skills selected interactively via `dialoguer::MultiSelect`.
-///
-/// When `everywhere` is `true`, prompts for confirmation then pushes a deletion
-/// commit to every remote that publishes each picked skill.
-///
-/// Returns `Err(InteractiveUnavailable)` immediately when stdin is not a TTY.
-#[allow(clippy::too_many_arguments)]
+/// Interactive remove. `forced_scope = None` shows a 3-way scope menu;
+/// `Some(scope)` skips the menu (used by the bare `--remote` shortcut).
 pub fn run_interactive(
-    everywhere: bool,
+    forced_scope: Option<RemoveScope>,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use quay_core::fetcher::RegistryFetcher;
+
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
 
-    // Check TTY immediately so the caller gets a clear error even if the skill
-    // list is empty — consistent with add/push interactive paths.
     if !crate::commands::interactive::is_tty() {
         return Err(Box::new(
             crate::commands::interactive::InteractiveUnavailable,
         ));
     }
 
-    let push_log = quay_core::push_log::PushLog::load(
-        user_config.and_then(|p| p.parent()).unwrap_or(project),
-        Some(project),
-    )
-    .unwrap_or_default();
-    let skills = quay_core::scanner::scan_local(project, &push_log);
-
-    if skills.is_empty() {
-        println!("(no local skills found)");
-        return Ok(());
-    }
-
-    let picks = crate::commands::interactive::pick_many(
-        "Select skills to remove (Space to toggle, Enter to confirm)",
-        &skills,
-        |s| format!("{} v{} ({:?})", s.meta.name, s.meta.version, s.status),
-    )?;
-
-    if picks.is_empty() {
-        println!("(nothing selected)");
-        return Ok(());
-    }
-
-    if everywhere && !picks.is_empty() {
-        let n = picks.len();
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!("delete {n} skill(s) everywhere? y/N"))
-            .default(false)
-            .interact()?;
-        if !confirmed {
-            return Ok(());
+    let scope = match forced_scope {
+        Some(s) => s,
+        None => {
+            let choice = dialoguer::Select::new()
+                .with_prompt("Remove scope")
+                .items(["Local", "Remote (hub)", "Everywhere"])
+                .default(0)
+                .interact()?;
+            match choice {
+                1 => RemoveScope::Remote,
+                2 => RemoveScope::Everywhere,
+                _ => RemoveScope::Local,
+            }
         }
-    }
+    };
 
     let f = CloneFetcher::new();
     let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
 
-    for idx in &picks {
-        let skill_name = &skills[*idx].meta.name;
-        mgr.remove(skill_name)?;
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({"action": "removed", "skill": skill_name}))?
-            );
-        } else {
-            println!("removed {skill_name}");
+    match scope {
+        RemoveScope::Local => {
+            let push_log = quay_core::push_log::PushLog::load(
+                user_config.and_then(|p| p.parent()).unwrap_or(project),
+                Some(project),
+            )
+            .unwrap_or_default();
+            let skills = quay_core::scanner::scan_local(project, &push_log);
+            if skills.is_empty() {
+                println!("(no local skills found)");
+                return Ok(());
+            }
+            let picks = crate::commands::interactive::pick_many(
+                "Select skills to remove locally (Space to toggle, Enter to confirm)",
+                &skills,
+                |s| format!("{} v{} ({:?})", s.meta.name, s.meta.version, s.status),
+            )?;
+            if picks.is_empty() {
+                println!("(nothing selected)");
+                return Ok(());
+            }
+            for idx in &picks {
+                let name = &skills[*idx].meta.name;
+                mgr.remove(name)?;
+                println!("removed {name}");
+            }
         }
-        if everywhere {
-            remove_from_default_remote(skill_name, &cfg, json)?;
+        RemoveScope::Remote | RemoveScope::Everywhere => {
+            let (remote_name, remote_cfg) = cfg
+                .default_remote()
+                .ok_or("no default remote configured — add one with `quay remote add`")?;
+            let branch_label = remote_cfg
+                .direct_branch
+                .as_deref()
+                .unwrap_or("default branch");
+            let fetcher = CloneFetcher::new();
+            let registry = match remote_cfg.direct_branch.as_deref() {
+                Some(b) => fetcher.fetch_at(&remote_cfg.url, b)?,
+                None => fetcher.fetch(&remote_cfg.url)?,
+            };
+            let names: Vec<String> = registry.skills.keys().cloned().collect();
+            if names.is_empty() {
+                println!("(no skills on {remote_name})");
+                return Ok(());
+            }
+            let picks = crate::commands::interactive::pick_many(
+                &format!("Select skills to remove from {remote_name} ({branch_label})"),
+                &names,
+                |n| n.clone(),
+            )?;
+            if picks.is_empty() {
+                println!("(nothing selected)");
+                return Ok(());
+            }
+            let n = picks.len();
+            let confirmed = dialoguer::Confirm::new()
+                .with_prompt(format!(
+                    "delete {n} skill(s) from {remote_name} ({branch_label})? y/N"
+                ))
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                return Ok(());
+            }
+            for idx in &picks {
+                let name = &names[*idx];
+                if matches!(scope, RemoveScope::Everywhere) {
+                    match mgr.remove(name) {
+                        Ok(()) => println!("removed {name}"),
+                        Err(quay_core::QuayError::SkillNotFound { .. }) => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                remove_from_default_remote(name, &cfg, json)?;
+            }
         }
     }
-
     Ok(())
 }
 
 pub fn run(
     skill: &str,
-    everywhere: bool,
+    scope: RemoveScope,
     profile: Option<&str>,
     project: &Path,
     user_config: Option<&Path>,
@@ -124,24 +172,41 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
-    // remove only touches the filesystem; we still need the trait bounds
-    // satisfied so we pass a fetcher that will not be called.
+    // A fetcher is required to satisfy SkillManager's trait bounds even though
+    // local removal never calls it.
     let f = CloneFetcher::new();
     let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
-    mgr.remove(skill)?;
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({"action": "removed", "skill": skill}))?
-        );
-    } else {
-        println!("removed {}", skill);
-    }
 
-    if everywhere {
-        remove_from_default_remote(skill, &cfg, json)?;
-    }
+    let report_local = |json: bool| {
+        if json {
+            if let Ok(s) =
+                serde_json::to_string_pretty(&json!({"action": "removed", "skill": skill}))
+            {
+                println!("{s}");
+            }
+        } else {
+            println!("removed {skill}");
+        }
+    };
 
+    match scope {
+        RemoveScope::Local => {
+            mgr.remove(skill)?;
+            report_local(json);
+        }
+        RemoveScope::Remote => {
+            remove_from_default_remote(skill, &cfg, json)?;
+        }
+        RemoveScope::Everywhere => {
+            match mgr.remove(skill) {
+                Ok(()) => report_local(json),
+                // Not installed locally is fine for everywhere — still remove from hub.
+                Err(quay_core::QuayError::SkillNotFound { .. }) => {}
+                Err(e) => return Err(e.into()),
+            }
+            remove_from_default_remote(skill, &cfg, json)?;
+        }
+    }
     Ok(())
 }
 
@@ -178,6 +243,8 @@ fn remove_from_default_remote(
     }
     std::fs::create_dir_all(&clone_root)?;
     let hub_clone = clone_root.join("hub");
+    // Guard ensures clone_root is removed on every exit path, including `?` returns and panics.
+    let _cleanup = TempDirGuard(clone_root.clone());
 
     // Clone the branch the skills live on; fall back to default branch.
     let clone_branch = remote_cfg.direct_branch.as_deref();
@@ -194,7 +261,6 @@ fn remove_from_default_remote(
     // Skill must exist on the targeted branch — explicit error, not silent skip.
     let skill_dir = hub_clone.join("skills").join(skill);
     if !skill_dir.join("SKILL.md").exists() {
-        let _ = std::fs::remove_dir_all(&clone_root);
         return Err(format!("skill {skill} not found on {remote_name} ({branch_label})").into());
     }
 
@@ -219,7 +285,6 @@ fn remove_from_default_remote(
         &author_email,
     )?;
     if !did_commit {
-        let _ = std::fs::remove_dir_all(&clone_root);
         return Err(format!("nothing to remove for {skill} (no change after delete)").into());
     }
 
@@ -241,8 +306,6 @@ fn remove_from_default_remote(
             .into()
         },
     )?;
-
-    let _ = std::fs::remove_dir_all(&clone_root);
 
     if json {
         println!(
