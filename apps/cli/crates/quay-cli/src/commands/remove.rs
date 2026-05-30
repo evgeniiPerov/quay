@@ -107,7 +107,7 @@ pub fn run_interactive(
             println!("removed {skill_name}");
         }
         if everywhere {
-            remove_from_remotes(skill_name, &cfg, project, profile, user_config, json)?;
+            remove_from_default_remote(skill_name, &cfg, json)?;
         }
     }
 
@@ -139,29 +139,32 @@ pub fn run(
     }
 
     if everywhere {
-        // Push a deletion commit to each configured remote.
-        remove_from_remotes(skill, &cfg, project, profile, user_config, json)?;
+        remove_from_default_remote(skill, &cfg, json)?;
     }
 
     Ok(())
 }
 
-/// Push a deletion commit to each configured remote that publishes `skill`.
+/// Delete `skill` from the active profile's **default remote** only.
 ///
-/// Reuses the pusher's clone + commit + push pipeline with a "remove file" branch.
-fn remove_from_remotes(
+/// Branch-aware: clones and pushes the remote's configured `direct_branch`
+/// (falling back to the default branch if that branch is absent), mirroring
+/// `pusher.rs` and `rebuild_registry.rs`. Removes `skills/<skill>`, drops the
+/// `registry.json` entry, commits, and pushes. Errors (instead of silently
+/// skipping) when the skill is not present on the targeted branch.
+fn remove_from_default_remote(
     skill: &str,
     cfg: &Config,
-    _project: &Path,
-    _profile: Option<&str>,
-    _user_config: Option<&Path>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use quay_core::GitShellClient;
+    use quay_core::{GitClient, GitShellClient};
 
     let git = GitShellClient;
 
-    // Determine author identity from config.
+    let (remote_name, remote_cfg) = cfg
+        .default_remote()
+        .ok_or("no default remote configured — add one with `quay remote add`")?;
+
     let author_name = cfg.user.name.clone().unwrap_or_else(|| "Quay User".into());
     let author_email = cfg
         .user
@@ -174,99 +177,86 @@ fn remove_from_remotes(
         std::fs::remove_dir_all(&clone_root)?;
     }
     std::fs::create_dir_all(&clone_root)?;
+    let hub_clone = clone_root.join("hub");
 
-    let mut deleted_remotes: Vec<String> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
-
-    for (remote_name, remote_cfg) in &cfg.remotes {
-        let hub_clone = clone_root.join(format!("hub-{remote_name}"));
-
-        // Clone the hub.
-        if let Err(e) = git.clone(&remote_cfg.url, &hub_clone, None) {
-            errors.push(format!("{remote_name}: clone failed: {e}"));
-            continue;
+    // Clone the branch the skills live on; fall back to default branch.
+    let clone_branch = remote_cfg.direct_branch.as_deref();
+    match git.clone(&remote_cfg.url, &hub_clone, clone_branch) {
+        Ok(()) => {}
+        Err(_) if clone_branch.is_some() => {
+            let _ = std::fs::remove_dir_all(&hub_clone);
+            git.clone(&remote_cfg.url, &hub_clone, None)?;
         }
+        Err(e) => return Err(e.into()),
+    }
+    let branch_label = clone_branch.unwrap_or("the default branch");
 
-        // Check if the skill exists on this remote.
-        let skill_dir = hub_clone.join("skills").join(skill);
-        let skill_md = skill_dir.join("SKILL.md");
-        if !skill_md.exists() {
-            // Not on this remote — skip silently.
-            continue;
-        }
+    // Skill must exist on the targeted branch — explicit error, not silent skip.
+    let skill_dir = hub_clone.join("skills").join(skill);
+    if !skill_dir.join("SKILL.md").exists() {
+        let _ = std::fs::remove_dir_all(&clone_root);
+        return Err(format!("skill {skill} not found on {remote_name} ({branch_label})").into());
+    }
 
-        // Remove the skill directory.
-        if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
-            errors.push(format!("{remote_name}: rm failed: {e}"));
-            continue;
-        }
+    std::fs::remove_dir_all(&skill_dir)?;
 
-        // Update registry.json — remove the skill entry.
-        let registry_path = hub_clone.join("registry.json");
-        if registry_path.exists() {
-            if let Ok(text) = std::fs::read_to_string(&registry_path) {
-                if let Ok(mut registry) = quay_core::Registry::parse(&text) {
-                    registry.skills.remove(skill);
-                    // generated_at update is best-effort; leave as-is to avoid
-                    // pulling in chrono directly in quay-cli.
-                    if let Ok(body) = serde_json::to_string_pretty(&registry) {
-                        let _ = std::fs::write(&registry_path, body);
-                    }
-                }
-            }
-        }
-
-        // Commit + push.
-        let commit_msg = format!("remove skill {skill}");
-        if let Err(e) = git.add_all(&hub_clone) {
-            errors.push(format!("{remote_name}: git add failed: {e}"));
-            continue;
-        }
-        match git.commit(&hub_clone, &commit_msg, &author_name, &author_email) {
-            Ok(false) => {
-                // Nothing to commit — skill wasn't tracked by git yet.
-                continue;
-            }
-            Ok(true) => {}
-            Err(e) => {
-                errors.push(format!("{remote_name}: commit failed: {e}"));
-                continue;
-            }
-        }
-
-        // Push using the remote's configured push mode (direct to default branch).
-        use quay_core::GitClient;
-        match git.current_branch(&hub_clone) {
-            Ok(branch) => {
-                if let Err(e) = git.push(&hub_clone, "origin", &branch) {
-                    errors.push(format!("{remote_name}: push failed: {e}"));
-                } else {
-                    deleted_remotes.push(remote_name.clone());
-                }
-            }
-            Err(e) => {
-                errors.push(format!("{remote_name}: get branch failed: {e}"));
+    // Drop the registry entry (best-effort on a malformed registry).
+    let registry_path = hub_clone.join("registry.json");
+    if let Ok(text) = std::fs::read_to_string(&registry_path) {
+        if let Ok(mut registry) = quay_core::Registry::parse(&text) {
+            registry.skills.remove(skill);
+            if let Ok(body) = serde_json::to_string_pretty(&registry) {
+                let _ = std::fs::write(&registry_path, body);
             }
         }
     }
 
-    // Clean up.
+    git.add_all(&hub_clone)?;
+    let did_commit = git.commit(
+        &hub_clone,
+        &format!("remove skill {skill}"),
+        &author_name,
+        &author_email,
+    )?;
+    if !did_commit {
+        let _ = std::fs::remove_dir_all(&clone_root);
+        return Err(format!("nothing to remove for {skill} (no change after delete)").into());
+    }
+
+    // Push branch-aware: switch to direct_branch if needed.
+    let push_branch = match clone_branch {
+        Some(b) => {
+            if git.current_branch(&hub_clone)? != b {
+                git.checkout_new_branch(&hub_clone, b)?;
+            }
+            b.to_string()
+        }
+        None => git.current_branch(&hub_clone)?,
+    };
+    git.push(&hub_clone, "origin", &push_branch).map_err(
+        |e| -> Box<dyn std::error::Error> {
+            format!(
+                "direct push to '{push_branch}' failed: {e}; if the branch is protected, set this remote's push_mode = pr"
+            )
+            .into()
+        },
+    )?;
+
     let _ = std::fs::remove_dir_all(&clone_root);
 
-    if !json {
-        for r in &deleted_remotes {
-            println!("  deleted from remote: {r}");
-        }
-        for e in &errors {
-            eprintln!("  warning: {e}");
-        }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "action": "removed_remote",
+                "skill": skill,
+                "remote": remote_name,
+                "branch": push_branch,
+            }))?
+        );
+    } else {
+        println!("  deleted from remote: {remote_name} ({push_branch})");
     }
-
-    // Surface errors as a non-fatal warning (local removal already succeeded).
-    if !errors.is_empty() && deleted_remotes.is_empty() {
-        eprintln!("warning: local removal succeeded but remote deletion failed for all remotes");
-    }
-
     Ok(())
 }
 
