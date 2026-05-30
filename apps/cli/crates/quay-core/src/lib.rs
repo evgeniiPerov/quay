@@ -21,6 +21,7 @@ pub mod registry;
 pub mod registry_builder;
 pub mod scanner;
 pub mod search;
+pub mod skill_files;
 pub mod validate;
 
 pub use add_plan::{

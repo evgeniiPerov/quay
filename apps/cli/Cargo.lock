@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "quay"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "quay-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_fs",
  "clap",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "quay-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_fs",
  "chrono",

@@ -56,17 +56,7 @@ pub fn build_from_hub_clone(hub_clone: &Path, hub_name: &str) -> Result<Registry
         hasher.update(&raw_bytes);
         let sha = hex::encode(hasher.finalize());
 
-        let mut files: Vec<String> = vec!["SKILL.md".to_string()];
-        if let Ok(it) = std::fs::read_dir(&dir) {
-            for f in it.flatten() {
-                if let Some(fname) = f.file_name().to_str() {
-                    if fname != "SKILL.md" && f.path().is_file() {
-                        files.push(fname.to_string());
-                    }
-                }
-            }
-        }
-        files.sort();
+        let files = crate::skill_files::collect_skill_files(&dir)?;
 
         registry.skills.insert(
             name.clone(),
@@ -141,6 +131,31 @@ mod tests {
         assert_eq!(
             r.skills["foo"].files,
             vec!["SKILL.md".to_string(), "extra.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn includes_nested_subdir_files() {
+        let tmp = TempDir::new().unwrap();
+        let hub = tmp.path();
+        fs::create_dir_all(hub.join("skills/foo/scripts")).unwrap();
+        fs::create_dir_all(hub.join("skills/foo/agents")).unwrap();
+        fs::write(
+            hub.join("skills/foo/SKILL.md"),
+            "---\nname: foo\ndescription: f\nversion: 0.1.0\n---\n",
+        )
+        .unwrap();
+        fs::write(hub.join("skills/foo/scripts/sync.mjs"), "code").unwrap();
+        fs::write(hub.join("skills/foo/agents/openai.yaml"), "cfg").unwrap();
+
+        let r = build_from_hub_clone(hub, "h").unwrap();
+        assert_eq!(
+            r.skills["foo"].files,
+            vec![
+                "SKILL.md".to_string(),
+                "agents/openai.yaml".to_string(),
+                "scripts/sync.mjs".to_string(),
+            ]
         );
     }
 }

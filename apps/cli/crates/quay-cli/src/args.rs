@@ -54,12 +54,15 @@ pub enum Command {
     },
     /// List installed skills
     List,
-    /// Remove a previously installed skill
+    /// Remove a skill — locally by default, from the hub with --remote, or both with --everywhere
     Remove {
-        /// Skill name to remove. Omit when using --interactive (-i).
+        /// Skill name to remove. Omit when using --interactive (-i) or bare --remote.
         #[arg(conflicts_with = "interactive")]
         skill: Option<String>,
-        /// Also push a deletion commit to every remote that publishes the skill.
+        /// Remove only from the hub (default remote), keeping the local copy.
+        #[arg(long, conflicts_with = "everywhere")]
+        remote: bool,
+        /// Remove both locally and from the hub (default remote).
         #[arg(long)]
         everywhere: bool,
         /// Open an interactive checkbox list to pick skills to remove.
