@@ -1,0 +1,20 @@
+[package]
+name = "quay-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quay-core = { path = "../quay-core" }
+rmcp.workspace = true
+schemars.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util"] }
+rmcp = { workspace = true, features = ["server", "client", "transport-io", "macros"] }
