@@ -217,6 +217,23 @@ ran without args before keep working unchanged.
 
 See [`apps/cli/README.md`](apps/cli/README.md) for the full command list and `--json` output examples.
 
+## Using quay from AI agents (MCP)
+
+quay ships an MCP server: `quay mcp` speaks the Model Context Protocol over
+stdio. It exposes the skill-registry operations — `search`, `add`, `info`,
+`list`, `outdated`, `scan`, `validate`, `link`, `update`, `remove`, `push`,
+`remote` — as structured tools an AI agent can call directly, returning JSON
+instead of human-readable text.
+
+One-step per-client registration: `quay mcp install <client>` prints the config
+snippet for `claude`, `codex`, or `cursor`. For Claude Code:
+
+```sh
+claude mcp add -s user quay -- quay mcp
+```
+
+Cross-client by design — any MCP client that speaks stdio can drive it.
+
 ## Concepts
 
 - **Hub.** A git repo with `skills/<name>/SKILL.md` files plus a `registry.json` index. Any provider above works.
@@ -232,6 +249,7 @@ apps/cli/                  Rust workspace
 ├── crates/quay-core/      domain logic (config, registry, fetcher, manager,
 │                          scanner, providers/{github,gitlab,bitbucket,azure})
 ├── crates/quay-cli/       clap subcommands + ratatui TUI
+├── crates/quay-mcp/       MCP server (`quay mcp`) — registry ops as agent tools
 └── crates/quay/           binary
 .github/workflows/         release.yml — cargo-dist matrix + Homebrew publish
 .agents/                   shared agent rules + skills (tool-neutral)

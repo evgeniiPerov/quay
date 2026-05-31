@@ -178,6 +178,21 @@ pub enum Command {
         #[arg(long, hide = true)]
         check_config_only: bool,
     },
+    /// Run the MCP server (for AI agents / MCP clients). Speaks MCP over stdio.
+    #[command(hide = true)]
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum McpAction {
+    /// Write MCP registration config for a specific client.
+    Install {
+        /// Target client: claude, codex, or cursor.
+        client: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -259,6 +259,25 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 check_config_only,
             )?;
         }
+        Command::Mcp { action } => match action {
+            None => {
+                let opts = quay_mcp::ServeOptions {
+                    project: project.clone(),
+                    user_config: user_config.clone(),
+                    profile: cli.profile.clone(),
+                };
+                quay_mcp::serve_blocking(opts)?;
+            }
+            Some(args::McpAction::Install { client }) => {
+                let parsed = client
+                    .parse::<quay_mcp::Client>()
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                let snippet = quay_mcp::install_client(parsed)?;
+                // `install` is a human-facing command, not the MCP protocol —
+                // printing to stdout here is correct.
+                println!("{snippet}");
+            }
+        },
     }
     Ok(())
 }

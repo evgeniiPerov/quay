@@ -4,6 +4,10 @@
 [Getting started](getting-started.md)
 [Concepts](concepts.md)
 
+# AI agents (MCP)
+
+- [Overview](mcp/overview.md)
+
 # Tutorials
 
 - [Author your first skill](tutorials/first-skill.md)

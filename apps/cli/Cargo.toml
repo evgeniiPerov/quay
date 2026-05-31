@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/quay-core", "crates/quay-cli", "crates/quay"]
+members = ["crates/quay-core", "crates/quay-cli", "crates/quay", "crates/quay-mcp"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -24,7 +24,10 @@ assert_cmd = "2.2"
 assert_fs = "1.1"
 predicates = "3.1"
 wiremock = "0.6"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-std"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+anyhow = "1"
 semver = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
