@@ -21,6 +21,14 @@ opened PR: https://github.com/acme/skills/pull/142
 brew install evgeniiPerov/tap/quay
 ```
 
+### Windows (PowerShell)
+
+Always pulls the latest release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/evgeniiPerov/quay/releases/latest/download/quay-installer.ps1 | iex"
+```
+
 ### Manual download
 
 Grab the matching tarball or zip from
