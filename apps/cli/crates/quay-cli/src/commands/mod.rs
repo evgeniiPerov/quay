@@ -4,6 +4,7 @@ pub mod init;
 pub mod interactive;
 pub mod link;
 pub mod list;
+pub mod lock;
 pub mod outdated;
 pub mod profile;
 pub mod push;

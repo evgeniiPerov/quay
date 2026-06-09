@@ -8,6 +8,8 @@ pub mod fetcher;
 pub mod git;
 pub mod github;
 pub mod linker;
+pub mod lock;
+pub mod lock_hash;
 pub mod manager;
 pub mod manifest;
 pub mod outdated;
@@ -53,5 +55,7 @@ pub use provider::{
     Provider, ProviderKind, RepoCoords,
 };
 pub use pusher::{BumpKind, PushResult, SkillPusher};
+pub use lock::{read as read_lock, source_from_url, write_atomic as write_lock, LockEntry, SkillsLock, SourceType};
+pub use lock_hash::folder_hash;
 pub use registry::{Registry, RegistryEntry};
 pub use search::{search, SearchFilters, SearchHit};
