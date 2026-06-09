@@ -69,3 +69,27 @@ fn check_fails_on_missing_skill() {
     Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path())
         .assert().failure().stderr(predicates::str::contains("missing"));
 }
+
+/// --heal makes a drifted repo pass --check, and is idempotent.
+#[test]
+fn heal_reconciles_and_is_idempotent() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+
+    // Introduce drift: a new untracked skill.
+    project.child(".agents/skills/new-one/SKILL.md")
+        .write_str("---\nname: new-one\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+
+    // Heal, then --check passes.
+    Command::cargo_bin("quay").unwrap().args(["lock", "--heal"]).current_dir(project.path()).assert().success();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path()).assert().success();
+
+    // Idempotence: capture file, heal again, assert unchanged.
+    let path = project.path().join("skills-lock.json");
+    let before = std::fs::read_to_string(&path).unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--heal"]).current_dir(project.path()).assert().success();
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "second --heal must not change the lockfile");
+}

@@ -64,11 +64,17 @@ pub fn run(
     if sync {
         return sync_impl(project_root);
     }
-    let lock = build_lock_from_disk(project_root, &skills);
-    lock::write_atomic(project_root, &lock)?;
     if heal {
+        let drift = compute_drift(project_root, &skills)?;
+        for d in &drift {
+            println!("healing {}", d.line());
+        }
+        let lock = build_lock_from_disk(project_root, &skills);
+        lock::write_atomic(project_root, &lock)?;
         println!("healed {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
     } else {
+        let lock = build_lock_from_disk(project_root, &skills);
+        lock::write_atomic(project_root, &lock)?;
         println!("wrote {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
     }
     Ok(())
