@@ -136,6 +136,71 @@ fn check_impl(project_root: &Path, skills: &[LocalSkill], _online: bool) -> Resu
     std::process::exit(1);
 }
 
-fn sync_impl(_project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let lock_data = match lock::read(project_root)? {
+        Some(l) => l,
+        None => {
+            println!("no {} to sync", lock::LOCKFILE_NAME);
+            return Ok(());
+        }
+    };
+
+    // Build the set of skill names that are already present on disk.
+    let config_dir = crate::config_io::default_config_dir();
+    let push_log = PushLog::load(
+        config_dir.as_deref().unwrap_or(project_root),
+        Some(project_root),
+    )
+    .unwrap_or_default();
+    let present: std::collections::BTreeSet<String> = scan_local(project_root, &push_log)
+        .into_iter()
+        .map(|s| s.meta.name)
+        .collect();
+
+    let mut installed = 0usize;
+    let mut skipped = 0usize;
+
+    for (name, entry) in &lock_data.skills {
+        if present.contains(name) {
+            // Already on disk — nothing to do.
+            continue;
+        }
+        match entry.source_type {
+            SourceType::Github | SourceType::Git => {
+                // Convert source to a full git clone URL.
+                let hub_url = match entry.source_type {
+                    SourceType::Github => {
+                        format!("https://github.com/{}.git", entry.source)
+                    }
+                    _ => entry.source.clone(),
+                };
+                println!("installing {} from {}", name, hub_url);
+                match crate::commands::add::install_from_url(name, &hub_url, project_root) {
+                    Ok(()) => {
+                        println!("  installed {}", name);
+                        installed += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("  error installing {}: {}", name, e);
+                        // Count as skipped so we still report activity.
+                        skipped += 1;
+                    }
+                }
+            }
+            SourceType::Local | SourceType::WellKnown | SourceType::NodeModules => {
+                println!(
+                    "skip {}: sourceType {:?} not installable by quay",
+                    name, entry.source_type
+                );
+                skipped += 1;
+            }
+        }
+    }
+
+    if installed == 0 && skipped == 0 {
+        println!("{} up to date", lock::LOCKFILE_NAME);
+    } else {
+        println!("synced: {} installed, {} skipped", installed, skipped);
+    }
     Ok(())
 }

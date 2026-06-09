@@ -18,6 +18,38 @@ use std::collections::HashMap;
 use std::io::IsTerminal as _;
 use std::path::Path;
 
+/// Install a single skill from a git URL (GitHub or arbitrary git) without
+/// requiring a pre-configured remote in `.quay/config.toml`.
+///
+/// Used by `quay lock --sync` to install missing skills that have a
+/// `sourceType` of `github` or `git`.  A synthetic one-remote `Config` is
+/// built from `hub_url` so the normal `SkillManager` machinery can be reused.
+///
+/// Returns `Ok(())` on success or a descriptive error.
+pub fn install_from_url(
+    skill_name: &str,
+    hub_url: &str,
+    project: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Build a minimal Config with a single synthetic remote pointing at hub_url.
+    let mut cfg = quay_core::Config::default();
+    cfg.remotes.insert(
+        "_sync_remote".to_string(),
+        quay_core::RemoteConfig {
+            url: hub_url.to_string(),
+            default: true,
+            provider: None,
+            push_mode: quay_core::PushMode::default(),
+            direct_branch: None,
+        },
+    );
+
+    let f = CloneFetcher::new();
+    let mgr = quay_core::SkillManager::new(&cfg, &f, &f, project.to_path_buf());
+    mgr.add(skill_name, Some("_sync_remote"))
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+}
+
 /// Per-URL cache of harbor clones for the batch `PromptEach` flow.
 ///
 /// Clones each remote URL at most once; a failed clone is recorded as `None`

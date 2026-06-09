@@ -70,6 +70,29 @@ fn check_fails_on_missing_skill() {
         .assert().failure().stderr(predicates::str::contains("missing"));
 }
 
+/// --sync with everything already present is a successful no-op.
+#[test]
+fn sync_noop_when_all_present() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+
+    Command::cargo_bin("quay").unwrap().args(["lock", "--sync"]).current_dir(project.path())
+        .assert().success().stdout(predicates::str::contains("up to date"));
+}
+
+/// --sync notes that it skips a non-installable (local) source type.
+#[test]
+fn sync_skips_local_entries_with_note() {
+    let project = assert_fs::TempDir::new().unwrap();
+    std::fs::write(project.path().join("skills-lock.json"),
+        "{\n  \"version\": 1,\n  \"skills\": {\n    \"hand-made\": {\n      \"source\": \".agents/skills/hand-made/SKILL.md\",\n      \"sourceType\": \"local\",\n      \"skillPath\": \".agents/skills/hand-made/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}").unwrap();
+
+    Command::cargo_bin("quay").unwrap().args(["lock", "--sync"]).current_dir(project.path())
+        .assert().success().stdout(predicates::str::contains("skip"));
+}
+
 /// --heal makes a drifted repo pass --check, and is idempotent.
 #[test]
 fn heal_reconciles_and_is_idempotent() {
