@@ -80,6 +80,18 @@ pub fn run(
     Ok(())
 }
 
+/// The lockfile JSON string for a source type, for user-facing messages
+/// (matches the on-disk `sourceType` value rather than the Rust enum name).
+fn source_type_label(t: SourceType) -> &'static str {
+    match t {
+        SourceType::Github => "github",
+        SourceType::Git => "git",
+        SourceType::Local => "local",
+        SourceType::WellKnown => "well-known",
+        SourceType::NodeModules => "node-modules",
+    }
+}
+
 /// One drift finding between the lockfile and what's on disk.
 enum Drift {
     Missing(String),   // in lock, no file on disk
@@ -159,6 +171,7 @@ fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut installed = 0usize;
     let mut skipped = 0usize;
+    let mut failed = 0usize;
 
     for (name, entry) in &lock_data.skills {
         if present.contains(name) {
@@ -182,25 +195,31 @@ fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => {
                         eprintln!("  error installing {}: {}", name, e);
-                        // Count as skipped so we still report activity.
-                        skipped += 1;
+                        // A real failure is distinct from an intentional skip.
+                        failed += 1;
                     }
                 }
             }
             SourceType::Local | SourceType::WellKnown | SourceType::NodeModules => {
                 println!(
-                    "skip {}: sourceType {:?} not installable by quay",
-                    name, entry.source_type
+                    "skip {}: sourceType '{}' not installable by quay",
+                    name,
+                    source_type_label(entry.source_type)
                 );
                 skipped += 1;
             }
         }
     }
 
-    if installed == 0 && skipped == 0 {
+    if installed == 0 && skipped == 0 && failed == 0 {
         println!("{} up to date", lock::LOCKFILE_NAME);
-    } else {
+    } else if failed == 0 {
         println!("synced: {} installed, {} skipped", installed, skipped);
+    } else {
+        println!(
+            "synced: {} installed, {} skipped, {} failed",
+            installed, skipped, failed
+        );
     }
     Ok(())
 }
