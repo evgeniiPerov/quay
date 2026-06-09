@@ -14,6 +14,7 @@ use crate::scanner::{scan_local, LocalSkill};
 use semver::Version;
 use serde::Serialize;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// One row of `quay outdated` output.
@@ -29,6 +30,8 @@ pub struct OutdatedEntry {
     pub remote_sha: String,
     /// True when `available` is a higher semver than the locally parsed version.
     pub upgrade_available: bool,
+    /// True when this skill is recorded in `skills-lock.json`.
+    pub locked: bool,
 }
 
 /// Compare every locally-found skill against every configured remote's
@@ -53,7 +56,12 @@ pub fn outdated_for_local<R: RegistryFetcher>(
         .map(|d| crate::push_log::PushLog::load(d, Some(project_root)).unwrap_or_default())
         .unwrap_or_default();
     let local_skills = scan_local(project_root, &push_log);
-    outdated_for_skills(&local_skills, config, fetcher)
+    let locked_names: BTreeSet<String> = crate::lock::read(project_root)
+        .ok()
+        .flatten()
+        .map(|l| l.skills.keys().cloned().collect())
+        .unwrap_or_default();
+    outdated_for_skills(&local_skills, config, fetcher, &locked_names)
 }
 
 /// Core comparison logic — exposed separately so callers that already have a
@@ -62,6 +70,7 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
     skills: &[LocalSkill],
     config: &Config,
     fetcher: &R,
+    locked_names: &BTreeSet<String>,
 ) -> Result<Vec<OutdatedEntry>> {
     let mut rows = Vec::new();
     let mut registry_cache: std::collections::BTreeMap<String, crate::registry::Registry> =
@@ -102,6 +111,7 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 local_sha: local_sha.clone(),
                 remote_sha: entry.sha.clone(),
                 upgrade_available,
+                locked: locked_names.contains(&skill.meta.name),
             });
         }
     }
@@ -196,7 +206,7 @@ mod tests {
         let cfg = make_config();
         let skills = vec![make_local_skill("1.0.0", "local-sha")];
         let f = FakeRegistry(make_registry("1.2.0"));
-        let rows = outdated_for_skills(&skills, &cfg, &f).unwrap();
+        let rows = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].upgrade_available);
         assert_eq!(rows[0].available, "1.2.0");
@@ -207,7 +217,7 @@ mod tests {
         let cfg = make_config();
         let skills = vec![make_local_skill("1.2.0", "local-sha")];
         let f = FakeRegistry(make_registry("1.2.0"));
-        let rows = outdated_for_skills(&skills, &cfg, &f).unwrap();
+        let rows = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].upgrade_available);
     }
@@ -217,7 +227,7 @@ mod tests {
         let cfg = make_config();
         let skills = vec![make_local_skill("2.0.0", "local-sha")];
         let f = FakeRegistry(make_registry("1.2.0"));
-        let rows = outdated_for_skills(&skills, &cfg, &f).unwrap();
+        let rows = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].upgrade_available);
     }
@@ -232,7 +242,7 @@ mod tests {
             skills: BTreeMap::new(),
         });
         let skills = vec![make_local_skill("1.0.0", "local-sha")];
-        let rows = outdated_for_skills(&skills, &cfg, &f).unwrap();
+        let rows = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -241,7 +251,22 @@ mod tests {
         let cfg = Config::default();
         let f = FakeRegistry(make_registry("2.0.0"));
         let skills = vec![make_local_skill("1.0.0", "local-sha")];
-        let rows = outdated_for_skills(&skills, &cfg, &f).unwrap();
+        let rows = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn locked_flag_reflects_lockfile_membership() {
+        let cfg = make_config();
+        let f = FakeRegistry(make_registry("1.2.0"));
+        let skills = vec![make_local_skill("1.0.0", "local-sha")];
+        // `make_local_skill` names the skill "csv-parse" (see helper). Not locked:
+        let unlocked = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(!unlocked[0].locked);
+        // Locked when its name is in the set:
+        let locked_names: BTreeSet<String> =
+            [unlocked[0].name.clone()].into_iter().collect();
+        let locked = outdated_for_skills(&skills, &cfg, &f, &locked_names).unwrap();
+        assert!(locked[0].locked);
     }
 }
