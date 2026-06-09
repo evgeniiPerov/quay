@@ -43,6 +43,22 @@ fn build_lock_from_disk(project_root: &Path, skills: &[LocalSkill]) -> SkillsLoc
     lock
 }
 
+/// Regenerate `skills-lock.json` from the current on-disk scan. Best-effort
+/// helper that mutating commands (add/remove/update) call after changing the
+/// mirror roots so the lockfile stays current. Returns the number of skills written.
+pub fn regenerate(project_root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let config_dir = crate::config_io::default_config_dir();
+    let push_log = PushLog::load(
+        config_dir.as_deref().unwrap_or(project_root),
+        Some(project_root),
+    )
+    .unwrap_or_default();
+    let skills = scan_local(project_root, &push_log);
+    let lock = build_lock_from_disk(project_root, &skills);
+    lock::write_atomic(project_root, &lock)?;
+    Ok(lock.skills.len())
+}
+
 pub fn run(
     project_root: &Path,
     check: bool,

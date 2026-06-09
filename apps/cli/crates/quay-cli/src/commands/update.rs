@@ -92,7 +92,13 @@ pub fn run(
     let config_dir = user_config.and_then(|p| p.parent());
 
     let f = CloneFetcher::new();
-    run_with(&cfg, &f, &f, skill, dry_run, project, config_dir, json)
+    run_with(&cfg, &f, &f, skill, dry_run, project, config_dir, json)?;
+
+    // Keep the lockfile current if this project uses one.
+    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
+        let _ = crate::commands::lock::regenerate(project);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -439,7 +439,13 @@ pub fn run(
     crate::commands::ensure_remotes_configured(&cfg)?;
 
     let f = CloneFetcher::new();
-    run_with(&cfg, &f, &f, skill, remote, force, no_diff, project, json)
+    run_with(&cfg, &f, &f, skill, remote, force, no_diff, project, json)?;
+
+    // Keep the lockfile current if this project uses one.
+    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
+        let _ = crate::commands::lock::regenerate(project);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

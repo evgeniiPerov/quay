@@ -212,6 +212,11 @@ pub fn run(
             remove_from_default_remote(skill, &cfg, json)?;
         }
     }
+
+    // Keep the lockfile current if this project uses one.
+    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
+        let _ = crate::commands::lock::regenerate(project);
+    }
     Ok(())
 }
 

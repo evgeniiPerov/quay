@@ -93,6 +93,23 @@ fn sync_skips_local_entries_with_note() {
         .assert().success().stdout(predicates::str::contains("skip"));
 }
 
+/// `quay remove` updates the lockfile so the removed skill is gone from it.
+#[test]
+fn remove_updates_lockfile() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    project.child(".agents/skills/keep-me/SKILL.md")
+        .write_str("---\nname: keep-me\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+
+    Command::cargo_bin("quay").unwrap().args(["remove", "csv-parse"]).current_dir(project.path()).assert().success();
+
+    let lock = std::fs::read_to_string(project.path().join("skills-lock.json")).unwrap();
+    assert!(!lock.contains("\"csv-parse\""), "removed skill must leave the lockfile");
+    assert!(lock.contains("\"keep-me\""));
+}
+
 /// --heal makes a drifted repo pass --check, and is idempotent.
 #[test]
 fn heal_reconciles_and_is_idempotent() {
