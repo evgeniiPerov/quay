@@ -1,11 +1,12 @@
 //! On-the-fly outdated detection: compare local-file SHA-256 against the
 //! remote hub's registry entry.
 //!
-//! Plan 10: No lockfile. We compare `sha256(local SKILL.md)` against the
-//! `sha` field in the remote `registry.json` entry. Because the hub `sha` is
-//! a git-object SHA (not a file-content SHA), we use a `version` comparison
-//! as the primary upgrade signal and flag sha mismatch as an informational
-//! column.
+//! A `skills-lock.json` now records what is installed and from where (see the
+//! `lock` module). Version comparison here still uses the remote `registry.json`
+//! `sha` and `version` as the upgrade signal — the hub `sha` is a git-object SHA
+//! (not a file-content SHA), so `version` is the primary signal and sha mismatch
+//! is an informational column. The lockfile contributes a `locked` flag per row
+//! and offline content-hash drift detection via `quay lock --check`.
 
 use crate::config::Config;
 use crate::error::Result;
