@@ -1,0 +1,71 @@
+use assert_cmd::Command;
+use assert_fs::prelude::*;
+
+/// `quay lock` with skills on disk writes skills-lock.json listing them.
+#[test]
+fn lock_generates_lockfile_from_scan() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project
+        .child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: parse csv\nversion: 1.0.0\n---\nbody\n")
+        .unwrap();
+
+    Command::cargo_bin("quay").unwrap()
+        .args(["lock"])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let lock = std::fs::read_to_string(project.path().join("skills-lock.json")).unwrap();
+    assert!(lock.contains("\"csv-parse\""));
+    assert!(lock.contains("\"computedHash\""));
+    assert!(lock.contains("\"skillPath\""));
+    assert!(lock.contains("\"version\": 1"));
+}
+
+/// A clean lockfile that matches disk → --check succeeds.
+#[test]
+fn check_passes_when_lock_matches_disk() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path()).assert().success();
+}
+
+/// An untracked skill (on disk, not in lock) fails --check (strict policy).
+#[test]
+fn check_fails_on_untracked_skill() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+    project.child(".agents/skills/new-one/SKILL.md")
+        .write_str("---\nname: new-one\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path())
+        .assert().failure().stderr(predicates::str::contains("untracked"));
+}
+
+/// A modified skill (hash differs) fails --check.
+#[test]
+fn check_fails_on_modified_skill() {
+    let project = assert_fs::TempDir::new().unwrap();
+    let f = project.child(".agents/skills/csv-parse/SKILL.md");
+    f.write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+    f.write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nCHANGED\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path())
+        .assert().failure().stderr(predicates::str::contains("modified"));
+}
+
+/// A lock entry whose file is gone fails --check.
+#[test]
+fn check_fails_on_missing_skill() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project.child(".agents/skills/csv-parse/SKILL.md")
+        .write_str("---\nname: csv-parse\ndescription: d\nversion: 1.0.0\n---\nbody\n").unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+    std::fs::remove_dir_all(project.path().join(".agents/skills/csv-parse")).unwrap();
+    Command::cargo_bin("quay").unwrap().args(["lock", "--check"]).current_dir(project.path())
+        .assert().failure().stderr(predicates::str::contains("missing"));
+}
