@@ -57,11 +57,10 @@ pub fn outdated_for_local<R: RegistryFetcher>(
         .map(|d| crate::push_log::PushLog::load(d, Some(project_root)).unwrap_or_default())
         .unwrap_or_default();
     let local_skills = scan_local(project_root, &push_log);
-    let locked_names: BTreeSet<String> = crate::lock::read(project_root)
-        .ok()
-        .flatten()
-        .map(|l| l.skills.keys().cloned().collect())
-        .unwrap_or_default();
+    let locked_names: BTreeSet<String> = match crate::lock::read(project_root)? {
+        Some(lock) => lock.skills.keys().cloned().collect(),
+        None => BTreeSet::new(),
+    };
     outdated_for_skills(&local_skills, config, fetcher, &locked_names)
 }
 

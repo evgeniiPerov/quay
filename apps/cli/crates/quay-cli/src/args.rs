@@ -125,7 +125,7 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["check", "heal"])]
         sync: bool,
         /// With --check, also probe whether each source is reachable. [not yet implemented]
-        #[arg(long)]
+        #[arg(long, requires = "check", conflicts_with_all = ["heal", "sync"])]
         online: bool,
     },
     /// Validate a local skill's frontmatter (offline, no network).

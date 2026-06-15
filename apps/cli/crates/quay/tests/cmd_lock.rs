@@ -106,7 +106,7 @@ fn remove_updates_lockfile() {
     Command::cargo_bin("quay").unwrap().args(["remove", "csv-parse"]).current_dir(project.path()).assert().success();
 
     let lock = std::fs::read_to_string(project.path().join("skills-lock.json")).unwrap();
-    assert!(!lock.contains("\"csv-parse\""), "removed skill must leave the lockfile");
+    assert!(!lock.contains("\"csv-parse\""), "removed skill must be absent from the lockfile");
     assert!(lock.contains("\"keep-me\""));
 }
 

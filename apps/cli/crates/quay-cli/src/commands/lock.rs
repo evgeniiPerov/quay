@@ -17,18 +17,18 @@ use std::path::Path;
 /// to `local`. A skill on disk with no prior entry can't have its origin known
 /// from a scan, so it is recorded as `SourceType::Local`. Entries for skills no
 /// longer on disk are dropped (only on-disk skills are iterated).
-fn build_lock_from_disk(project_root: &Path, skills: &[LocalSkill]) -> SkillsLock {
-    let existing = lock::read(project_root).ok().flatten();
+fn build_lock_from_disk(
+    project_root: &Path,
+    skills: &[LocalSkill],
+) -> Result<SkillsLock, Box<dyn std::error::Error>> {
+    let existing = lock::read(project_root)?;
     let mut lock = SkillsLock::empty();
     for s in skills {
         let skill_md = s.canonical_path();
         let folder = skill_md.parent().unwrap_or(skill_md);
         // A failed hash would make `--check` report this skill as perpetually
         // drifted, so surface the cause instead of silently writing an empty hash.
-        let hash = folder_hash(folder).unwrap_or_else(|e| {
-            eprintln!("warn: could not hash {}: {e}", folder.display());
-            String::new()
-        });
+        let hash = folder_hash(folder)?;
         let entry = match existing.as_ref().and_then(|e| e.skills.get(&s.meta.name)) {
             // Already tracked — keep its provenance, refresh only the hash.
             Some(prev) => LockEntry {
@@ -54,7 +54,7 @@ fn build_lock_from_disk(project_root: &Path, skills: &[LocalSkill]) -> SkillsLoc
         };
         lock.skills.insert(s.meta.name.clone(), entry);
     }
-    lock
+    Ok(lock)
 }
 
 /// Regenerate `skills-lock.json` from the current on-disk scan. Best-effort
@@ -68,7 +68,7 @@ pub fn regenerate(project_root: &Path) -> Result<usize, Box<dyn std::error::Erro
     )
     .unwrap_or_default();
     let skills = scan_local(project_root, &push_log);
-    let lock = build_lock_from_disk(project_root, &skills);
+    let lock = build_lock_from_disk(project_root, &skills)?;
     lock::write_atomic(project_root, &lock)?;
     Ok(lock.skills.len())
 }
@@ -99,11 +99,11 @@ pub fn run(
         for d in &drift {
             println!("healing {}", d.line());
         }
-        let lock = build_lock_from_disk(project_root, &skills);
+        let lock = build_lock_from_disk(project_root, &skills)?;
         lock::write_atomic(project_root, &lock)?;
         println!("healed {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
     } else {
-        let lock = build_lock_from_disk(project_root, &skills);
+        let lock = build_lock_from_disk(project_root, &skills)?;
         lock::write_atomic(project_root, &lock)?;
         println!("wrote {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
     }
@@ -150,7 +150,7 @@ fn compute_drift(project_root: &Path, skills: &[LocalSkill]) -> Result<Vec<Drift
             None => drift.push(Drift::Untracked(s.meta.name.clone())),
             Some(entry) => {
                 let folder = s.canonical_path().parent().unwrap_or_else(|| s.canonical_path());
-                let hash = folder_hash(folder).unwrap_or_default();
+                let hash = folder_hash(folder)?;
                 if hash != entry.computed_hash {
                     drift.push(Drift::Modified(s.meta.name.clone()));
                 }
@@ -250,6 +250,7 @@ fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "synced: {} installed, {} skipped, {} failed",
             installed, skipped, failed
         );
+        return Err(format!("sync incomplete: {failed} skill(s) failed to install").into());
     }
     Ok(())
 }

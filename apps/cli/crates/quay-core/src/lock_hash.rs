@@ -33,12 +33,22 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<
         })?;
         let path = entry.path();
         let name = entry.file_name();
-        if path.is_dir() {
+        // Use the dir entry's own type (does not follow symlinks). Skipping
+        // symlinks prevents cyclic-symlink recursion and out-of-tree content
+        // leaking into the digest, and matches vercel's Dirent-based traversal.
+        let file_type = entry.file_type().map_err(|source| QuayError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if name == ".git" || name == "node_modules" {
                 continue;
             }
             collect(base, &path, out)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let content = std::fs::read(&path).map_err(|source| QuayError::Io {
                 path: path.display().to_string(),
                 source,

@@ -90,11 +90,21 @@ pub fn source_from_url(url: &str) -> (String, SourceType) {
 }
 
 fn github_owner_repo(url: &str) -> Option<String> {
-    let lower = url.to_ascii_lowercase();
-    if !lower.contains("github.com") {
+    // Match only on a real github.com host prefix (case-insensitive), so a path
+    // segment like `.../mirror-of-github.com/...` can't be misclassified.
+    let u = url.trim();
+    let lower = u.to_ascii_lowercase();
+    let after_host = if let Some(rest) = lower.strip_prefix("https://github.com/") {
+        &u[u.len() - rest.len()..]
+    } else if let Some(rest) = lower.strip_prefix("http://github.com/") {
+        &u[u.len() - rest.len()..]
+    } else if let Some(rest) = lower.strip_prefix("git@github.com:") {
+        &u[u.len() - rest.len()..]
+    } else if let Some(rest) = lower.strip_prefix("ssh://git@github.com/") {
+        &u[u.len() - rest.len()..]
+    } else {
         return None;
-    }
-    let after_host = url.split_once("github.com").map(|(_, rest)| rest.trim_start_matches([':', '/']))?;
+    };
     let trimmed = after_host.trim_end_matches('/');
     let path = trimmed.strip_suffix(".git").unwrap_or(trimmed);
     let mut parts = path.split('/').filter(|s| !s.is_empty());
@@ -105,8 +115,13 @@ fn github_owner_repo(url: &str) -> Option<String> {
 
 /// Write the lockfile atomically (temp file in the same dir, then rename).
 pub fn write_atomic(project_root: &Path, lock: &SkillsLock) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let path = lock_path(project_root);
-    let tmp = path.with_extension("json.tmp");
+    // Unique temp name (pid + per-process sequence) so concurrent writers in the
+    // same project root don't clobber each other's temp file before the rename.
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp.{}.{seq}", std::process::id()));
     let body = to_pretty_json(lock);
     std::fs::write(&tmp, body.as_bytes())
         .map_err(|source| QuayError::Io { path: tmp.display().to_string(), source })?;
