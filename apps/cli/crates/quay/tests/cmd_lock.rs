@@ -133,3 +133,30 @@ fn heal_reconciles_and_is_idempotent() {
     let after = std::fs::read_to_string(&path).unwrap();
     assert_eq!(before, after, "second --heal must not change the lockfile");
 }
+
+/// `quay lock` must PRESERVE existing github/git provenance, refreshing only the
+/// hash — it must not flatten a tracked entry to `local`. Regression guard.
+#[test]
+fn lock_preserves_existing_provenance() {
+    let project = assert_fs::TempDir::new().unwrap();
+    project
+        .child(".agents/skills/tdd/SKILL.md")
+        .write_str("---\nname: tdd\ndescription: d\nversion: 1.0.0\n---\nbody\n")
+        .unwrap();
+    // Hand-write a lockfile with real github provenance and a STALE hash.
+    std::fs::write(
+        project.path().join("skills-lock.json"),
+        "{\n  \"version\": 1,\n  \"skills\": {\n    \"tdd\": {\n      \"source\": \"mattpocock/skills\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/engineering/tdd/SKILL.md\",\n      \"computedHash\": \"deadbeef\"\n    }\n  }\n}",
+    )
+    .unwrap();
+
+    Command::cargo_bin("quay").unwrap().args(["lock"]).current_dir(project.path()).assert().success();
+
+    let lock = std::fs::read_to_string(project.path().join("skills-lock.json")).unwrap();
+    // Provenance kept:
+    assert!(lock.contains("\"sourceType\": \"github\""), "github provenance must survive: {lock}");
+    assert!(lock.contains("\"source\": \"mattpocock/skills\""));
+    assert!(lock.contains("\"skillPath\": \"skills/engineering/tdd/SKILL.md\""));
+    // Hash refreshed away from the stale value:
+    assert!(!lock.contains("deadbeef"), "stale hash must be refreshed");
+}

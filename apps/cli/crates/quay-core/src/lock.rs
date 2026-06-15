@@ -110,8 +110,11 @@ pub fn write_atomic(project_root: &Path, lock: &SkillsLock) -> Result<()> {
     let body = to_pretty_json(lock);
     std::fs::write(&tmp, body.as_bytes())
         .map_err(|source| QuayError::Io { path: tmp.display().to_string(), source })?;
-    std::fs::rename(&tmp, &path)
-        .map_err(|source| QuayError::Io { path: path.display().to_string(), source })?;
+    if let Err(source) = std::fs::rename(&tmp, &path) {
+        // Don't leave the temp file behind if the rename fails.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(QuayError::Io { path: path.display().to_string(), source });
+    }
     Ok(())
 }
 
@@ -149,6 +152,9 @@ mod tests {
         assert!(out.contains("\"sourceType\": \"github\""));
         assert!(out.contains("\"skillPath\":"));
         assert!(out.contains("\"computedHash\":"));
+        // vercel on-disk style: two-space indent + trailing newline.
+        assert!(out.starts_with("{\n  \""), "expected 2-space indent: {out}");
+        assert!(out.ends_with("}\n"), "expected trailing newline");
         let reparsed: SkillsLock = serde_json::from_str(&out).unwrap();
         assert_eq!(reparsed, lock);
     }

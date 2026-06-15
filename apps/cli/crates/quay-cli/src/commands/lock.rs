@@ -6,12 +6,19 @@ use quay_core::push_log::PushLog;
 use quay_core::scanner::{scan_local, LocalSkill};
 use std::path::Path;
 
-/// Build a `SkillsLock` from the skills currently on disk.
+/// Build a `SkillsLock` reconciling the skills on disk with the existing
+/// lockfile.
 ///
-/// Origin is unknown from a plain scan, so entries are recorded as
-/// `SourceType::Local` with the repo-relative `SKILL.md` path. Later tasks
-/// record real github/git provenance when quay performs the install.
+/// Provenance is preserved: for a skill that is already tracked, the prior
+/// `source` / `sourceType` / `skillPath` are kept and only `computedHash` is
+/// refreshed from disk. This is essential for interop — a `github`/`git` entry
+/// written by quay or by the `skills` CLI must survive a plain `quay lock`,
+/// `--heal`, or any add/remove/update regenerate rather than being flattened
+/// to `local`. A skill on disk with no prior entry can't have its origin known
+/// from a scan, so it is recorded as `SourceType::Local`. Entries for skills no
+/// longer on disk are dropped (only on-disk skills are iterated).
 fn build_lock_from_disk(project_root: &Path, skills: &[LocalSkill]) -> SkillsLock {
+    let existing = lock::read(project_root).ok().flatten();
     let mut lock = SkillsLock::empty();
     for s in skills {
         let skill_md = s.canonical_path();
@@ -22,23 +29,30 @@ fn build_lock_from_disk(project_root: &Path, skills: &[LocalSkill]) -> SkillsLoc
             eprintln!("warn: could not hash {}: {e}", folder.display());
             String::new()
         });
-        let rel = skill_md
-            .strip_prefix(project_root)
-            .unwrap_or(skill_md)
-            .to_string_lossy()
-            .replace('\\', "/");
-        lock.skills.insert(
-            s.meta.name.clone(),
-            LockEntry {
-                // source == skill_path here: a plain scan can't know the real
-                // origin, so we default both to the local path. Install-aware
-                // tasks overwrite `source` with the github/git provenance.
-                source: rel.clone(),
-                source_type: SourceType::Local,
-                skill_path: rel,
+        let entry = match existing.as_ref().and_then(|e| e.skills.get(&s.meta.name)) {
+            // Already tracked — keep its provenance, refresh only the hash.
+            Some(prev) => LockEntry {
+                source: prev.source.clone(),
+                source_type: prev.source_type,
+                skill_path: prev.skill_path.clone(),
                 computed_hash: hash,
             },
-        );
+            // New to the lockfile — origin unknown from a scan, default to local.
+            None => {
+                let rel = skill_md
+                    .strip_prefix(project_root)
+                    .unwrap_or(skill_md)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                LockEntry {
+                    source: rel.clone(),
+                    source_type: SourceType::Local,
+                    skill_path: rel,
+                    computed_hash: hash,
+                }
+            }
+        };
+        lock.skills.insert(s.meta.name.clone(), entry);
     }
     lock
 }

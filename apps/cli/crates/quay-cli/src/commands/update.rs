@@ -76,6 +76,10 @@ pub fn run_interactive(
     if !json {
         println!("updated {} of {} selected", ok, ok + fail);
     }
+    // Keep the lockfile current if this project uses one.
+    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
+        let _ = crate::commands::lock::regenerate(project);
+    }
     Ok(())
 }
 

@@ -124,7 +124,7 @@ pub enum Command {
         /// Install locked skills that are missing on disk.
         #[arg(long, conflicts_with_all = ["check", "heal"])]
         sync: bool,
-        /// With --check, also probe whether each source is reachable.
+        /// With --check, also probe whether each source is reachable. [not yet implemented]
         #[arg(long)]
         online: bool,
     },
