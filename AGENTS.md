@@ -155,7 +155,8 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 - Use `pnpm` for any JS/TS code (web app, future tooling)
 - Use `cargo` for Rust CLI
 - Code style: see per-package configs (Cargo `clippy` for Rust, Biome for TS)
-- Commits: user handles git themselves — assistants must NEVER run `git commit` or `git push`
+- Commits: assistants may run `git commit` / `git push` when the user explicitly asks; otherwise leave git to the user
+- Commit messages: do NOT add a `Co-Authored-By` trailer (or any assistant attribution)
 
 ## Agent skills
 

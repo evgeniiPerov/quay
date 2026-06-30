@@ -113,6 +113,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate or verify `skills-lock.json` (vercel-compatible lockfile).
+    Lock {
+        /// Report drift against the lockfile and exit non-zero if any.
+        #[arg(long, conflicts_with_all = ["heal", "sync"])]
+        check: bool,
+        /// Rewrite the lockfile to match what is on disk (idempotent).
+        #[arg(long, conflicts_with_all = ["check", "sync"])]
+        heal: bool,
+        /// Install locked skills that are missing on disk.
+        #[arg(long, conflicts_with_all = ["check", "heal"])]
+        sync: bool,
+        /// With --check, also probe whether each source is reachable. [not yet implemented]
+        #[arg(long, requires = "check", conflicts_with_all = ["heal", "sync"])]
+        online: bool,
+    },
     /// Validate a local skill's frontmatter (offline, no network).
     Validate {
         skill: String,

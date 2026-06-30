@@ -162,6 +162,8 @@ pub fn run_interactive(
             }
         }
     }
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 
@@ -212,6 +214,9 @@ pub fn run(
             remove_from_default_remote(skill, &cfg, json)?;
         }
     }
+
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 
