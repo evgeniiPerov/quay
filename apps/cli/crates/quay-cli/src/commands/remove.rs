@@ -162,10 +162,8 @@ pub fn run_interactive(
             }
         }
     }
-    // Keep the lockfile current if this project uses one.
-    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
-        crate::commands::lock::regenerate(project)?;
-    }
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 
@@ -217,10 +215,8 @@ pub fn run(
         }
     }
 
-    // Keep the lockfile current if this project uses one.
-    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
-        crate::commands::lock::regenerate(project)?;
-    }
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 

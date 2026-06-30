@@ -191,7 +191,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Scan { root, json } => {
             commands::scan::run(&project, root, json || cli.json)?;
         }
-        Command::Lock { check, heal, sync, online } => {
+        Command::Lock {
+            check,
+            heal,
+            sync,
+            online,
+        } => {
             commands::lock::run(&project, check, heal, sync, online)?;
         }
         Command::Validate { skill, strict } => {

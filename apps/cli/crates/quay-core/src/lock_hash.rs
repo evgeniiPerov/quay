@@ -1,9 +1,23 @@
-//! Byte-exact replica of vercel-labs/skills' `computeSkillFolderHash`.
+//! Replica of vercel-labs/skills' `computeSkillFolderHash` (their
+//! `src/local-lock.ts`).
 //!
 //! Collect every file under the skill directory recursively (skipping any
 //! `.git` and `node_modules` subdirectory), sort by forward-slash relative
 //! path, then `sha256( relpath_bytes ++ content_bytes )` for each in order.
-//! The result is a bare lowercase hex digest (no `sha256:` prefix).
+//! The result is a bare lowercase hex digest (no `sha256:` prefix). Verified
+//! byte-identical to vercel for ASCII-lowercase paths (see the test).
+//!
+//! Two deliberate divergences from vercel, each matters only at the edges:
+//! - **Sort collation.** We sort by Rust byte order (`str::cmp`); vercel uses
+//!   JS `localeCompare`. These agree for the lowercase-ASCII paths skills use
+//!   in practice but can differ for mixed-case / non-ASCII names, which would
+//!   change the digest. (JS default `localeCompare` is itself locale-dependent,
+//!   so an exact match isn't well-defined without bundling ICU.)
+//! - **Symlinks.** We skip them (see below); vercel does not special-case them.
+//!   A skill that hashes in symlinked entries will differ.
+//!
+//! Neither tool normalizes line endings, so both share the Windows/Linux CRLF
+//! hash difference (vercel issue #781).
 
 use crate::error::{QuayError, Result};
 use sha2::{Digest, Sha256};
@@ -96,7 +110,9 @@ mod tests {
         dir.child("SKILL.md").write_str("hello\n").unwrap();
         dir.child("sub/extra.txt").write_str("world\n").unwrap();
         dir.child(".git/config").write_str("junk\n").unwrap();
-        dir.child("node_modules/x/index.js").write_str("junk\n").unwrap();
+        dir.child("node_modules/x/index.js")
+            .write_str("junk\n")
+            .unwrap();
         let got = folder_hash(dir.path()).unwrap();
         assert_eq!(
             got,

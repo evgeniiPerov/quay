@@ -44,6 +44,11 @@ pub use github::GithubRawFetcher;
 #[cfg(debug_assertions)]
 pub use github::GithubRawFetcherWithBase;
 pub use linker::{apply_all, apply_one, check, MirrorAction, MirrorDrift};
+pub use lock::{
+    read as read_lock, source_from_url, write_atomic as write_lock, LockEntry, SkillsLock,
+    SourceType,
+};
+pub use lock_hash::folder_hash;
 pub use manager::{sha256_hex, SkillManager};
 pub use manifest::{parse_skill, QuayMeta, SkillManifest};
 pub use outdated::{outdated_for_local, OutdatedEntry};
@@ -55,7 +60,5 @@ pub use provider::{
     Provider, ProviderKind, RepoCoords,
 };
 pub use pusher::{BumpKind, PushResult, SkillPusher};
-pub use lock::{read as read_lock, source_from_url, write_atomic as write_lock, LockEntry, SkillsLock, SourceType};
-pub use lock_hash::folder_hash;
 pub use registry::{Registry, RegistryEntry};
 pub use search::{search, SearchFilters, SearchHit};

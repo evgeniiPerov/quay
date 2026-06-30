@@ -76,10 +76,8 @@ pub fn run_interactive(
     if !json {
         println!("updated {} of {} selected", ok, ok + fail);
     }
-    // Keep the lockfile current if this project uses one.
-    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
-        crate::commands::lock::regenerate(project)?;
-    }
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 
@@ -98,10 +96,8 @@ pub fn run(
     let f = CloneFetcher::new();
     run_with(&cfg, &f, &f, skill, dry_run, project, config_dir, json)?;
 
-    // Keep the lockfile current if this project uses one.
-    if project.join(quay_core::lock::LOCKFILE_NAME).exists() {
-        crate::commands::lock::regenerate(project)?;
-    }
+    // Keep the lockfile current if this project uses one (best-effort).
+    crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 

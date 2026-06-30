@@ -36,6 +36,8 @@ fn build_lock_from_disk(
                 source_type: prev.source_type,
                 skill_path: prev.skill_path.clone(),
                 computed_hash: hash,
+                // Preserve any vercel-only keys (ref/subagents/...) verbatim.
+                extra: prev.extra.clone(),
             },
             // New to the lockfile — origin unknown from a scan, default to local.
             None => {
@@ -47,8 +49,9 @@ fn build_lock_from_disk(
                 LockEntry {
                     source: rel.clone(),
                     source_type: SourceType::Local,
-                    skill_path: rel,
+                    skill_path: Some(rel),
                     computed_hash: hash,
+                    extra: Default::default(),
                 }
             }
         };
@@ -57,9 +60,23 @@ fn build_lock_from_disk(
     Ok(lock)
 }
 
-/// Regenerate `skills-lock.json` from the current on-disk scan. Best-effort
-/// helper that mutating commands (add/remove/update) call after changing the
-/// mirror roots so the lockfile stays current. Returns the number of skills written.
+/// Best-effort lockfile refresh for mutating commands (add/remove/update):
+/// regenerate `skills-lock.json` if the project already uses one, warning on
+/// failure rather than failing the command. The primary operation has already
+/// succeeded and printed its result by the time this runs, so a lockfile hiccup
+/// (e.g. read-only lockfile, transient IO) must not flip the exit code.
+pub fn regenerate_if_present(project_root: &Path) {
+    if !project_root.join(lock::LOCKFILE_NAME).exists() {
+        return;
+    }
+    if let Err(e) = regenerate(project_root) {
+        eprintln!("warning: failed to update {}: {e}", lock::LOCKFILE_NAME);
+    }
+}
+
+/// Regenerate `skills-lock.json` from the current on-disk scan. Returns the
+/// number of skills written. Callers that must not fail on a lockfile error
+/// should use [`regenerate_if_present`] instead.
 pub fn regenerate(project_root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let config_dir = crate::config_io::default_config_dir();
     let push_log = PushLog::load(
@@ -101,11 +118,19 @@ pub fn run(
         }
         let lock = build_lock_from_disk(project_root, &skills)?;
         lock::write_atomic(project_root, &lock)?;
-        println!("healed {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
+        println!(
+            "healed {} ({} skills)",
+            lock::LOCKFILE_NAME,
+            lock.skills.len()
+        );
     } else {
         let lock = build_lock_from_disk(project_root, &skills)?;
         lock::write_atomic(project_root, &lock)?;
-        println!("wrote {} ({} skills)", lock::LOCKFILE_NAME, lock.skills.len());
+        println!(
+            "wrote {} ({} skills)",
+            lock::LOCKFILE_NAME,
+            lock.skills.len()
+        );
     }
     Ok(())
 }
@@ -140,7 +165,10 @@ impl Drift {
 }
 
 /// Classify every skill as in-sync or drifted against the lockfile.
-fn compute_drift(project_root: &Path, skills: &[LocalSkill]) -> Result<Vec<Drift>, Box<dyn std::error::Error>> {
+fn compute_drift(
+    project_root: &Path,
+    skills: &[LocalSkill],
+) -> Result<Vec<Drift>, Box<dyn std::error::Error>> {
     let lock = lock::read(project_root)?.unwrap_or_else(SkillsLock::empty);
     let mut drift = Vec::new();
     let mut on_disk = std::collections::BTreeSet::new();
@@ -149,7 +177,10 @@ fn compute_drift(project_root: &Path, skills: &[LocalSkill]) -> Result<Vec<Drift
         match lock.skills.get(&s.meta.name) {
             None => drift.push(Drift::Untracked(s.meta.name.clone())),
             Some(entry) => {
-                let folder = s.canonical_path().parent().unwrap_or_else(|| s.canonical_path());
+                let folder = s
+                    .canonical_path()
+                    .parent()
+                    .unwrap_or_else(|| s.canonical_path());
                 let hash = folder_hash(folder)?;
                 if hash != entry.computed_hash {
                     drift.push(Drift::Modified(s.meta.name.clone()));
@@ -165,7 +196,11 @@ fn compute_drift(project_root: &Path, skills: &[LocalSkill]) -> Result<Vec<Drift
     Ok(drift)
 }
 
-fn check_impl(project_root: &Path, skills: &[LocalSkill], _online: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn check_impl(
+    project_root: &Path,
+    skills: &[LocalSkill],
+    _online: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let drift = compute_drift(project_root, skills)?;
     if drift.is_empty() {
         println!("{} is in sync", lock::LOCKFILE_NAME);
@@ -174,8 +209,7 @@ fn check_impl(project_root: &Path, skills: &[LocalSkill], _online: bool) -> Resu
     for d in &drift {
         eprintln!("{}", d.line());
     }
-    eprintln!("{} drift finding(s); run `quay lock --heal`", drift.len());
-    std::process::exit(1);
+    Err(format!("{} drift finding(s); run `quay lock --heal`", drift.len()).into())
 }
 
 fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {

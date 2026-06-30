@@ -264,8 +264,7 @@ mod tests {
         let unlocked = outdated_for_skills(&skills, &cfg, &f, &BTreeSet::new()).unwrap();
         assert!(!unlocked[0].locked);
         // Locked when its name is in the set:
-        let locked_names: BTreeSet<String> =
-            [unlocked[0].name.clone()].into_iter().collect();
+        let locked_names: BTreeSet<String> = [unlocked[0].name.clone()].into_iter().collect();
         let locked = outdated_for_skills(&skills, &cfg, &f, &locked_names).unwrap();
         assert!(locked[0].locked);
     }
