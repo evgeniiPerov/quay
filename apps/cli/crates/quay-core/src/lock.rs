@@ -51,9 +51,11 @@ impl SkillsLock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LockEntry {
-    /// `owner/repo` for github, a full clone URL for git, or a path for local.
+    /// `owner/repo` for github, a full clone URL for git, the project-root-
+    /// relative `SKILL.md` path for local; for `well-known`/`node-modules` it is
+    /// vercel's value, preserved verbatim.
     pub source: String,
-    /// Which kind of source [`source`](Self::source) is.
+    /// Which kind of source [`Self::source`] is.
     pub source_type: SourceType,
     /// Path to `SKILL.md` within the source repo. vercel's real lockfiles omit
     /// this for many entries, so it must deserialize when absent and not be
@@ -77,7 +79,8 @@ pub enum SourceType {
     Github,
     /// Any other git host, recorded as a full clone URL.
     Git,
-    /// A hand-authored local skill, recorded as a repo-relative path.
+    /// A skill on disk with no known remote origin — the default for any
+    /// untracked skill; recorded as its project-root-relative `SKILL.md` path.
     Local,
     /// vercel's "well-known" source (not installable by quay).
     WellKnown,

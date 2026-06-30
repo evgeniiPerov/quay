@@ -74,7 +74,7 @@ pub fn regenerate_if_present(project_root: &Path) {
     }
 }
 
-/// Load the push log, warning (not failing) if it exists but can't be read.
+/// Load the push log, warning (not failing) on any load error.
 /// `PushLog::load` already returns an empty log when the file is absent, so a
 /// real `Err` here means corruption or an IO/migration failure worth surfacing.
 fn load_push_log(project_root: &Path) -> PushLog {
