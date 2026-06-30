@@ -18,18 +18,27 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Highest lockfile `version` quay can read; a higher one is rejected so an old
+/// quay never silently mis-parses a newer schema.
 pub const SUPPORTED_VERSION: u32 = 1;
+/// Project-root filename of the lockfile (matches the `skills` CLI).
 pub const LOCKFILE_NAME: &str = "skills-lock.json";
 
+/// The whole `skills-lock.json` document: a schema version plus the per-skill
+/// entries, keyed by skill name.
 // No `Eq`: `LockEntry::extra` holds `serde_json::Value`, which is `PartialEq`
 // but not `Eq` (it can contain floats).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillsLock {
+    /// Lockfile schema version (currently [`SUPPORTED_VERSION`]).
     pub version: u32,
+    /// Locked skills keyed by skill name. `BTreeMap` so keys serialize sorted,
+    /// giving stable, minimal git diffs.
     pub skills: BTreeMap<String, LockEntry>,
 }
 
 impl SkillsLock {
+    /// An empty lockfile stamped with the current supported version.
     pub fn empty() -> Self {
         Self {
             version: SUPPORTED_VERSION,
@@ -38,16 +47,20 @@ impl SkillsLock {
     }
 }
 
+/// One skill's entry: where it came from and a content-hash snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LockEntry {
+    /// `owner/repo` for github, a full clone URL for git, or a path for local.
     pub source: String,
+    /// Which kind of source [`source`](Self::source) is.
     pub source_type: SourceType,
     /// Path to `SKILL.md` within the source repo. vercel's real lockfiles omit
     /// this for many entries, so it must deserialize when absent and not be
     /// written back as an empty value (which would churn an interop file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_path: Option<String>,
+    /// Bare lowercase sha256 of the skill folder (see [`crate::folder_hash`]).
     pub computed_hash: String,
     /// Any other keys vercel writes (e.g. `ref`, `subagents`) that quay does not
     /// model. Captured and re-emitted verbatim so a `quay lock` regenerate never
@@ -56,13 +69,19 @@ pub struct LockEntry {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// The `sourceType` of a [`LockEntry`]; serialized as vercel's kebab-case strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceType {
+    /// A github.com repo, recorded as `owner/repo`.
     Github,
+    /// Any other git host, recorded as a full clone URL.
     Git,
+    /// A hand-authored local skill, recorded as a repo-relative path.
     Local,
+    /// vercel's "well-known" source (not installable by quay).
     WellKnown,
+    /// A skill vendored from `node_modules` (not installable by quay).
     NodeModules,
 }
 

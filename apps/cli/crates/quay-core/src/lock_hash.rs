@@ -23,6 +23,8 @@ use crate::error::{QuayError, Result};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+/// Content hash of a skill folder: the bare lowercase sha256 digest described
+/// in the module docs. Errors if any file under `skill_dir` can't be read.
 pub fn folder_hash(skill_dir: &Path) -> Result<String> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     collect(skill_dir, skill_dir, &mut files)?;
