@@ -74,16 +74,26 @@ pub fn regenerate_if_present(project_root: &Path) {
     }
 }
 
+/// Load the push log, warning (not failing) on any load error.
+/// `PushLog::load` already returns an empty log when the file is absent, so a
+/// real `Err` here means corruption or an IO/migration failure worth surfacing.
+fn load_push_log(project_root: &Path) -> PushLog {
+    let config_dir = crate::config_io::default_config_dir();
+    PushLog::load(
+        config_dir.as_deref().unwrap_or(project_root),
+        Some(project_root),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("warning: could not read push log ({e}); treating as empty");
+        PushLog::default()
+    })
+}
+
 /// Regenerate `skills-lock.json` from the current on-disk scan. Returns the
 /// number of skills written. Callers that must not fail on a lockfile error
 /// should use [`regenerate_if_present`] instead.
 pub fn regenerate(project_root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
-    let config_dir = crate::config_io::default_config_dir();
-    let push_log = PushLog::load(
-        config_dir.as_deref().unwrap_or(project_root),
-        Some(project_root),
-    )
-    .unwrap_or_default();
+    let push_log = load_push_log(project_root);
     let skills = scan_local(project_root, &push_log);
     let lock = build_lock_from_disk(project_root, &skills)?;
     lock::write_atomic(project_root, &lock)?;
@@ -97,12 +107,10 @@ pub fn run(
     sync: bool,
     online: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config_dir = crate::config_io::default_config_dir();
-    let push_log = PushLog::load(
-        config_dir.as_deref().unwrap_or(project_root),
-        Some(project_root),
-    )
-    .unwrap_or_default();
+    if online {
+        eprintln!("note: --online is not yet implemented; performing offline check only");
+    }
+    let push_log = load_push_log(project_root);
     let skills = scan_local(project_root, &push_log);
 
     if check {
@@ -222,12 +230,7 @@ fn sync_impl(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Build the set of skill names that are already present on disk.
-    let config_dir = crate::config_io::default_config_dir();
-    let push_log = PushLog::load(
-        config_dir.as_deref().unwrap_or(project_root),
-        Some(project_root),
-    )
-    .unwrap_or_default();
+    let push_log = load_push_log(project_root);
     let present: std::collections::BTreeSet<String> = scan_local(project_root, &push_log)
         .into_iter()
         .map(|s| s.meta.name)
