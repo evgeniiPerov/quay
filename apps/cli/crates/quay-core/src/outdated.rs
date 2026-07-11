@@ -110,15 +110,22 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 crate::scanner::SkillFormat::SlashCommand | crate::scanner::SkillFormat::Freestyle
             ) {
                 // Hand-written skill: no semver. Compare folder content hashes.
-                let remote_hash = entry.content_hash.clone();
+                let remote_hash = &entry.content_hash;
                 if remote_hash.is_empty() {
                     // Hub registry predates content-hash indexing — cannot
                     // compare. Report but never flag (no false positives).
                     (String::from("unversioned"), false, true)
                 } else {
-                    let local_hash = skill.folder_hash().unwrap_or_default();
-                    let changed = remote_hash != local_hash;
-                    (short_hash(&remote_hash), changed, true)
+                    // Remote hash known — compare against the local folder hash.
+                    // A local read failure is indistinguishable from "changed" if
+                    // we default to empty, so treat it as unknown: never flag.
+                    match skill.folder_hash() {
+                        Ok(local_hash) => {
+                            let changed = *remote_hash != local_hash;
+                            (short_hash(remote_hash), changed, true)
+                        }
+                        Err(_) => (String::from("unversioned"), false, true),
+                    }
                 }
             } else {
                 let up = match (
@@ -304,6 +311,14 @@ mod tests {
     }
 
     fn freestyle_skill_on_disk(dir: &std::path::Path, body: &str) -> LocalSkill {
+        non_frontmatter_skill_on_disk(dir, body, SkillFormat::Freestyle)
+    }
+
+    fn non_frontmatter_skill_on_disk(
+        dir: &std::path::Path,
+        body: &str,
+        format: SkillFormat,
+    ) -> LocalSkill {
         std::fs::write(dir.join("SKILL.md"), body).unwrap();
         LocalSkill {
             meta: SkillMeta {
@@ -311,7 +326,7 @@ mod tests {
                 description: "Parse CSV.".into(),
                 version: "0.0.0".into(),
                 tags: vec![],
-                format: SkillFormat::Freestyle,
+                format,
             },
             locations: vec![LocalLocation {
                 root: crate::config::MirrorRoot::Agents,
@@ -361,6 +376,23 @@ mod tests {
     fn non_frontmatter_upgrade_when_hashes_differ() {
         let tmp = tempfile::TempDir::new().unwrap();
         let skill = freestyle_skill_on_disk(tmp.path(), "# /csv-parse\nbody\n");
+        let cfg = make_config();
+        // Registry carries a different (stale) hash than what's on disk now.
+        let f = FakeRegistry(registry_with_content_hash("csv-parse", &"a".repeat(64)));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].by_content_hash);
+        assert!(rows[0].upgrade_available);
+    }
+
+    #[test]
+    fn non_frontmatter_slashcommand_upgrade_when_hashes_differ() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill = non_frontmatter_skill_on_disk(
+            tmp.path(),
+            "# /csv-parse\nbody\n",
+            SkillFormat::SlashCommand,
+        );
         let cfg = make_config();
         // Registry carries a different (stale) hash than what's on disk now.
         let f = FakeRegistry(registry_with_content_hash("csv-parse", &"a".repeat(64)));
