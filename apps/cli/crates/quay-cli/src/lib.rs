@@ -258,6 +258,9 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Link { action, force } => {
             commands::link::run(action, force, &project, user_config.as_deref(), cli.json)?;
         }
+        Command::Agents { action } => {
+            commands::agents::run(action, &project, cli.json)?;
+        }
         Command::Mcp { action } => match action {
             None => {
                 let opts = quay_mcp::ServeOptions {

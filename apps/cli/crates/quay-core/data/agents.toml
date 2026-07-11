@@ -1,0 +1,432 @@
+[agents."aider-desk"]
+display_name = "AiderDesk"
+project = ".aider-desk/skills"
+global = "~/.aider-desk/skills"
+detect = ["~/.aider-desk"]
+
+[agents."amp"]
+display_name = "Amp"
+project = ".agents/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/agents/skills"
+detect = ["${XDG_CONFIG_HOME:-~/.config}/amp"]
+
+[agents."antigravity"]
+display_name = "Antigravity"
+project = ".agents/skills"
+global = "~/.gemini/antigravity/skills"
+detect = ["~/.gemini/antigravity"]
+
+[agents."antigravity-cli"]
+display_name = "Antigravity CLI"
+project = ".agents/skills"
+global = "~/.gemini/antigravity-cli/skills"
+detect = ["~/.gemini/antigravity-cli"]
+
+[agents."astrbot"]
+display_name = "AstrBot"
+project = "data/skills"
+global = "~/.astrbot/data/skills"
+detect = ["./data/skills","~/.astrbot"]
+
+[agents."autohand-code"]
+display_name = "Autohand Code CLI"
+project = ".autohand/skills"
+global = "${AUTOHAND_HOME:-~/.autohand}/skills"
+detect = ["${AUTOHAND_HOME:-~/.autohand}"]
+
+[agents."augment"]
+display_name = "Augment"
+project = ".augment/skills"
+global = "~/.augment/skills"
+detect = ["~/.augment"]
+
+[agents."bob"]
+display_name = "IBM Bob"
+project = ".bob/skills"
+global = "~/.bob/skills"
+detect = ["~/.bob"]
+
+[agents."claude-code"]
+display_name = "Claude Code"
+project = ".claude/skills"
+global = "${CLAUDE_CONFIG_DIR:-~/.claude}/skills"
+detect = ["${CLAUDE_CONFIG_DIR:-~/.claude}"]
+
+[agents."openclaw"]
+display_name = "OpenClaw"
+project = "skills"
+global_special = "getOpenClawGlobalSkillsDir"
+detect = ["~/.openclaw","~/.clawdbot","~/.moltbot"]
+
+[agents."cline"]
+display_name = "Cline"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["~/.cline"]
+
+[agents."codearts-agent"]
+display_name = "CodeArts Agent"
+project = ".codeartsdoer/skills"
+global = "~/.codeartsdoer/skills"
+detect = ["~/.codeartsdoer"]
+
+[agents."codebuddy"]
+display_name = "CodeBuddy"
+project = ".codebuddy/skills"
+global = "~/.codebuddy/skills"
+detect = ["./.codebuddy","~/.codebuddy"]
+
+[agents."codemaker"]
+display_name = "Codemaker"
+project = ".codemaker/skills"
+global = "~/.codemaker/skills"
+detect = ["~/.codemaker"]
+
+[agents."codestudio"]
+display_name = "Code Studio"
+project = ".codestudio/skills"
+global = "~/.codestudio/skills"
+detect = ["~/.codestudio"]
+
+[agents."codex"]
+display_name = "Codex"
+project = ".agents/skills"
+global = "${CODEX_HOME:-~/.codex}/skills"
+detect = ["${CODEX_HOME:-~/.codex}","/etc/codex"]
+
+[agents."command-code"]
+display_name = "Command Code"
+project = ".commandcode/skills"
+global = "~/.commandcode/skills"
+detect = ["~/.commandcode"]
+
+[agents."continue"]
+display_name = "Continue"
+project = ".continue/skills"
+global = "~/.continue/skills"
+detect = ["./.continue","~/.continue"]
+
+[agents."cortex"]
+display_name = "Cortex Code"
+project = ".cortex/skills"
+global = "~/.snowflake/cortex/skills"
+detect = ["~/.snowflake/cortex"]
+
+[agents."crush"]
+display_name = "Crush"
+project = ".crush/skills"
+global = "~/.config/crush/skills"
+detect = ["~/.config/crush"]
+
+[agents."cursor"]
+display_name = "Cursor"
+project = ".agents/skills"
+global = "~/.cursor/skills"
+detect = ["~/.cursor"]
+
+[agents."deepagents"]
+display_name = "Deep Agents"
+project = ".agents/skills"
+global = "~/.deepagents/agent/skills"
+detect = ["~/.deepagents"]
+
+[agents."devin"]
+display_name = "Devin for Terminal"
+project = ".devin/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/devin/skills"
+detect = ["${XDG_CONFIG_HOME:-~/.config}/devin"]
+
+[agents."dexto"]
+display_name = "Dexto"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["~/.dexto"]
+
+[agents."droid"]
+display_name = "Droid"
+project = ".factory/skills"
+global = "~/.factory/skills"
+detect = ["~/.factory"]
+
+[agents."eve"]
+display_name = "Eve"
+project = "agent/skills"
+
+[agents."firebender"]
+display_name = "Firebender"
+project = ".agents/skills"
+global = "~/.firebender/skills"
+detect = ["~/.firebender"]
+
+[agents."forgecode"]
+display_name = "ForgeCode"
+project = ".forge/skills"
+global = "~/.forge/skills"
+detect = ["~/.forge"]
+
+[agents."gemini-cli"]
+display_name = "Gemini CLI"
+project = ".agents/skills"
+global = "~/.gemini/skills"
+detect = ["~/.gemini"]
+
+[agents."github-copilot"]
+display_name = "GitHub Copilot"
+project = ".agents/skills"
+global = "~/.copilot/skills"
+detect = ["~/.copilot"]
+
+[agents."goose"]
+display_name = "Goose"
+project = ".goose/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/goose/skills"
+detect = ["${XDG_CONFIG_HOME:-~/.config}/goose"]
+
+[agents."hermes-agent"]
+display_name = "Hermes Agent"
+project = ".hermes/skills"
+global = "${HERMES_HOME:-~/.hermes}/skills"
+detect = ["${HERMES_HOME:-~/.hermes}"]
+
+[agents."inference-sh"]
+display_name = "inference.sh"
+project = ".inferencesh/skills"
+global = "~/.inferencesh/skills"
+detect = ["~/.inferencesh"]
+
+[agents."jazz"]
+display_name = "Jazz"
+project = ".jazz/skills"
+global = "~/.jazz/skills"
+detect = ["~/.jazz","./.jazz"]
+
+[agents."junie"]
+display_name = "Junie"
+project = ".junie/skills"
+global = "~/.junie/skills"
+detect = ["~/.junie"]
+
+[agents."iflow-cli"]
+display_name = "iFlow CLI"
+project = ".iflow/skills"
+global = "~/.iflow/skills"
+detect = ["~/.iflow"]
+
+[agents."kilo"]
+display_name = "Kilo Code"
+project = ".kilocode/skills"
+global = "~/.kilocode/skills"
+detect = ["~/.kilocode"]
+
+[agents."kimi-code-cli"]
+display_name = "Kimi Code CLI"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["~/.kimi-code","~/.kimi"]
+
+[agents."kiro-cli"]
+display_name = "Kiro CLI"
+project = ".kiro/skills"
+global = "~/.kiro/skills"
+detect = ["~/.kiro"]
+
+[agents."kode"]
+display_name = "Kode"
+project = ".kode/skills"
+global = "~/.kode/skills"
+detect = ["~/.kode"]
+
+[agents."lingma"]
+display_name = "Lingma"
+project = ".lingma/skills"
+global = "~/.lingma/skills"
+detect = ["~/.lingma"]
+
+[agents."loaf"]
+display_name = "Loaf"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["~/.loaf"]
+
+[agents."mcpjam"]
+display_name = "MCPJam"
+project = ".mcpjam/skills"
+global = "~/.mcpjam/skills"
+detect = ["~/.mcpjam"]
+
+[agents."mistral-vibe"]
+display_name = "Mistral Vibe"
+project = ".vibe/skills"
+global = "${VIBE_HOME:-~/.vibe}/skills"
+detect = ["${VIBE_HOME:-~/.vibe}"]
+
+[agents."moxby"]
+display_name = "Moxby"
+project = ".moxby/skills"
+global = "~/.moxby/skills"
+detect = ["~/.moxby"]
+
+[agents."mux"]
+display_name = "Mux"
+project = ".mux/skills"
+global = "~/.mux/skills"
+detect = ["~/.mux"]
+
+[agents."opencode"]
+display_name = "OpenCode"
+project = ".agents/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/opencode/skills"
+detect = ["${XDG_CONFIG_HOME:-~/.config}/opencode"]
+
+[agents."openhands"]
+display_name = "OpenHands"
+project = ".openhands/skills"
+global = "~/.openhands/skills"
+detect = ["~/.openhands"]
+
+[agents."ona"]
+display_name = "Ona"
+project = ".ona/skills"
+global = "~/.ona/skills"
+detect = ["~/.ona"]
+
+[agents."pi"]
+display_name = "Pi"
+project = ".pi/skills"
+global = "~/.pi/agent/skills"
+detect = ["~/.pi/agent"]
+
+[agents."qoder"]
+display_name = "Qoder"
+project = ".qoder/skills"
+global = "~/.qoder/skills"
+detect = ["~/.qoder"]
+
+[agents."qoder-cn"]
+display_name = "Qoder CN"
+project = ".qoder/skills"
+global = "~/.qoder-cn/skills"
+detect = ["~/.qoder-cn"]
+
+[agents."qwen-code"]
+display_name = "Qwen Code"
+project = ".qwen/skills"
+global = "~/.qwen/skills"
+detect = ["~/.qwen"]
+
+[agents."replit"]
+display_name = "Replit"
+project = ".agents/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/agents/skills"
+detect = ["./.replit"]
+
+[agents."reasonix"]
+display_name = "Reasonix"
+project = ".reasonix/skills"
+global = "~/.reasonix/skills"
+detect = ["~/.reasonix"]
+
+[agents."rovodev"]
+display_name = "Rovo Dev"
+project = ".rovodev/skills"
+global = "~/.rovodev/skills"
+detect = ["~/.rovodev"]
+
+[agents."roo"]
+display_name = "Roo Code"
+project = ".roo/skills"
+global = "~/.roo/skills"
+detect = ["~/.roo"]
+
+[agents."tabnine-cli"]
+display_name = "Tabnine CLI"
+project = ".tabnine/agent/skills"
+global = "~/.tabnine/agent/skills"
+detect = ["~/.tabnine"]
+
+[agents."terramind"]
+display_name = "Terramind"
+project = ".terramind/skills"
+global = "~/.terramind/skills"
+detect = ["~/.terramind"]
+
+[agents."tinycloud"]
+display_name = "Tinycloud"
+project = ".tinycloud/skills"
+global = "~/.tinycloud/skills"
+detect = ["~/.tinycloud"]
+
+[agents."trae"]
+display_name = "Trae"
+project = ".trae/skills"
+global = "~/.trae/skills"
+detect = ["~/.trae"]
+
+[agents."trae-cn"]
+display_name = "Trae CN"
+project = ".trae/skills"
+global = "~/.trae-cn/skills"
+detect = ["~/.trae-cn"]
+
+[agents."warp"]
+display_name = "Warp"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["~/.warp"]
+
+[agents."windsurf"]
+display_name = "Windsurf"
+project = ".windsurf/skills"
+global = "~/.codeium/windsurf/skills"
+detect = ["~/.codeium/windsurf"]
+
+[agents."zed"]
+display_name = "Zed"
+project = ".agents/skills"
+global = "~/.agents/skills"
+detect = ["${XDG_CONFIG_HOME:-~/.config}/zed","${APPDATA}/Zed","${FLATPAK_XDG_CONFIG_HOME}/zed"]
+
+[agents."zcode"]
+display_name = "ZCode"
+project = ".zcode/skills"
+global = "~/.zcode/skills"
+
+[agents."zencoder"]
+display_name = "Zencoder"
+project = ".zencoder/skills"
+global = "~/.zencoder/skills"
+detect = ["~/.zencoder"]
+
+[agents."zenflow"]
+display_name = "Zenflow"
+project = ".zencoder/skills"
+global = "~/.zencoder/skills"
+detect = ["~/.zencoder"]
+
+[agents."neovate"]
+display_name = "Neovate"
+project = ".neovate/skills"
+global = "~/.neovate/skills"
+detect = ["~/.neovate"]
+
+[agents."pochi"]
+display_name = "Pochi"
+project = ".pochi/skills"
+global = "~/.pochi/skills"
+detect = ["~/.pochi"]
+
+[agents."promptscript"]
+display_name = "PromptScript"
+project = ".agents/skills"
+detect = ["./.promptscript","./promptscript.yaml"]
+
+[agents."adal"]
+display_name = "AdaL"
+project = ".adal/skills"
+global = "~/.adal/skills"
+detect = ["~/.adal"]
+
+[agents."universal"]
+display_name = "Universal"
+project = ".agents/skills"
+global = "${XDG_CONFIG_HOME:-~/.config}/agents/skills"
