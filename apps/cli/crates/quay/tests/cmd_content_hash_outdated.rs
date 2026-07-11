@@ -54,9 +54,15 @@ fn outdated_flags_hand_written_skill_by_content_hash() {
     // 1. Build a local bare-repo hub whose registry.json advertises csv-parse
     //    with a stale (all-zeros) content_hash.
     let bare = tmp.path().join("hub.git");
-    git(tmp.path(), &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    git(
+        tmp.path(),
+        &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
     let work = tmp.path().join("hub-work");
-    git(tmp.path(), &["clone", bare.to_str().unwrap(), work.to_str().unwrap()]);
+    git(
+        tmp.path(),
+        &["clone", bare.to_str().unwrap(), work.to_str().unwrap()],
+    );
     std::fs::write(work.join("registry.json"), REGISTRY_STALE_HASH).unwrap();
     git(&work, &["add", "-A"]);
     git(&work, &["commit", "-m", "seed registry"]);

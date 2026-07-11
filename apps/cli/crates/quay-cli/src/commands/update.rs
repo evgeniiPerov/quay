@@ -25,6 +25,7 @@ pub fn run_interactive(
     let f = CloneFetcher::new();
     let candidates: Vec<OutdatedEntry> = outdated_for_local(project, config_dir, &cfg, &f)?
         .into_iter()
+        .filter(|e| e.upgrade_available)
         .collect();
 
     if candidates.is_empty() {
