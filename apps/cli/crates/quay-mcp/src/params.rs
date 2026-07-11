@@ -16,6 +16,10 @@ pub struct SearchParams {
     /// Require this tag (case-insensitive). Optional.
     #[serde(default)]
     pub tag: Option<String>,
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -42,6 +46,10 @@ pub struct SkillRef {
     /// Restrict to one configured remote. Optional.
     #[serde(default)]
     pub remote: Option<String>,
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -121,12 +129,29 @@ pub struct AddParams {
     /// Overwrite if already installed.
     #[serde(default)]
     pub force: bool,
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SkillName {
     /// Skill name.
     pub skill: String,
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional (ignored by purely-local operations).
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// Params for `quay_outdated` — no skill, just an optional profile override.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct OutdatedParams {
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -146,6 +171,10 @@ pub struct PushParams {
     /// Version bump: "patch", "minor", or "major". Optional (defaults to patch).
     #[serde(default)]
     pub bump: Option<String>,
+    /// Use this config profile's remotes for this call instead of the server's
+    /// launch profile. Optional.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

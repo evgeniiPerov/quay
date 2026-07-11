@@ -5,8 +5,8 @@
 use crate::params::*;
 use crate::ServeOptions;
 use crate::ServerCtx;
-use quay_core::push_log::PushLog;
 use quay_core::linker;
+use quay_core::push_log::PushLog;
 use quay_core::scanner::scan_local;
 use quay_core::{outdated_for_local, parse_skill, search, SearchFilters, SkillManager};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -50,7 +50,10 @@ impl QuayServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<Json<SearchResults>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let fetcher = self.ctx.fetcher();
         let filters = SearchFilters {
             query: &p.query,
@@ -79,10 +82,15 @@ impl QuayServer {
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     fn quay_info(&self, Parameters(p): Parameters<SkillRef>) -> Result<Json<SkillInfo>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let fetcher = self.ctx.fetcher();
         let mgr = SkillManager::new(&cfg, &fetcher, &fetcher, self.ctx.project.clone());
-        let entry = mgr.info(&p.skill, p.remote.as_deref()).map_err(to_mcp_err)?;
+        let entry = mgr
+            .info(&p.skill, p.remote.as_deref())
+            .map_err(to_mcp_err)?;
         Ok(Json(SkillInfo {
             name: p.skill,
             version: entry.version,
@@ -118,8 +126,14 @@ impl QuayServer {
         description = "Compare locally installed skills against the hubs; list upgrades.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
-    fn quay_outdated(&self) -> Result<Json<OutdatedReport>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+    fn quay_outdated(
+        &self,
+        Parameters(p): Parameters<OutdatedParams>,
+    ) -> Result<Json<OutdatedReport>, ErrorData> {
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let fetcher = self.ctx.fetcher();
         let rows = outdated_for_local(&self.ctx.project, self.ctx.config_dir(), &cfg, &fetcher)
             .map_err(to_mcp_err)?;
@@ -198,9 +212,12 @@ impl QuayServer {
         description = "Install a skill from a hub into this project's skills directory.",
         annotations(read_only_hint = false, open_world_hint = true)
     )]
-    fn quay_add(&self, Parameters(p): Parameters<AddParams>) -> Result<Json<WriteResult>, ErrorData> {
+    fn quay_add(
+        &self,
+        Parameters(p): Parameters<AddParams>,
+    ) -> Result<Json<WriteResult>, ErrorData> {
         let r = self
-            .add_inner(&p.skill, p.remote.as_deref(), p.force)
+            .add_inner(&p.skill, p.remote.as_deref(), p.force, p.profile.as_deref())
             .map_err(to_mcp_err)?;
         Ok(Json(r))
     }
@@ -215,7 +232,10 @@ impl QuayServer {
         &self,
         Parameters(p): Parameters<SkillName>,
     ) -> Result<Json<WriteResult>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let actions = linker::apply_all(&cfg.install, &self.ctx.project, &p.skill, false)
             .map_err(to_mcp_err)?;
         Ok(Json(WriteResult {
@@ -234,7 +254,10 @@ impl QuayServer {
         &self,
         Parameters(p): Parameters<SkillName>,
     ) -> Result<Json<WriteResult>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let fetcher = self.ctx.fetcher();
         let mgr = SkillManager::new(&cfg, &fetcher, &fetcher, self.ctx.project.clone());
         mgr.update_one(&p.skill).map_err(to_mcp_err)?;
@@ -254,7 +277,10 @@ impl QuayServer {
         &self,
         Parameters(p): Parameters<SkillName>,
     ) -> Result<Json<WriteResult>, ErrorData> {
-        let cfg = self.ctx.load_config().map_err(to_mcp_err)?;
+        let cfg = self
+            .ctx
+            .load_config_with(p.profile.as_deref())
+            .map_err(to_mcp_err)?;
         let fetcher = self.ctx.fetcher();
         let mgr = SkillManager::new(&cfg, &fetcher, &fetcher, self.ctx.project.clone());
         mgr.remove(&p.skill).map_err(to_mcp_err)?;
@@ -286,7 +312,7 @@ impl QuayServer {
             }
         };
         let outcome = self
-            .run_push(&p.skill, p.remote.as_deref(), bump)
+            .run_push(&p.skill, p.remote.as_deref(), bump, p.profile.as_deref())
             .map_err(to_mcp_err)?;
         Ok(Json(outcome))
     }
@@ -318,8 +344,9 @@ impl QuayServer {
         skill: &str,
         remote: Option<&str>,
         force: bool,
+        profile: Option<&str>,
     ) -> anyhow::Result<crate::params::WriteResult> {
-        let cfg = self.ctx.load_config()?;
+        let cfg = self.ctx.load_config_with(profile)?;
         let fetcher = self.ctx.fetcher();
         let mgr = SkillManager::new(&cfg, &fetcher, &fetcher, self.ctx.project.clone());
         mgr.add_with_force(skill, remote, force)?;
@@ -337,7 +364,7 @@ impl QuayServer {
         remote: Option<&str>,
         force: bool,
     ) -> anyhow::Result<crate::params::WriteResult> {
-        self.add_inner(skill, remote, force)
+        self.add_inner(skill, remote, force, None)
     }
 
     /// Core remote-add logic, ported from `quay-cli`'s `commands::remote::run`
@@ -384,16 +411,12 @@ impl QuayServer {
         skill: &str,
         remote: Option<&str>,
         bump: quay_core::BumpKind,
+        profile: Option<&str>,
     ) -> anyhow::Result<crate::params::PushOutcome> {
-        use quay_core::{Config, GitShellClient, QuayError, SkillPusher};
+        use quay_core::{GitShellClient, QuayError, SkillPusher};
 
         let project = &self.ctx.project;
-        let project_config = project.join(".quay/config.toml");
-        let cfg = Config::load_resolved(
-            self.ctx.user_config.as_deref(),
-            Some(&project_config),
-            self.ctx.profile.as_deref(),
-        )?;
+        let cfg = self.ctx.load_config_with(profile)?;
         if cfg.remotes.is_empty() {
             return Err(QuayError::ConfigValidation(
                 "no remotes configured — add a remote with quay_remote first".into(),
@@ -412,9 +435,7 @@ impl QuayServer {
                     .default_remote()
                     .map(|(n, _)| n.clone())
                     .ok_or_else(|| {
-                        QuayError::ConfigValidation(
-                            "no default remote — pass remote=<name>".into(),
-                        )
+                        QuayError::ConfigValidation("no default remote — pass remote=<name>".into())
                     })?,
             };
             let r = cfg
@@ -481,12 +502,7 @@ impl QuayServer {
 
     /// Test-only: run the remote-add logic without the MCP wrapper.
     #[doc(hidden)]
-    pub fn add_remote_for_test(
-        &self,
-        name: &str,
-        url: &str,
-        default: bool,
-    ) -> anyhow::Result<()> {
+    pub fn add_remote_for_test(&self, name: &str, url: &str, default: bool) -> anyhow::Result<()> {
         self.add_remote(name, url, default)
     }
 
@@ -498,7 +514,7 @@ impl QuayServer {
         remote: Option<&str>,
         bump: quay_core::BumpKind,
     ) -> anyhow::Result<crate::params::PushOutcome> {
-        self.run_push(skill, remote, bump)
+        self.run_push(skill, remote, bump, None)
     }
 }
 
