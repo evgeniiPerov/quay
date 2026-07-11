@@ -37,7 +37,6 @@ After success, the PR URL (or commit SHA, for direct mode) is printed. The push 
 ## When to use this vs …
 
 - [`quay rebuild-registry`](rebuild-registry.md) — regenerate a corrupted/missing `registry.json`. Use after manual hub surgery, not as a normal publish step.
-- TUI **Local** screen + `[u]` (single) / `[U]` (bulk selected via `[Space]`) — same flow with a UI.
 - [`quay validate`](validate.md) first — catches frontmatter mistakes offline before incurring a hub clone.
 
 ## Caveats

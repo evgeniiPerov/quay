@@ -1,6 +1,6 @@
 # CLI overview
 
-`quay` is a single binary with sixteen subcommands. Every subcommand respects four global options:
+`quay` is a single binary with fifteen subcommands. Every subcommand respects four global options:
 
 | Flag | Effect |
 |---|---|
@@ -34,10 +34,6 @@
 - [`validate`](validate.md) — check frontmatter offline.
 - [`push`](push.md) — publish a skill to a hub.
 - [`rebuild-registry`](rebuild-registry.md) — regenerate hub `registry.json` from disk.
-
-**Other**
-
-- [`tui`](tui.md) — launch the interactive terminal UI.
 
 ## `quay list`
 
@@ -88,6 +84,5 @@ Commands:
   profile           Manage user profiles (multi-org identities + remote bundles)
   rebuild-registry  Rebuild a hub's `registry.json` from disk truth and push it back
   link              Apply or verify mirrors from `[install].mirrors` config
-  tui               Launch the interactive TUI
   help              Print this message or the help of the given subcommand(s)
 ```

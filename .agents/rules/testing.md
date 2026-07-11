@@ -49,7 +49,7 @@ apps/cli/crates/<crate>/
 | `tempfile = "3"`             | Tempdirs for filesystem tests. Always.                           |
 | `assert_cmd = "2"`           | CLI integration tests in `quay-cli/tests/`.                      |
 | `predicates = "3"`           | Output assertions for `assert_cmd` (`predicate::str::contains`). |
-| `insta = "1"`                | Snapshot tests for TUI output and complex serialized structures. |
+| `insta = "1"`                | Snapshot tests for complex serialized structures. |
 | `proptest = "1"`             | Property tests for parsers and any code consuming untrusted input.|
 | `pretty_assertions = "1"`    | Better diff output. Enable in dev-dependencies, gate with cfg.   |
 
@@ -62,7 +62,6 @@ Add via `[dev-dependencies]`. None of these may leak into runtime dependencies.
 | Pure function in `quay-core`             | unit                 | same file, `mod tests`                       |
 | Multi-module logic in `quay-core`        | integration          | `crates/quay-core/tests/<feature>.rs`        |
 | `quay <subcommand>` end-to-end           | CLI integration      | `crates/quay-cli/tests/cli_<subcommand>.rs`  |
-| TUI screen rendering                     | snapshot             | `crates/quay-tui/tests/<screen>.rs` + `insta`|
 | Resolver / parser invariants             | unit + property      | `mod tests` + `proptest!` block              |
 | Lockfile JSON round-trip                 | unit                 | `mod tests`                                  |
 | Hub git operations                       | integration          | `tests/git_<op>.rs` against tempdir + real git|

@@ -69,7 +69,6 @@ These rules govern every `.rs` file under `apps/cli/`. CI enforces what's mechan
 ## 6. Logging
 
 - Use `tracing` (not `log` directly, not `eprintln!`) for diagnostics in `quay-core` and `quay-cli`.
-- TUI mode disables the default subscriber; hook into the in-memory tracing layer (see `quay-tui::log`).
 - `tracing::info!` for user-facing progress, `tracing::debug!` for development noise, `tracing::error!` only for genuine failures the user needs to act on.
 
 ## 7. Async
@@ -83,7 +82,6 @@ These rules govern every `.rs` file under `apps/cli/`. CI enforces what's mechan
 - `serde` features: `["derive"]` only unless you specifically need others.
 - New dependencies justified in PR description. Reach for `std` first, then a tiny crate (`camino`, `tempfile`), then a heavyweight crate (`tokio`, `reqwest`) only if needed.
 - Workspace `Cargo.toml` owns shared versions; member crates inherit via `workspace = true`.
-- TUI stack is held at the 0.29 set on purpose: `ratatui = "0.29"`, `crossterm = "0.28"`, `tui-textarea = "0.7"`, `ratatui-form = "=0.1.1"`. Do **not** `cargo upgrade --incompatible` these — ratatui 0.30 is a breaking rewrite (Backend gains an associated `Error` type, crate split into `ratatui-core`/`-widgets`/`-crossterm`) and `tui-textarea 0.7` still requires ratatui 0.29, so a bump drags both versions in and the build fails. Migrating to 0.30 is a dedicated TUI task, not a routine dep bump. The `=` exact pin on `ratatui-form` stops it auto-resolving to a 0.30-requiring release — keep it.
 
 ## 9. Module layout
 

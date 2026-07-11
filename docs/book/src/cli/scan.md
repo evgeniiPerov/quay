@@ -37,7 +37,6 @@ quay scan --root ./vendor/skills        # non-default canonical root
 
 - [`quay outdated`](outdated.md) — only reports drift against the hub. `scan` reports authorship + drift in one pass.
 - `quay list` — pre-scan command; shows installed skills only, no local-authored entries.
-- TUI **Dashboard** "Local skills" panel — same data, visual.
 
 ## Caveats
 

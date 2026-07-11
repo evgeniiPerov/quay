@@ -27,7 +27,7 @@ pub struct PushOutcome {
 
 /// Push a local skill to a hub via PR without any output side-effects.
 ///
-/// Returns a [`PushOutcome`] on success so the caller (CLI wrapper or TUI)
+/// Returns a [`PushOutcome`] on success so the caller (CLI wrapper)
 /// can decide how to present the result.
 #[allow(clippy::too_many_arguments)]
 pub fn push_skill(

@@ -40,7 +40,6 @@ quay link remove .cursor/rules         # forget the mirror (files stay)
 
 - [`quay add`](add.md) — already applies your current mirrors. `link` is for *changing* the mirror set or auditing it.
 - [`quay scan`](scan.md) — does not check mirror drift; it checks skill drift. Pair `scan` + `link check` for a full audit.
-- TUI **Settings → Install** (`,` then **Install** tab) — UI for managing the mirror list.
 
 ## Caveats
 

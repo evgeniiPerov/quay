@@ -44,9 +44,8 @@ For every changed Rust file, check:
 - `Iterator` chains over manual indexed loops.
 - `match` exhaustiveness — no `_ => unreachable!()` unless invariant is proven.
 
-### 5. CLI/TUI specifics
+### 5. CLI specifics
 - `clap` derive macros, no manual arg parsing.
-- `ratatui` widgets are owned by their screen module — no cross-module widget state.
 - All filesystem paths use `camino::Utf8PathBuf` if the project uses it; otherwise `std::path::PathBuf` with explicit UTF-8 handling at I/O boundaries.
 
 ### 6. Dependencies

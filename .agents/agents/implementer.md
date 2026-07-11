@@ -38,13 +38,13 @@ You write production code in `apps/cli/`. You follow the rules under `.agents/ru
 
 ```
 apps/cli/crates/
-├── quay-core/   # domain logic — no clap, no ratatui, no I/O beyond what's needed
+├── quay-core/   # domain logic — no clap, no I/O beyond what's needed
 ├── quay-cli/    # clap commands — depends on quay-core
-├── quay-tui/    # ratatui screens — depends on quay-core
+├── quay-mcp/    # MCP server — depends on quay-core
 └── quay/        # binary — wires the above
 ```
 
-Do not let `quay-core` depend on `clap` or `ratatui`. If you need a new dependency in core, justify it.
+Do not let `quay-core` depend on `clap`. If you need a new dependency in core, justify it.
 
 ## Boundaries
 

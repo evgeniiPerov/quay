@@ -29,7 +29,6 @@ quay info hello --json | jq '.description'
 
 - [`quay search`](search.md) — discovery; use `info` once you have a name.
 - [`quay add`](add.md) — when you actually want it installed.
-- TUI **Remote** screen — `info`-equivalent preview pane next to the skill list.
 
 ## Caveats
 

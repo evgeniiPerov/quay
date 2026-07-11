@@ -46,7 +46,6 @@ CLI integration tests for `quay-cli` use [`assert_cmd`](https://docs.rs/assert_c
 | Pure function in `quay-core`         | `#[cfg(test)] mod tests` in same file    | stdlib `assert_eq!`              |
 | Multi-module logic in `quay-core`    | `crates/quay-core/tests/<feature>.rs`    | stdlib                           |
 | `quay add` end-to-end                | `crates/quay-cli/tests/cli.rs`           | `assert_cmd`, `tempfile`         |
-| TUI screen rendering                 | `crates/quay-tui/tests/<screen>.rs`      | `insta` snapshots of `Buffer`    |
 | Resolver / parser invariants         | unit tests + `proptest` for fuzz inputs  | `proptest`                       |
 | Lockfile JSON round-trip             | unit test                                | `serde_json::to_string_pretty`   |
 
@@ -55,7 +54,7 @@ CLI integration tests for `quay-cli` use [`assert_cmd`](https://docs.rs/assert_c
 - **Real filesystem, never mocked.** Use `tempfile::TempDir` for hubs. The article reference for Plan 2 (`https://blog.dailydoseofds.com/p/anatomy-of-the-claude-folder`) is the spec we're validating against — tests should exercise the real `.agents/skills/` layout.
 - **Real git, when needed.** Spawn `git init`, `git add`, `git commit` in tempdirs rather than mocking the git transport.
 - **No network in tests.** If a test needs a hub, vendor a fixture into `crates/<crate>/tests/fixtures/`.
-- **Snapshot tests via `insta`** — never hand-write expected TUI output.
+- **Snapshot tests via `insta`** — never hand-write expected serialized output.
 - **Property tests via `proptest`** for any code that parses untrusted input (skill manifests, lockfiles, hub URLs).
 
 ## Boundaries

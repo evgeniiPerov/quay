@@ -32,7 +32,6 @@ quay outdated --json | jq '.[].name'
 
 - [`quay update`](update.md) `--dry-run` — same detection, but `update` can also apply the fix. Use `outdated` when you want a non-interactive read-only report (CI, status dashboards).
 - [`quay scan`](scan.md) — broader local audit; reports all four statuses (`local`, `installed`, `installed-modified`, `pushed-local`).
-- TUI **Dashboard** "Outdated" panel — same data, visual.
 
 ## Caveats
 

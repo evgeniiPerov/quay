@@ -33,7 +33,6 @@ quay update -i                       # explicit picker
 
 - [`quay outdated`](outdated.md) — list-only sibling; identical detection logic without writing anything.
 - [`quay add`](add.md) `<skill> --force` — overwrites local drift even when versions match.
-- TUI **Local** screen — outdated skills show with a colour badge; `[u]` pushes your local, no in-place update key (use CLI).
 
 ## Caveats
 

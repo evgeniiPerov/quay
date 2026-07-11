@@ -18,7 +18,7 @@ Any git repository you control. quay reads and writes `skills/<name>/SKILL.md` p
 
 ## Profile
 
-A named bundle of defaults in `~/.config/quay/config.toml`: the default hub URL, branch, `push_mode`, mirror dirs (`.claude/skills/`, `.cursor/rules/`, …), and a `provider` hint. Switch with `quay profile use -i` or `[p]` in the TUI.
+A named bundle of defaults in `~/.config/quay/config.toml`: the default hub URL, branch, `push_mode`, mirror dirs (`.claude/skills/`, `.cursor/rules/`, …), and a `provider` hint. Switch with `quay profile use -i`.
 
 ## Remote
 
@@ -56,7 +56,3 @@ Override per-call: `quay push --push-mode direct`.
 ## Default-interactive
 
 Most CLI commands detect a TTY and prompt for missing arguments. Pipe them into `xargs` / scripts and they switch to non-interactive: `quay push hello < /dev/null` errors instead of prompting. The `[i]` indicator in `--help` output marks flags that have wizard equivalents.
-
-## `[Space]` selection
-
-In the TUI's Local screen, `[Space]` toggles a per-row selection mark. Bulk operations (`[U]` push selected, `[D]` delete selected) run against the marked set. `[u]` / `[d]` (lowercase) act on the cursor row only.

@@ -1,6 +1,6 @@
 //! Shared read/write helpers for the user and project config files. Used by
-//! both the CLI subcommands (`profile`, `link`, `remote`) and the TUI Settings
-//! screen so writes always go through the same atomic-rename code path.
+//! the CLI subcommands (`profile`, `link`, `remote`) so writes always go
+//! through the same atomic-rename code path.
 
 use quay_core::{ProjectConfigFile, QuayError, UserConfigFile};
 use std::path::{Path, PathBuf};

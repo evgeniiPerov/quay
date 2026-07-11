@@ -39,7 +39,6 @@ quay remote remove personal
 ## When to use this vs …
 
 - [`quay profile add`](profile.md) `… --remote` — seeds remotes during profile creation. Use `remote add` afterwards.
-- TUI **Settings → Remotes** — same flow with a UI, including a provider picker dropdown.
 - [`quay rebuild-registry`](rebuild-registry.md) `<name>` — recovery flow when a hub's `registry.json` is broken.
 
 ## `remote test`

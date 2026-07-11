@@ -1,12 +1,12 @@
 # Quay
 
-Cross-platform CLI + TUI for sharing AI agent skills (SKILL.md) across organizations and personal hubs. Like `npm` for skills, with git-native transport.
+Cross-platform CLI for sharing AI agent skills (SKILL.md) across organizations and personal hubs. Like `npm` for skills, with git-native transport.
 
 ## What It Does
 
 - Pull individual skills from GitHub-hosted hubs into a local `.agents/skills/` folder
 - Push new skills back to a hub via PR
-- Browse / search / install skills via interactive TUI
+- Browse / search / install skills from the CLI
 - Multi-hub support (configure N remote hubs per project)
 - Tool-agnostic skills: same SKILL.md works for Claude Code, Codex, Cursor, Copilot, Kimi, etc.
 
@@ -32,12 +32,12 @@ quay/
 │       ├── specs/             # design docs (YYYY-MM-DD-<topic>-design.md)
 │       └── plans/             # implementation plans (YYYY-MM-DD-plan-N-*.md)
 ├── apps/
-│   ├── cli/                   # Rust CLI + TUI binary (Cargo workspace)
+│   ├── cli/                   # Rust CLI binary (Cargo workspace)
 │   │   ├── Cargo.toml
 │   │   └── crates/
 │   │       ├── quay-core/     # domain logic (config, resolver, manager)
 │   │       ├── quay-cli/      # clap commands
-│   │       ├── quay-tui/      # ratatui screens
+│   │       ├── quay-mcp/      # MCP server (`quay mcp`)
 │   │       └── quay/          # binary, wires above
 │   └── web/                   # Next.js + shadcn site (later phase)
 │       └── (TBD after CLI MVP)
@@ -101,16 +101,7 @@ Plans 1–7a + 6.85 + 7b + 8 + 9 + 10 + 10c + 10d + 10e + **10f** are **implemen
   - `push` accepts skills in any of the three formats. Frontmatter skills with `--bump` are re-emitted with the new version; SlashCommand / Freestyle skills are written to the hub byte-identically. Bumping a non-Frontmatter skill is rejected with a clear error.
   - `push` honors per-remote `push_mode` (Plan 9): `pr` (default — opens PR via `gh`/`glab`/`az`) or `direct` (commits and `git push` to the hub's default branch with no provider-CLI dependency). `--push-mode` overrides per invocation. Direct mode works on any git host. Branch-protection failures surface a clear hint pointing to `push_mode = pr`.
 - `link`, `link check/add/remove` — multi-tool mirrors
-- `tui` — interactive Dashboard / Browse / Search / Installed / Settings (Profiles / Remotes / Install tabs) + Create/Push (Screen 5, hybrid TUI form + `$EDITOR`) + first-run onboarding gate + profile switcher modal
-  - Settings → Remotes `t` keybind probes connection live; add/edit modal has provider picker
-  - Create/Push Done panel `[o]` opens PR URL in system browser (xdg-open / open / cmd /c start)
-  - Bracketed paste enabled (Plan 6.85): Ctrl+V / Shift+Insert / middle-click pastes into any focused text input across Onboarding, Settings (Profiles/Remotes/Install) modals, and Create/Push form. CR/LF stripped from paste.
-  - Forms migrated to `ratatui-form` 0.1.1 (Plan 6.85): Onboarding (Step 1 + Step 2), Settings → Profiles modal, Settings → Remotes modal (provider picker is a Select), and Create/Push frontmatter form share a unified dark `FormStyle` with built-in Tab/Shift+Tab navigation, `Required`/`Pattern` validation, and per-field error reporting on submit.
-  - Dashboard "Local skills" panel (Plan 8): scans `.agents/skills/` on screen entry, lists every discovered skill with a status badge (`◌ local`, `◉ installed vX`, `⚠ modified vX`, `↑ pushed-local`). Keybinds: `[r]` rescan, `[j]/[k]` navigate, `[u]` push selected.
-  - Onboarding gate fixed (Plan 8): now driven by `profiles.is_empty()` alone — users who skipped onboarding once (writing `meta.onboarded = true` with no profiles) get onboarding back on next launch instead of being stuck on a barren Dashboard.
-  - Settings → Remotes modal exposes `Push mode` Select (Plan 9) alongside the provider picker. Create/Push Done panel shows `Direct push to <branch> at <sha>` when no PR was opened. Dashboard's Local skills badge differentiates `↑ pushed-direct` from `↑ pushed-local` based on whether a PR URL was recorded.
-  - `quay remote add ... --push-mode <pr|direct>` (Plan 9) sets the mode at remote-creation time without TOML editing.
-  - Global keybindings (`g`-chord, single-letter screen jumps, `q`, `p`) bypass the focused screen when a text input is focused (Onboarding form, Create/Push form, Settings add/edit modal). Prevents `evgenii` and similar identifiers from being mangled by the chord prefix. Esc still cancels forms as before.
+- `mcp` — MCP server over stdio (registry ops as agent tools for MCP clients)
 
 All commands honor `--profile`, `--remote`, and `--json`.
 
@@ -131,7 +122,7 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 **Releases:** <https://github.com/evgeniiPerov/quay/releases> — six target triples (macOS x64+arm64, Linux x64+arm64+musl, Windows x64) + shell + PowerShell + Homebrew installers.
 
 ### Breaking changes (Plan 7a)
-- `QUAY_PROVIDER` environment variable is no longer honored. Set `provider = "<kind>"` in the remote's TOML entry, or run `quay remote edit <name> --provider <kind>` (TUI: Settings → Remotes → `e`). Valid kinds: `github`, `githubenterprise`, `gitlab`, `bitbucket`, `azuredevops`.
+- `QUAY_PROVIDER` environment variable is no longer honored. Set `provider = "<kind>"` in the remote's TOML entry, or run `quay remote edit <name> --provider <kind>`. Valid kinds: `github`, `githubenterprise`, `gitlab`, `bitbucket`, `azuredevops`.
 
 ## Decisions Locked
 
@@ -139,7 +130,6 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 |------|--------|
 | Name | `quay` (binary, repo, crate) |
 | Language | Rust |
-| TUI lib | `ratatui` |
 | CLI lib | `clap` (derive) |
 | Distribution | GitHub Releases + Homebrew tap (via `cargo-dist`) |
 | Hub model | Generic — any GitHub repo can be a hub. N hubs supported per project. |
@@ -147,7 +137,6 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 | Auth | Whatever the user's git config provides (SSH keys, credential helper, gh CLI) |
 | Skill format | `SKILL.md` with YAML frontmatter (`name`, `description`, `version`, `tags`, `author`) |
 | Versioning | Per-skill semver in frontmatter; git history is the source of truth (no lockfile as of v0.2.0) |
-| MVP scope | Full TUI as primary UX (~6 weeks) |
 | Web | Phase 2, separate package, Next.js + shadcn |
 
 ## Working in This Repo

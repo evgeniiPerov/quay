@@ -2,9 +2,6 @@
 //!
 //! Chains `dialoguer::Input`, `Select`, and `Confirm` prompts to walk the user
 //! through profile creation: name → email → remote(s) loop → activation.
-//!
-//! This module is CLI-only; the TUI Onboarding screen has its own ratatui-form
-//! flow but shares the [`ProfileDraft`] data model and persistence path.
 
 use crate::commands::interactive::is_tty;
 use quay_core::{detect_kind_from_url, ProfileDraft, ProviderKind, PushMode, RemoteDraft};

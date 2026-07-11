@@ -3,7 +3,6 @@
 pub mod args;
 pub mod commands;
 pub mod config_io;
-pub mod tui;
 pub mod url_opener;
 
 use args::{Cli, Command};
@@ -258,14 +257,6 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Link { action, force } => {
             commands::link::run(action, force, &project, user_config.as_deref(), cli.json)?;
-        }
-        Command::Tui { check_config_only } => {
-            commands::tui::run(
-                &project,
-                user_config.as_deref(),
-                cli.profile.as_deref(),
-                check_config_only,
-            )?;
         }
         Command::Mcp { action } => match action {
             None => {

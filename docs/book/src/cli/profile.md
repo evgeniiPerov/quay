@@ -49,7 +49,6 @@ Common globals apply (`--project`, `--user-config`, `--profile`, `--json`). The 
 
 - [`quay remote add`](remote.md) — adds a remote to the *currently active* profile. `profile add` creates the profile + can seed remotes in one go.
 - `QUAY_PROFILE` env var — one-shot override at invocation time. `profile use` makes the switch persistent.
-- TUI **Settings → Profiles** (`,` then **Profiles** tab) — same flow with a UI.
 
 ## Caveats
 

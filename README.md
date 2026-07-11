@@ -67,7 +67,6 @@ Supported hub providers: **GitHub.com**, **GitHub Enterprise**, **GitLab** (clou
 | Plan | Scope | State |
 |---|---|---|
 | 1–5 | foundation, read-only CLI, search, create/validate/push, profiles, mirroring | ✅ |
-| 6 / 6.5 / 6.75 / 6.85 | TUI MVP, settings, create/push, paste-friendly `ratatui-form` | ✅ |
 | 7a | provider abstraction (GitHub / GHE / GitLab / Bitbucket / Azure DevOps) + live `remote test` | ✅ |
 | 7b | packaged releases (cargo-dist, GitHub Releases, Homebrew tap, PowerShell installer) | ✅ |
 | 8 | scan-first flow, format-tolerant push, mixed-format skills | ✅ |
@@ -150,25 +149,10 @@ quay update               # pull latest version of installed skills
 # No `quay sync` — skills tracked by git history; commit your changes normally
 ```
 
-### TUI
+### Bulk select
 
-```sh
-quay tui                  # full-screen browse / search / install / push
-```
-
-Onboarding wizard runs on first launch when no profile is configured.
-
-#### Bulk select
-
-Press `[Space]` in Local (screen `[2]`) or Remote (screen `[3]`) to toggle selection on a row.
-With one or more rows selected:
-
-- `[u]` / `[U]` — push every selected skill (Patch bump in `[u]`; shared form in `[U]`)
-- `[a]` / `[A]` — pull every selected skill (block on collisions / force overwrite)
-- `[d]` / `[D]` — delete every selected skill (locally / everywhere)
-- `[Esc]` — clears the selection
-
-The same workflow is available from the CLI:
+Bare invocations of `push`, `add`, `update`, `remove` in a terminal open a
+checkbox multi-select picker:
 
 ```sh
 quay push -i      # checkbox list of local skills
@@ -197,12 +181,8 @@ asks once how to handle the conflict:
 Choosing **Prompt per skill** shows a per-collision mini-prompt with
 **Update** / **Skip** choices for each skill.
 
-The same flow appears in the TUI Remote screen when you press `[a]` over
-a selection that includes already-installed skills — a three-way modal
-(Up/Down + Enter) replaces the old "skip blocked, pull rest" behaviour.
-
 `quay add foo` (single-skill) still errors on collision; pass `--force`
-to overwrite. TUI `[A]` force-pull (whole selection) is unchanged.
+to overwrite.
 
 ### Interactive defaults
 
@@ -256,7 +236,7 @@ Cross-client by design — any MCP client that speaks stdio can drive it.
 apps/cli/                  Rust workspace
 ├── crates/quay-core/      domain logic (config, registry, fetcher, manager,
 │                          scanner, providers/{github,gitlab,bitbucket,azure})
-├── crates/quay-cli/       clap subcommands + ratatui TUI
+├── crates/quay-cli/       clap subcommands
 ├── crates/quay-mcp/       MCP server (`quay mcp`) — registry ops as agent tools
 └── crates/quay/           binary
 .github/workflows/         release.yml — cargo-dist matrix + Homebrew publish

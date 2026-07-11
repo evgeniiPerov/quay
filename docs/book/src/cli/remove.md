@@ -29,7 +29,6 @@ quay remove -i                      # interactive picker
 ## When to use this vs …
 
 - [`quay update`](update.md) — to refresh, not uninstall.
-- TUI **Local** screen + `[d]` (single) / `[D]` (bulk selected) — same flow with a UI.
 - [`quay link`](link.md) `remove <path>` — remove a *mirror directory* from the project config, not a skill.
 
 ## Caveats

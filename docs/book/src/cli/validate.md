@@ -37,7 +37,6 @@ quay validate hello --json
 
 - Run **before** [`quay push`](push.md) — catches mistakes without paying the hub-clone cost.
 - [`quay scan`](scan.md) — gives status per skill but does not deep-validate frontmatter.
-- TUI **Create/Push** — runs `validate` inline before staging the push.
 
 ## Caveats
 

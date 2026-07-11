@@ -25,7 +25,7 @@ Single-context repo:
 │   └── superpowers/
 │       ├── specs/            ← design docs
 │       └── plans/            ← implementation plans
-└── apps/cli/                 ← Rust workspace (quay-core / quay-cli / quay-tui / quay)
+└── apps/cli/                 ← Rust workspace (quay-core / quay-cli / quay-mcp / quay)
 ```
 
 ## Use the glossary's vocabulary

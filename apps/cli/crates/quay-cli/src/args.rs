@@ -186,13 +186,6 @@ pub enum Command {
         #[arg(long, global = true)]
         force: bool,
     },
-    /// Launch the interactive TUI.
-    Tui {
-        /// Probe the config and exit without launching the TUI.
-        /// Exit code 0: onboarding not needed. Exit code 2: onboarding needed.
-        #[arg(long, hide = true)]
-        check_config_only: bool,
-    },
     /// Run the MCP server (for AI agents / MCP clients). Speaks MCP over stdio.
     #[command(hide = true)]
     Mcp {

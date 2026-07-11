@@ -36,15 +36,7 @@ Confirm it took:
 quay profile show
 ```
 
-## 3. Launch the TUI
-
-```sh
-quay tui
-```
-
-The Dashboard lists your remotes, recent pushes, and outdated installed skills. Press `[1]/[2]/[3]` to switch screens, `[,]` for Settings, `[q]` to quit.
-
-## 4. Author a skill
+## 3. Author a skill
 
 From any project directory:
 
@@ -67,7 +59,7 @@ version: 0.1.0
 Print "hi" when the agent starts.
 ```
 
-## 5. Push
+## 4. Push
 
 ```sh
 quay push hello
@@ -75,9 +67,7 @@ quay push hello
 
 quay clones your hub into a temp dir, drops the skill into `skills/hello/SKILL.md`, updates the hub's `registry.json`, commits, and (depending on `push_mode`) opens a PR or pushes the commit directly. The URL is printed on success.
 
-From the TUI: open **Local** (`[2]`), select `hello`, press `[u]`.
-
-## 6. Install in a different project
+## 5. Install in a different project
 
 In a freshly-cloned repo on another machine:
 

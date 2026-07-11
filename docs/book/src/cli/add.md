@@ -35,7 +35,6 @@ Inside a TTY, omitting `SKILL` and not passing `-i` triggers the picker automati
 
 - [`quay update`](update.md) — refresh an *already installed* skill to the latest hub version. `add` errors with "already installed" unless `--force`.
 - [`quay info`](info.md) — preview metadata without writing files.
-- TUI **Remote** screen + `[a]` — same flow with a UI.
 
 ## Caveats
 

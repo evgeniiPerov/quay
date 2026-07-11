@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Cross-platform CLI + TUI for sharing AI agent skills (SKILL.md format) between people and orgs via any git host."
+description = "Cross-platform CLI for sharing AI agent skills (SKILL.md format) between people and orgs via any git host."
 homepage = "https://github.com/evgeniiPerov/quay"
 
 [[bin]]

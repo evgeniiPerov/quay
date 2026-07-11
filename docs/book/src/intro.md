@@ -1,6 +1,6 @@
 # Introduction
 
-**quay** is a CLI and TUI for sharing **skills** — small Markdown + YAML packages that teach AI coding agents project conventions, internal APIs, and team workflows — across many repos and many machines without a hosted registry.
+**quay** is a CLI for sharing **skills** — small Markdown + YAML packages that teach AI coding agents project conventions, internal APIs, and team workflows — across many repos and many machines without a hosted registry.
 
 Skills live as plain files in your repo at `.agents/skills/<name>/SKILL.md`. quay synchronises them with a **hub**: any git repository you control (GitHub, GitLab, Azure DevOps, Bitbucket). Push a skill to the hub; teammates `quay add <name>` it from a different project on a different machine. Mirror directories (`.claude/skills/`, `.cursor/rules/`, etc.) stay in sync automatically.
 
@@ -22,4 +22,4 @@ Skills live as plain files in your repo at `.agents/skills/<name>/SKILL.md`. qua
 - [Getting started](getting-started.md) — install, first profile, first push, first install. ~5 minutes.
 - [Concepts](concepts.md) — the small vocabulary you need before reading the rest of the book.
 - [Tutorials](tutorials/first-skill.md) — narrative walkthroughs.
-- [CLI reference](cli/overview.md) and [TUI reference](tui/overview.md) — per-command, per-screen detail.
+- [CLI reference](cli/overview.md) — per-command detail.

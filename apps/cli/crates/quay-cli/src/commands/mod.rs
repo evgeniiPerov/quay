@@ -13,7 +13,6 @@ pub mod remote;
 pub mod remove;
 pub mod scan;
 pub mod search;
-pub mod tui;
 pub mod update;
 pub mod validate;
 

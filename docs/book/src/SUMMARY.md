@@ -34,17 +34,6 @@
 - [`remote`](cli/remote.md)
 - [`link`](cli/link.md)
 - [`rebuild-registry`](cli/rebuild-registry.md)
-- [`tui`](cli/tui.md)
-
-# TUI reference
-
-- [Overview](tui/overview.md)
-- [Dashboard](tui/dashboard.md)
-- [Local](tui/local.md)
-- [Remote](tui/remote.md)
-- [Search](tui/search.md)
-- [Settings](tui/settings.md)
-- [Onboarding](tui/onboarding.md)
 
 # Recipes
 

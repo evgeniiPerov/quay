@@ -31,7 +31,6 @@ quay search --json deploy | jq '.[].name'
 
 - [`quay info`](info.md) — when you already know the name, get full metadata.
 - [`quay scan`](scan.md) — local-side equivalent; lists *your* skills, not the hubs'.
-- TUI **Search** (`[s]`) — same plus richer token grammar (`#tag`, `status:`, `mirror:`, `remote:`). The CLI keeps things flat; the TUI parses tokens.
 
 ## Caveats
 
