@@ -260,7 +260,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         // 7.5. Update registry.json so consumers (`quay search`, Browse,
         // `quay add`) can find this skill. Best-effort: a malformed existing
         // registry.json is replaced with a fresh one.
-        let content_hash = crate::lock_hash::folder_hash(&hub_skill_dir)?;
+        let content_hash = crate::skill_files::pushable_content_hash(&hub_skill_dir)?;
         update_hub_registry(
             &hub_clone,
             &remote_name,

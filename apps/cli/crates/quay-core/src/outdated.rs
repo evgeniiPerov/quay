@@ -6,7 +6,7 @@
 //! skills compare `registry.json` `version` (semver) against the local
 //! parsed version; hand-written skills (`SlashCommand` and `Freestyle`) have
 //! no semver, so they compare the hub entry's `content_hash` against the
-//! local folder content hash (`LocalSkill::folder_hash`). A missing
+//! local content hash (`LocalSkill::content_hash`). A missing
 //! `content_hash` on a hub entry means the hub registry predates
 //! content-hash indexing — it is reported as unknown and never flagged as an
 //! upgrade (no false positives). The `sha` field remains an informational,
@@ -116,10 +116,10 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                     // compare. Report but never flag (no false positives).
                     (String::from("unversioned"), false, true)
                 } else {
-                    // Remote hash known — compare against the local folder hash.
+                    // Remote hash known — compare against the local content hash.
                     // A local read failure is indistinguishable from "changed" if
                     // we default to empty, so treat it as unknown: never flag.
-                    match skill.folder_hash() {
+                    match skill.content_hash() {
                         Ok(local_hash) => {
                             let changed = *remote_hash != local_hash;
                             (short_hash(remote_hash), changed, true)
@@ -363,7 +363,7 @@ mod tests {
     fn non_frontmatter_up_to_date_when_hashes_match() {
         let tmp = tempfile::TempDir::new().unwrap();
         let skill = freestyle_skill_on_disk(tmp.path(), "# /csv-parse\nbody\n");
-        let hash = skill.folder_hash().unwrap();
+        let hash = skill.content_hash().unwrap();
         let cfg = make_config();
         let f = FakeRegistry(registry_with_content_hash("csv-parse", &hash));
         let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();

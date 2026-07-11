@@ -7,7 +7,34 @@
 //! push copy step and the registry `files` list can never disagree.
 
 use crate::error::{QuayError, Result};
+use sha2::{Digest, Sha256};
 use std::path::Path;
+
+/// Content hash over exactly the files quay pushes — the [`collect_skill_files`]
+/// set (dotfiles, dotdirs and symlinks excluded). A hub copy and a local
+/// install of the same skill therefore produce the SAME digest, which
+/// `outdated` relies on to tell "changed" from "unchanged" for hand-written
+/// skills.
+///
+/// This is deliberately DISTINCT from [`crate::lock_hash::folder_hash`], which
+/// hashes the whole folder (including dotfiles) for `skills-lock.json` drift.
+/// Do not conflate them: `folder_hash` answers "did anything on disk change?";
+/// this answers "does the local install match what the hub published?" — and
+/// only the pushed file set can ever be on the hub.
+pub fn pushable_content_hash(skill_dir: &Path) -> Result<String> {
+    let rels = collect_skill_files(skill_dir)?;
+    let mut hasher = Sha256::new();
+    for rel in &rels {
+        let full = skill_dir.join(rel);
+        let content = std::fs::read(&full).map_err(|source| QuayError::Io {
+            path: full.display().to_string(),
+            source,
+        })?;
+        hasher.update(rel.as_bytes());
+        hasher.update(&content);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
 
 /// Walk `skill_dir` depth-first and return the relative paths (POSIX `/`
 /// separators) of every regular file to include in the package.
@@ -144,5 +171,30 @@ mod tests {
     fn unreadable_dir_errors() {
         let missing = TempDir::new().unwrap().path().join("does-not-exist");
         assert!(collect_skill_files(&missing).is_err());
+    }
+
+    #[test]
+    fn pushable_hash_ignores_dotfiles_but_tracks_pushed_files() {
+        // Baseline: SKILL.md + one sibling.
+        let a = TempDir::new().unwrap();
+        touch(a.path(), "SKILL.md");
+        touch(a.path(), "scripts/run.sh");
+        let base = pushable_content_hash(a.path()).unwrap();
+
+        // Adding a dotfile must NOT change the hash (dotfiles are never pushed,
+        // so the hub copy can't contain them — this is the C1 round-trip fix).
+        let b = TempDir::new().unwrap();
+        touch(b.path(), "SKILL.md");
+        touch(b.path(), "scripts/run.sh");
+        touch(b.path(), ".DS_Store");
+        touch(b.path(), ".github/workflows/ci.yml");
+        assert_eq!(pushable_content_hash(b.path()).unwrap(), base);
+
+        // Editing a genuinely-pushed sibling MUST change the hash.
+        let c = TempDir::new().unwrap();
+        touch(c.path(), "SKILL.md");
+        touch(c.path(), "scripts/run.sh"); // creates dir + "x"
+        std::fs::write(c.path().join("scripts/run.sh"), "different").unwrap();
+        assert_ne!(pushable_content_hash(c.path()).unwrap(), base);
     }
 }

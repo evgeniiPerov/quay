@@ -196,15 +196,18 @@ impl LocalSkill {
         self.locations[1..].iter().any(|l| &l.sha256 != first)
     }
 
-    /// Content hash of this skill's canonical folder (SKILL.md + all siblings),
-    /// via the same algorithm the lockfile uses. This is the identity signal
-    /// for hand-written skills that have no semver.
-    pub fn folder_hash(&self) -> crate::error::Result<String> {
+    /// Content hash of this skill over exactly the files quay pushes (SKILL.md +
+    /// pushable siblings; dotfiles excluded). This is the identity signal for
+    /// hand-written skills that have no semver — it matches the `content_hash`
+    /// the registry writers record, so a byte-identical hub copy and this local
+    /// install hash equal. Distinct from the lockfile's `folder_hash` (which
+    /// includes dotfiles); see [`crate::skill_files::pushable_content_hash`].
+    pub fn content_hash(&self) -> crate::error::Result<String> {
         let dir = self
             .canonical_path()
             .parent()
             .expect("SKILL.md path always has a parent dir");
-        crate::lock_hash::folder_hash(dir)
+        crate::skill_files::pushable_content_hash(dir)
     }
 }
 
@@ -594,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn local_skill_folder_hash_matches_lock_hash() {
+    fn local_skill_content_hash_matches_pushable_hash() {
         let dir = assert_fs::TempDir::new().unwrap();
         dir.child("SKILL.md").write_str("# /x\nbody\n").unwrap();
         let skill = LocalSkill {
@@ -612,7 +615,7 @@ mod tests {
             }],
             status: ScanStatus::Local,
         };
-        let expected = crate::lock_hash::folder_hash(dir.path()).unwrap();
-        assert_eq!(skill.folder_hash().unwrap(), expected);
+        let expected = crate::skill_files::pushable_content_hash(dir.path()).unwrap();
+        assert_eq!(skill.content_hash().unwrap(), expected);
     }
 }

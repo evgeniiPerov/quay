@@ -57,7 +57,7 @@ pub fn build_from_hub_clone(hub_clone: &Path, hub_name: &str) -> Result<Registry
         let sha = hex::encode(hasher.finalize());
 
         let files = crate::skill_files::collect_skill_files(&dir)?;
-        let content_hash = crate::lock_hash::folder_hash(&dir)?;
+        let content_hash = crate::skill_files::pushable_content_hash(&dir)?;
 
         registry.skills.insert(
             name.clone(),
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn build_sets_content_hash_to_folder_hash() {
+    fn build_sets_content_hash_to_pushable_hash() {
         let tmp = TempDir::new().unwrap();
         let hub = tmp.path();
         fs::create_dir_all(hub.join("skills/foo")).unwrap();
@@ -121,7 +121,7 @@ mod tests {
         let reg = build_from_hub_clone(hub, "h").unwrap();
         let entry = reg.entry("foo").expect("foo indexed");
 
-        let expected = crate::lock_hash::folder_hash(&hub.join("skills/foo")).unwrap();
+        let expected = crate::skill_files::pushable_content_hash(&hub.join("skills/foo")).unwrap();
         assert_eq!(entry.content_hash, expected);
         assert!(!entry.content_hash.is_empty());
     }
