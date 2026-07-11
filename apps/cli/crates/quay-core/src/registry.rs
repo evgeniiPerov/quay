@@ -30,6 +30,13 @@ pub struct RegistryEntry {
     /// New in Plan 8. Defaults to `Frontmatter` when reading old registry.json.
     #[serde(default = "default_entry_source_format")]
     pub source_format: SkillFormat,
+    /// New in the content-hash feature. Content hash of the skill's pushable
+    /// file set (`skill_files::pushable_content_hash`) — dotfiles, dotdirs and
+    /// symlinks excluded, so it matches `LocalSkill::content_hash` for a
+    /// byte-identical install. Empty only when read from a registry.json that
+    /// predates this field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_hash: String,
 }
 
 fn default_entry_source_format() -> SkillFormat {
@@ -146,6 +153,14 @@ mod tests {
             entry.source_format,
             crate::scanner::SkillFormat::Frontmatter
         );
+    }
+
+    #[test]
+    fn parses_entry_without_content_hash_as_empty() {
+        // Old registry.json (pre-feature) has no content_hash key.
+        let reg = Registry::parse(SAMPLE).unwrap();
+        let entry = reg.entry("csv-parse").expect("csv-parse present");
+        assert_eq!(entry.content_hash, "");
     }
 
     #[test]

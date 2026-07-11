@@ -129,6 +129,7 @@ mod tests {
             sha: "0".into(),
             files: vec!["SKILL.md".into()],
             source_format: crate::scanner::SkillFormat::Frontmatter,
+            content_hash: String::new(),
         }
     }
 

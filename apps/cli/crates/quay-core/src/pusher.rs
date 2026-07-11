@@ -125,36 +125,39 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             BumpKind::AsWritten => {}
             BumpKind::Patch | BumpKind::Minor | BumpKind::Major => {
                 if !matches!(meta.format, SkillFormat::Frontmatter) {
-                    return Err(QuayError::ConfigValidation(format!(
-                        "cannot apply --bump to a {} skill — version bumps require YAML frontmatter; \
-                         leave bump as-written or convert the skill to canonical format first",
-                        match meta.format {
-                            SkillFormat::SlashCommand => "slash-command",
-                            SkillFormat::Freestyle => "freestyle",
-                            SkillFormat::Frontmatter => unreachable!(),
+                    // Hand-written skills have no semver to bump — they are
+                    // versioned by content hash. Note it and push as-written.
+                    let kind = match meta.format {
+                        SkillFormat::SlashCommand => "slash-command",
+                        SkillFormat::Freestyle => "freestyle",
+                        SkillFormat::Frontmatter => unreachable!(),
+                    };
+                    eprintln!(
+                        "\u{2139} {skill_name} is a {kind} skill — versioned by content hash, \
+                         not semver. --bump ignored; pushed as-written."
+                    );
+                } else {
+                    let mut v = Version::parse(&manifest.version).map_err(|e| {
+                        QuayError::InvalidFrontmatter {
+                            path: local_md_path.display().to_string(),
+                            reason: format!("version is not valid semver: {}", e),
                         }
-                    )));
+                    })?;
+                    match bump {
+                        BumpKind::Patch => v.patch += 1,
+                        BumpKind::Minor => {
+                            v.minor += 1;
+                            v.patch = 0;
+                        }
+                        BumpKind::Major => {
+                            v.major += 1;
+                            v.minor = 0;
+                            v.patch = 0;
+                        }
+                        BumpKind::AsWritten => unreachable!(),
+                    }
+                    manifest.version = v.to_string();
                 }
-                let mut v = Version::parse(&manifest.version).map_err(|e| {
-                    QuayError::InvalidFrontmatter {
-                        path: local_md_path.display().to_string(),
-                        reason: format!("version is not valid semver: {}", e),
-                    }
-                })?;
-                match bump {
-                    BumpKind::Patch => v.patch += 1,
-                    BumpKind::Minor => {
-                        v.minor += 1;
-                        v.patch = 0;
-                    }
-                    BumpKind::Major => {
-                        v.major += 1;
-                        v.minor = 0;
-                        v.patch = 0;
-                    }
-                    BumpKind::AsWritten => unreachable!(),
-                }
-                manifest.version = v.to_string();
             }
         }
 
@@ -257,6 +260,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         // 7.5. Update registry.json so consumers (`quay search`, Browse,
         // `quay add`) can find this skill. Best-effort: a malformed existing
         // registry.json is replaced with a fresh one.
+        let content_hash = crate::skill_files::pushable_content_hash(&hub_skill_dir)?;
         update_hub_registry(
             &hub_clone,
             &remote_name,
@@ -264,6 +268,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             &manifest,
             &skill_md_sha,
             &skill_files,
+            &content_hash,
         )?;
 
         // 8 & 9. Mode-aware branch + commit + push (+ optional PR).
@@ -463,6 +468,7 @@ fn update_hub_registry(
     manifest: &SkillManifest,
     skill_md_sha: &str,
     files: &[String],
+    content_hash: &str,
 ) -> Result<()> {
     use crate::registry::{Registry, RegistryEntry};
     use std::collections::BTreeMap;
@@ -493,6 +499,7 @@ fn update_hub_registry(
         sha: skill_md_sha.to_string(),
         files: files.to_vec(),
         source_format: manifest.source_format,
+        content_hash: content_hash.to_string(),
     };
     registry.skills.insert(skill_name.to_string(), entry);
     registry.generated_at = chrono::Utc::now().to_rfc3339();
@@ -1021,6 +1028,56 @@ mod tests {
     }
 
     #[test]
+    fn push_records_content_hash_matching_local_source() {
+        // True round-trip: the content_hash recorded in registry.json must equal
+        // pushable_content_hash of the ORIGINAL local source dir, for a
+        // multi-file hand-written skill — including when the local dir has a
+        // dotfile (which is never pushed and must not affect the hash). Guards
+        // the hub-copy-vs-source divergence that would make the skill
+        // permanently "outdated".
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        let dir = project.path().join(".agents/skills/rt");
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "# /rt\n\nround trip\n").unwrap(); // SlashCommand
+        std::fs::write(dir.join("scripts/run.sh"), "echo hi\n").unwrap();
+        std::fs::write(dir.join(".DS_Store"), "junk").unwrap(); // never pushed
+
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+        pusher
+            .push(
+                "rt",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let text = std::fs::read_to_string(clone_root.path().join("hub-rt/registry.json")).unwrap();
+        let reg = crate::registry::Registry::parse(&text).unwrap();
+        let recorded = &reg.entry("rt").unwrap().content_hash;
+
+        let local = crate::skill_files::pushable_content_hash(&dir).unwrap();
+        assert_eq!(
+            recorded, &local,
+            "hub content_hash must equal local pushable hash"
+        );
+        assert!(!recorded.is_empty());
+    }
+
+    #[test]
     fn push_works_on_skill_without_frontmatter() {
         let project = assert_fs::TempDir::new().unwrap();
         let config_dir = tempfile::TempDir::new().unwrap();
@@ -1070,14 +1127,11 @@ mod tests {
     }
 
     #[test]
-    fn push_errors_on_bump_for_non_frontmatter_skill() {
+    fn push_ignores_bump_for_non_frontmatter_skill() {
         let project = assert_fs::TempDir::new().unwrap();
         let clone_root = assert_fs::TempDir::new().unwrap();
-        make_local_skill(
-            project.path(),
-            "slash-skill",
-            "# /slash-skill\n\nDoes something.\n",
-        );
+        let slash_body = "# /slash-skill\n\nDoes something.\n";
+        make_local_skill(project.path(), "slash-skill", slash_body);
         let cfg = make_config();
         let git = FakeGit::new();
         let opener = FakeOpener;
@@ -1089,17 +1143,25 @@ mod tests {
             config_dir: None,
             author: None,
         };
-        let err = pusher
-            .push(
-                "slash-skill",
-                None,
-                BumpKind::Patch,
-                clone_root.path(),
-                None,
-                None,
-            )
-            .unwrap_err();
-        assert!(matches!(err, QuayError::ConfigValidation(_)));
+        let outcome = pusher.push(
+            "slash-skill",
+            None,
+            BumpKind::Patch,
+            clone_root.path(),
+            None,
+            None,
+        );
+        assert!(
+            outcome.is_ok(),
+            "bump on freestyle must not error: {outcome:?}"
+        );
+
+        // The on-hub SKILL.md is byte-identical to the source (no YAML re-emit).
+        let hub_skill_md = clone_root
+            .path()
+            .join("hub-slash-skill/skills/slash-skill/SKILL.md");
+        let written = std::fs::read_to_string(&hub_skill_md).unwrap();
+        assert_eq!(written, slash_body);
     }
 
     #[test]

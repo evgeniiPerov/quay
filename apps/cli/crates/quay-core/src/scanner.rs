@@ -30,6 +30,18 @@ pub struct SkillMeta {
     pub format: SkillFormat,
 }
 
+impl SkillMeta {
+    /// Version string for display. Hand-written (non-frontmatter) skills have
+    /// no semver — their identity is the folder content hash — so show
+    /// "unversioned" instead of the meaningless `0.0.0` scanner default.
+    pub fn version_display(&self) -> &str {
+        match self.format {
+            SkillFormat::Frontmatter => &self.version,
+            SkillFormat::SlashCommand | SkillFormat::Freestyle => "unversioned",
+        }
+    }
+}
+
 /// Parse what metadata can be derived from a raw skill file.
 ///
 /// `path` is used for the directory-name fallback and never read from disk here.
@@ -182,6 +194,20 @@ impl LocalSkill {
         }
         let first = &self.locations[0].sha256;
         self.locations[1..].iter().any(|l| &l.sha256 != first)
+    }
+
+    /// Content hash of this skill over exactly the files quay pushes (SKILL.md +
+    /// pushable siblings; dotfiles excluded). This is the identity signal for
+    /// hand-written skills that have no semver — it matches the `content_hash`
+    /// the registry writers record, so a byte-identical hub copy and this local
+    /// install hash equal. Distinct from the lockfile's `folder_hash` (which
+    /// includes dotfiles); see [`crate::skill_files::pushable_content_hash`].
+    pub fn content_hash(&self) -> crate::error::Result<String> {
+        let dir = self
+            .canonical_path()
+            .parent()
+            .expect("SKILL.md path always has a parent dir");
+        crate::skill_files::pushable_content_hash(dir)
     }
 }
 
@@ -549,5 +575,47 @@ mod tests {
         let log = crate::push_log::PushLog::default();
         let skills = scan_local_skills(std::slice::from_ref(&root), &log);
         assert_eq!(skills[0].status, ScanStatus::Local);
+    }
+
+    use assert_fs::prelude::*;
+
+    #[test]
+    fn version_display_hides_zero_for_non_frontmatter() {
+        let mut m = SkillMeta {
+            name: "x".into(),
+            description: "d".into(),
+            version: "0.0.0".into(),
+            tags: vec![],
+            format: SkillFormat::Freestyle,
+        };
+        assert_eq!(m.version_display(), "unversioned");
+        m.format = SkillFormat::SlashCommand;
+        assert_eq!(m.version_display(), "unversioned");
+        m.format = SkillFormat::Frontmatter;
+        m.version = "1.2.3".into();
+        assert_eq!(m.version_display(), "1.2.3");
+    }
+
+    #[test]
+    fn local_skill_content_hash_matches_pushable_hash() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        dir.child("SKILL.md").write_str("# /x\nbody\n").unwrap();
+        let skill = LocalSkill {
+            meta: SkillMeta {
+                name: "x".into(),
+                description: "d".into(),
+                version: "0.0.0".into(),
+                tags: vec![],
+                format: SkillFormat::Freestyle,
+            },
+            locations: vec![LocalLocation {
+                root: crate::config::MirrorRoot::Agents,
+                path: dir.child("SKILL.md").path().to_path_buf(),
+                sha256: "irrelevant".into(),
+            }],
+            status: ScanStatus::Local,
+        };
+        let expected = crate::skill_files::pushable_content_hash(dir.path()).unwrap();
+        assert_eq!(skill.content_hash().unwrap(), expected);
     }
 }
