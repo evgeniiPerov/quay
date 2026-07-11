@@ -20,7 +20,7 @@ pub fn run(project: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>>
                 serde_json::json!({
                     "name": s.meta.name,
                     "description": s.meta.description,
-                    "version": s.meta.version,
+                    "version": s.meta.version_display(),
                     "tags": s.meta.tags,
                     "mirrors": s.locations.iter().map(|l| l.root.label()).collect::<Vec<_>>(),
                     "canonical_path": s.canonical_path().display().to_string(),
@@ -36,7 +36,7 @@ pub fn run(project: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>>
             println!(
                 "{:<32} {:<10}  mirrors: {}",
                 s.meta.name,
-                s.meta.version,
+                s.meta.version_display(),
                 mirrors.join(",")
             );
         }

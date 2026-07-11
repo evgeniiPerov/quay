@@ -89,7 +89,7 @@ fn skills_for_json(skills: &[LocalSkill]) -> serde_json::Value {
             serde_json::json!({
                 "name": s.meta.name,
                 "description": s.meta.description,
-                "version": s.meta.version,
+                "version": s.meta.version_display(),
                 "tags": s.meta.tags,
                 "format": s.meta.format,
                 "path": s.canonical_path().display().to_string(),

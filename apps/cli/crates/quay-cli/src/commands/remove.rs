@@ -100,7 +100,14 @@ pub fn run_interactive(
             let picks = crate::commands::interactive::pick_many(
                 "Select skills to remove locally (Space to toggle, Enter to confirm)",
                 &skills,
-                |s| format!("{} v{} ({:?})", s.meta.name, s.meta.version, s.status),
+                |s| {
+                    format!(
+                        "{} {} ({:?})",
+                        s.meta.name,
+                        s.meta.version_display(),
+                        s.status
+                    )
+                },
             )?;
             if picks.is_empty() {
                 println!("(nothing selected)");
