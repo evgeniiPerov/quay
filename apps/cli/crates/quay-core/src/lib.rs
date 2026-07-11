@@ -1,6 +1,7 @@
 //! Quay domain logic.
 
 pub mod add_plan;
+pub mod agents;
 pub mod clone_fetcher;
 pub mod config;
 pub mod error;
@@ -26,6 +27,10 @@ pub mod search;
 pub mod skill_files;
 pub mod validate;
 
+pub use agents::{
+    detect_installed, install_config, registry as agent_registry, Agent,
+    Registry as AgentRegistry, Scope as AgentScope,
+};
 pub use add_plan::{
     build_plan, build_plan_with_prompt, collision_names, CollisionStrategy, SkillAction,
 };

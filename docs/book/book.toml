@@ -4,11 +4,15 @@ authors  = ["Evgenii Perov"]
 language = "en"
 src      = "src"
 
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 default-theme    = "rust"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/evgeniiPerov/quay"
 edit-url-template  = "https://github.com/evgeniiPerov/quay/edit/main/docs/book/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.search]
 enable = true

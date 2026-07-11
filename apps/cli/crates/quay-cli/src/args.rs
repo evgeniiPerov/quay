@@ -186,11 +186,34 @@ pub enum Command {
         #[arg(long, global = true)]
         force: bool,
     },
+    /// Mirror skills into coding-agent directories from the built-in agent registry.
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+    },
     /// Run the MCP server (for AI agents / MCP clients). Speaks MCP over stdio.
     #[command(hide = true)]
     Mcp {
         #[command(subcommand)]
         action: Option<McpAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentsAction {
+    /// List known agents from the registry; marks the ones detected on this machine.
+    List,
+    /// Mirror installed skills into the given agents' skill directories.
+    Link {
+        /// Agent id(s), e.g. `claude-code`. Omit to target every detected agent.
+        #[arg(short = 'a', long = "agent")]
+        agents: Vec<String>,
+        /// Install to the user (global) directory instead of the project.
+        #[arg(short = 'g', long)]
+        global: bool,
+        /// Overwrite existing entries that conflict with quay's expected layout.
+        #[arg(long)]
+        force: bool,
     },
 }
 

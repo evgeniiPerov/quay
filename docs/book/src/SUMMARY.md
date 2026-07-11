@@ -33,6 +33,7 @@
 - [`profile`](cli/profile.md)
 - [`remote`](cli/remote.md)
 - [`link`](cli/link.md)
+- [`agents`](cli/agents.md)
 - [`rebuild-registry`](cli/rebuild-registry.md)
 
 # Recipes

@@ -1,0 +1,37 @@
+name: sync-agents
+# Track vercel-labs/skills: regenerate the agent registry, open a PR on drift.
+# Node runs only here — never at quay runtime.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate agents.toml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/sync-agents/sync.sh
+      - name: Verify it still compiles + parses
+        working-directory: apps/cli
+        run: cargo test -p quay-core agents::
+      - name: Open PR on drift
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/sync-agents
+          title: "chore(agents): sync registry from vercel-labs/skills"
+          commit-message: "chore(agents): sync agents.toml from upstream"
+          body: |
+            Automated agent-registry sync from `vercel-labs/skills` `src/agents.ts`.
+            Review the `agents.toml` diff before merging.
+          add-paths: apps/cli/crates/quay-core/data/agents.toml
