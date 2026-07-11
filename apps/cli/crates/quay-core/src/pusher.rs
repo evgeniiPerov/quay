@@ -1028,6 +1028,56 @@ mod tests {
     }
 
     #[test]
+    fn push_records_content_hash_matching_local_source() {
+        // True round-trip: the content_hash recorded in registry.json must equal
+        // pushable_content_hash of the ORIGINAL local source dir, for a
+        // multi-file hand-written skill — including when the local dir has a
+        // dotfile (which is never pushed and must not affect the hash). Guards
+        // the hub-copy-vs-source divergence that would make the skill
+        // permanently "outdated".
+        let project = assert_fs::TempDir::new().unwrap();
+        let clone_root = assert_fs::TempDir::new().unwrap();
+        let dir = project.path().join(".agents/skills/rt");
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "# /rt\n\nround trip\n").unwrap(); // SlashCommand
+        std::fs::write(dir.join("scripts/run.sh"), "echo hi\n").unwrap();
+        std::fs::write(dir.join(".DS_Store"), "junk").unwrap(); // never pushed
+
+        let cfg = make_config();
+        let git = FakeGit::new();
+        let opener = FakeOpener;
+        let pusher = SkillPusher {
+            config: &cfg,
+            git: &git,
+            opener: &opener,
+            project_root: project.path().to_path_buf(),
+            config_dir: None,
+            author: None,
+        };
+        pusher
+            .push(
+                "rt",
+                None,
+                BumpKind::AsWritten,
+                clone_root.path(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let text = std::fs::read_to_string(clone_root.path().join("hub-rt/registry.json")).unwrap();
+        let reg = crate::registry::Registry::parse(&text).unwrap();
+        let recorded = &reg.entry("rt").unwrap().content_hash;
+
+        let local = crate::skill_files::pushable_content_hash(&dir).unwrap();
+        assert_eq!(
+            recorded, &local,
+            "hub content_hash must equal local pushable hash"
+        );
+        assert!(!recorded.is_empty());
+    }
+
+    #[test]
     fn push_works_on_skill_without_frontmatter() {
         let project = assert_fs::TempDir::new().unwrap();
         let config_dir = tempfile::TempDir::new().unwrap();

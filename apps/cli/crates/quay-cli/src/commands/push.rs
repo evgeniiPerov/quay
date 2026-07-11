@@ -160,10 +160,7 @@ pub fn run_interactive(
     let picks = crate::commands::interactive::pick_many(
         "Select skills to push (Space to toggle, Enter to confirm)",
         &skills,
-        |s| {
-            let version = &s.meta.version;
-            format!("{} v{}", s.meta.name, version)
-        },
+        |s| format!("{} {}", s.meta.name, s.meta.version_display()),
     )?;
 
     if picks.is_empty() {

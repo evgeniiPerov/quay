@@ -8,10 +8,13 @@
 //! no semver, so they compare the hub entry's `content_hash` against the
 //! local content hash (`LocalSkill::content_hash`). A missing
 //! `content_hash` on a hub entry means the hub registry predates
-//! content-hash indexing — it is reported as unknown and never flagged as an
-//! upgrade (no false positives). The `sha` field remains an informational,
-//! git-object-SHA column. The lockfile contributes a `locked` flag per row
-//! and offline content-hash drift detection via `quay lock --check`.
+//! content-hash indexing — it is displayed as `unversioned` and never flagged
+//! as an upgrade (no false positives). The same `unversioned`, never-flag
+//! fallback applies when the local content hash cannot be computed (e.g. an
+//! unreadable file); that case additionally logs a warning to stderr. The
+//! `sha` field remains an informational, git-object-SHA column. The lockfile
+//! contributes a `locked` flag per row and offline content-hash drift
+//! detection via `quay lock --check`.
 
 use crate::config::Config;
 use crate::error::Result;
@@ -28,18 +31,23 @@ use std::path::Path;
 pub struct OutdatedEntry {
     pub name: String,
     pub remote: String,
-    /// Version found in `registry.json`.
+    /// Display value for the "available" column: the remote semver for
+    /// frontmatter skills, or a short content-hash / `"unversioned"` for
+    /// hand-written skills (see `by_content_hash`).
     pub available: String,
     /// SHA-256 of the local canonical `SKILL.md`.
     pub local_sha: String,
     /// SHA from `registry.json` (`entry.sha`).
     pub remote_sha: String,
-    /// True when `available` is a higher semver than the locally parsed version.
+    /// True when an upgrade is available: for frontmatter skills, `available`
+    /// is a higher semver than the local version; for hand-written skills
+    /// (`by_content_hash == true`), the hub's content hash differs from the
+    /// local content hash.
     pub upgrade_available: bool,
     /// True when this skill is recorded in `skills-lock.json`.
     pub locked: bool,
-    /// True when this row was compared by folder content hash (hand-written
-    /// skill) rather than semver.
+    /// True when this row was compared by content hash (hand-written skill)
+    /// rather than semver.
     #[serde(default)]
     pub by_content_hash: bool,
 }
@@ -109,7 +117,7 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 skill.meta.format,
                 crate::scanner::SkillFormat::SlashCommand | crate::scanner::SkillFormat::Freestyle
             ) {
-                // Hand-written skill: no semver. Compare folder content hashes.
+                // Hand-written skill: no semver. Compare content hashes.
                 let remote_hash = &entry.content_hash;
                 if remote_hash.is_empty() {
                     // Hub registry predates content-hash indexing — cannot
@@ -118,13 +126,20 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 } else {
                     // Remote hash known — compare against the local content hash.
                     // A local read failure is indistinguishable from "changed" if
-                    // we default to empty, so treat it as unknown: never flag.
+                    // we default to empty, so treat it as unknown: never flag —
+                    // but warn, so a corrupt/unreadable install isn't silent.
                     match skill.content_hash() {
                         Ok(local_hash) => {
                             let changed = *remote_hash != local_hash;
                             (short_hash(remote_hash), changed, true)
                         }
-                        Err(_) => (String::from("unversioned"), false, true),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: could not hash {}: {e}; skipping content-hash comparison",
+                                skill.meta.name
+                            );
+                            (String::from("unversioned"), false, true)
+                        }
                     }
                 }
             } else {
@@ -167,7 +182,8 @@ pub fn outdated<R: RegistryFetcher>(
     outdated_for_local(project_root, None, config, fetcher)
 }
 
-/// First 12 hex chars of a content hash, for display. Empty in → empty out.
+/// First 12 hex chars of a content hash, for display. Only called with a
+/// non-empty hash — the caller special-cases the empty/unknown case.
 fn short_hash(h: &str) -> String {
     h.chars().take(12).collect()
 }
@@ -411,5 +427,34 @@ mod tests {
         let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].upgrade_available); // unknown → never a false positive
+    }
+
+    #[test]
+    fn non_frontmatter_no_flag_when_local_hash_unreadable() {
+        // Registry has a real (non-empty) content_hash, but the local skill
+        // folder cannot be read (path points at a nonexistent dir), so
+        // content_hash() errors. Must never flag (fail-safe), not report a
+        // false "changed".
+        let skill = LocalSkill {
+            meta: SkillMeta {
+                name: "csv-parse".into(),
+                description: "Parse CSV.".into(),
+                version: "0.0.0".into(),
+                tags: vec![],
+                format: SkillFormat::Freestyle,
+            },
+            locations: vec![LocalLocation {
+                root: crate::config::MirrorRoot::Agents,
+                path: std::path::PathBuf::from("/nonexistent-quay-test-dir/csv-parse/SKILL.md"),
+                sha256: "irrelevant".into(),
+            }],
+            status: ScanStatus::Local,
+        };
+        let cfg = make_config();
+        let f = FakeRegistry(registry_with_content_hash("csv-parse", &"a".repeat(64)));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].by_content_hash);
+        assert!(!rows[0].upgrade_available); // read error → never flag
     }
 }

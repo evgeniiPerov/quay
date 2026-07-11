@@ -30,7 +30,12 @@ pub fn pushable_content_hash(skill_dir: &Path) -> Result<String> {
             path: full.display().to_string(),
             source,
         })?;
+        // Length-prefix each field so distinct (path, content) splits can never
+        // hash the same (e.g. "a"+"bc" vs "ab"+"c"). Order is deterministic
+        // (collect_skill_files sorts, SKILL.md first).
+        hasher.update((rel.len() as u64).to_le_bytes());
         hasher.update(rel.as_bytes());
+        hasher.update((content.len() as u64).to_le_bytes());
         hasher.update(&content);
     }
     Ok(hex::encode(hasher.finalize()))
