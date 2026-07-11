@@ -92,23 +92,28 @@ fn quay_remove_errors_when_skill_not_found() {
     );
 }
 
-/// `quay remove --everywhere` flag is accepted (exits non-zero for local-only skill
-/// with no remotes configured, because there's nothing to delete remotely, but local
-/// removal still succeeds and the flag itself is not rejected as unknown).
+/// `quay remove --everywhere` is a recognized flag (not rejected as unknown).
+/// It removes the local copy first, then — with no default remote configured —
+/// errors non-zero on the missing hub.
 #[test]
-fn quay_remove_everywhere_flag_is_accepted() {
+fn quay_remove_everywhere_removes_local_then_errors_without_remote() {
     let project = TempDir::new().unwrap();
     project
         .child(".agents/skills/my-tool/SKILL.md")
         .write_str("---\nname: my-tool\ndescription: d\nversion: 0.1.0\n---\n")
         .unwrap();
 
-    // With no remotes configured, --everywhere should still succeed locally.
+    // Isolate the host's ~/.config/quay so its remotes don't bleed a default in.
+    let user_cfg = project.path().join("user.toml");
+    std::fs::write(&user_cfg, "").unwrap();
     let output = Command::cargo_bin("quay")
         .unwrap()
+        .env("XDG_CONFIG_HOME", project.path())
         .args([
             "--project",
             project.path().to_str().unwrap(),
+            "--user-config",
+            user_cfg.to_str().unwrap(),
             "remove",
             "--everywhere",
             "my-tool",
@@ -116,14 +121,19 @@ fn quay_remove_everywhere_flag_is_accepted() {
         .output()
         .unwrap();
 
-    // Local part should succeed.
+    // Flag is accepted (error is about the missing remote, not an unknown arg).
     assert!(
-        output.status.success(),
-        "expected success; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "expected non-zero exit with no default remote"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no default remote"),
+        "expected 'no default remote' error, got: {stderr}"
+    );
+    // Local removal ran before the remote step failed.
     assert!(
         !project.path().join(".agents/skills/my-tool").exists(),
-        "skill should be gone after remove --everywhere"
+        "local skill should be removed even though the remote step errored"
     );
 }
