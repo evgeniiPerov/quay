@@ -5,16 +5,29 @@
 //!
 //! `quay add --force <skill>` overwrites the existing local copy.
 //!
-//! These tests use the QUAY_GITHUB_BASE_URL debug seam to serve a mock hub,
-//! so they are gated behind `cfg(debug_assertions)`.
-
-#![cfg(debug_assertions)]
+//! Uses a real local bare-repo hub (quay fetches registries via `git
+//! clone`, so a filesystem bare repo is the deterministic, offline way to
+//! exercise this end-to-end) rather than mocking HTTP.
 
 use assert_cmd::Command;
-use assert_fs::prelude::*;
-use assert_fs::TempDir;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use std::path::Path;
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "T")
+        .env("GIT_AUTHOR_EMAIL", "t@e")
+        .env("GIT_COMMITTER_NAME", "T")
+        .env("GIT_COMMITTER_EMAIL", "t@e")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
 
 const REGISTRY: &str = r#"{
     "hub": "fixture",
@@ -34,69 +47,81 @@ const REGISTRY: &str = r#"{
 
 const SKILL_MD: &str = "---\nname: csv-parse\ndescription: Parse CSV.\nversion: 1.0.0\n---\nbody\n";
 
-/// Build a TOML config string with a single GitHub-style remote pointing to `base_url`.
-///
-/// Using a `github.com` URL format so the GithubRawFetcher can redirect through
-/// QUAY_GITHUB_BASE_URL in debug builds.
-fn project_config_with_remote(hub_name: &str, owner: &str, repo: &str) -> String {
-    format!(
-        "[remotes.{hub_name}]\nurl = \"https://github.com/{owner}/{repo}.git\"\ndefault = true\n"
+/// Build a local bare-repo hub seeded with `registry.json` + the csv-parse
+/// skill file, returning the bare repo path.
+fn seed_hub(root: &Path) -> std::path::PathBuf {
+    let bare = root.join("hub.git");
+    git(
+        root,
+        &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
+    let work = root.join("hub-work");
+    git(
+        root,
+        &["clone", bare.to_str().unwrap(), work.to_str().unwrap()],
+    );
+    std::fs::write(work.join("registry.json"), REGISTRY).unwrap();
+    let skill_dir = work.join("skills/csv-parse");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), SKILL_MD).unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-m", "seed registry"]);
+    git(&work, &["push", "origin", "main"]);
+    bare
+}
+
+/// Set up a project directory pointing its default remote at `bare`, with
+/// the csv-parse skill pre-installed locally with `local_content`.
+fn seed_project(root: &Path, bare: &Path, local_content: &str) -> std::path::PathBuf {
+    let proj = root.join("project");
+    let quay_dir = proj.join(".quay");
+    std::fs::create_dir_all(&quay_dir).unwrap();
+    std::fs::write(
+        quay_dir.join("config.toml"),
+        format!(
+            "[remotes.hub]\nurl = \"{}\"\ndefault = true\n",
+            bare.to_str().unwrap()
+        ),
     )
+    .unwrap();
+    let skill_dir = proj.join(".agents/skills/csv-parse");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), local_content).unwrap();
+    proj
+}
+
+/// Isolate the host user config so `~/.config/quay/config.toml` never bleeds
+/// in. Returns `(cfg_home, user_config_path)`.
+fn isolated_user_config(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let cfg_home = root.join("cfg");
+    let user_cfg = cfg_home.join("quay/config.toml");
+    std::fs::create_dir_all(user_cfg.parent().unwrap()).unwrap();
+    std::fs::write(&user_cfg, "").unwrap();
+    (cfg_home, user_cfg)
 }
 
 /// `quay add <skill>` errors when the skill already exists and `--force` is absent.
-#[tokio::test]
-async fn quay_add_blocks_when_skill_already_exists() {
-    let server = MockServer::start().await;
+#[test]
+fn quay_add_blocks_when_skill_already_exists() {
+    let tmp = assert_fs::TempDir::new().unwrap();
 
-    Mock::given(method("GET"))
-        .and(path("/foo/bar/main/registry.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(REGISTRY))
-        .mount(&server)
-        .await;
+    let bare = seed_hub(tmp.path());
+    let proj = seed_project(tmp.path(), &bare, "existing content");
+    let (cfg_home, user_cfg) = isolated_user_config(tmp.path());
 
-    Mock::given(method("GET"))
-        .and(path("/foo/bar/main/skills/csv-parse/SKILL.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(SKILL_MD))
-        .mount(&server)
-        .await;
-
-    let project = TempDir::new().unwrap();
-    let user_cfg = TempDir::new().unwrap();
-    // Empty user config — isolates from real ~/.config/quay/config.toml.
-    user_cfg.child("config.toml").write_str("").unwrap();
-
-    // Write project config with mock remote.
-    project
-        .child(".quay/config.toml")
-        .write_str(&project_config_with_remote("fixture", "foo", "bar"))
-        .unwrap();
-
-    // Pre-install the skill.
-    project
-        .child(".agents/skills/csv-parse/SKILL.md")
-        .write_str("existing content")
-        .unwrap();
-
-    let base = server.uri();
-    let p = project.path().to_str().unwrap().to_string();
-    let uc = user_cfg
-        .child("config.toml")
-        .path()
-        .to_str()
+    let output = Command::cargo_bin("quay")
         .unwrap()
-        .to_string();
-
-    let output = tokio::task::spawn_blocking(move || {
-        Command::cargo_bin("quay")
-            .unwrap()
-            .env("QUAY_GITHUB_BASE_URL", &base)
-            .args(["--project", &p, "--user-config", &uc, "add", "csv-parse"])
-            .output()
-            .unwrap()
-    })
-    .await
-    .unwrap();
+        .env("XDG_CONFIG_HOME", &cfg_home)
+        .args([
+            "--project",
+            proj.to_str().unwrap(),
+            "--user-config",
+            user_cfg.to_str().unwrap(),
+            "add",
+            "csv-parse",
+        ])
+        .output()
+        .unwrap();
 
     assert!(
         !output.status.success(),
@@ -109,8 +134,7 @@ async fn quay_add_blocks_when_skill_already_exists() {
     );
 
     // The existing file should be unchanged.
-    let content =
-        std::fs::read_to_string(project.path().join(".agents/skills/csv-parse/SKILL.md")).unwrap();
+    let content = std::fs::read_to_string(proj.join(".agents/skills/csv-parse/SKILL.md")).unwrap();
     assert_eq!(
         content, "existing content",
         "existing file must not be overwritten without --force"
@@ -118,64 +142,28 @@ async fn quay_add_blocks_when_skill_already_exists() {
 }
 
 /// `quay add --force <skill>` overwrites the existing local copy.
-#[tokio::test]
-async fn quay_add_force_overwrites_existing_skill() {
-    let server = MockServer::start().await;
+#[test]
+fn quay_add_force_overwrites_existing_skill() {
+    let tmp = assert_fs::TempDir::new().unwrap();
 
-    Mock::given(method("GET"))
-        .and(path("/foo/bar/main/registry.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(REGISTRY))
-        .mount(&server)
-        .await;
+    let bare = seed_hub(tmp.path());
+    let proj = seed_project(tmp.path(), &bare, "stale content");
+    let (cfg_home, user_cfg) = isolated_user_config(tmp.path());
 
-    Mock::given(method("GET"))
-        .and(path("/foo/bar/main/skills/csv-parse/SKILL.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(SKILL_MD))
-        .mount(&server)
-        .await;
-
-    let project = TempDir::new().unwrap();
-    let user_cfg = TempDir::new().unwrap();
-    user_cfg.child("config.toml").write_str("").unwrap();
-
-    project
-        .child(".quay/config.toml")
-        .write_str(&project_config_with_remote("fixture", "foo", "bar"))
-        .unwrap();
-
-    // Pre-install the skill with stale content.
-    project
-        .child(".agents/skills/csv-parse/SKILL.md")
-        .write_str("stale content")
-        .unwrap();
-
-    let base = server.uri();
-    let p = project.path().to_str().unwrap().to_string();
-    let uc = user_cfg
-        .child("config.toml")
-        .path()
-        .to_str()
+    let output = Command::cargo_bin("quay")
         .unwrap()
-        .to_string();
-
-    let output = tokio::task::spawn_blocking(move || {
-        Command::cargo_bin("quay")
-            .unwrap()
-            .env("QUAY_GITHUB_BASE_URL", &base)
-            .args([
-                "--project",
-                &p,
-                "--user-config",
-                &uc,
-                "add",
-                "--force",
-                "csv-parse",
-            ])
-            .output()
-            .unwrap()
-    })
-    .await
-    .unwrap();
+        .env("XDG_CONFIG_HOME", &cfg_home)
+        .args([
+            "--project",
+            proj.to_str().unwrap(),
+            "--user-config",
+            user_cfg.to_str().unwrap(),
+            "add",
+            "--force",
+            "csv-parse",
+        ])
+        .output()
+        .unwrap();
 
     assert!(
         output.status.success(),
@@ -183,8 +171,7 @@ async fn quay_add_force_overwrites_existing_skill() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let content =
-        std::fs::read_to_string(project.path().join(".agents/skills/csv-parse/SKILL.md")).unwrap();
+    let content = std::fs::read_to_string(proj.join(".agents/skills/csv-parse/SKILL.md")).unwrap();
     assert_eq!(
         content, SKILL_MD,
         "--force must overwrite the existing file with new content"

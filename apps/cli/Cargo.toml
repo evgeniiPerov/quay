@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/quay-core", "crates/quay-cli", "crates/quay", "crates/quay-mcp"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"

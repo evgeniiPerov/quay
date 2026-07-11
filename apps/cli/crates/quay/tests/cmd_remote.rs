@@ -8,33 +8,37 @@ fn quay() -> Command {
 fn add_then_list_then_remove() {
     let dir = assert_fs::TempDir::new().unwrap();
     let p = dir.path().to_str().unwrap();
+    // Isolate the host's ~/.config/quay so its remotes don't bleed into the
+    // "(no remotes configured)" assertion below.
+    let user_cfg = dir.path().join("user.toml");
+    std::fs::write(&user_cfg, "").unwrap();
+    let uc = user_cfg.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let mut c = quay();
+        c.env("XDG_CONFIG_HOME", dir.path())
+            .args(["--project", p, "--user-config", uc]);
+        c.args(args);
+        c
+    };
 
-    quay().args(["--project", p, "init"]).assert().success();
-    quay()
-        .args([
-            "--project",
-            p,
-            "remote",
-            "add",
-            "my-hub",
-            "https://github.com/foo/bar.git",
-            "--default",
-        ])
-        .assert()
-        .success();
-    quay()
-        .args(["--project", p, "remote", "list"])
+    run(&["init"]).assert().success();
+    run(&[
+        "remote",
+        "add",
+        "my-hub",
+        "https://github.com/foo/bar.git",
+        "--default",
+    ])
+    .assert()
+    .success();
+    run(&["remote", "list"])
         .assert()
         .success()
         .stdout(predicates::str::contains("my-hub"))
         .stdout(predicates::str::contains("https://github.com/foo/bar.git"))
         .stdout(predicates::str::contains("[default]"));
-    quay()
-        .args(["--project", p, "remote", "remove", "my-hub"])
-        .assert()
-        .success();
-    quay()
-        .args(["--project", p, "remote", "list"])
+    run(&["remote", "remove", "my-hub"]).assert().success();
+    run(&["remote", "list"])
         .assert()
         .success()
         .stdout(predicates::str::contains("(no remotes configured)"));
