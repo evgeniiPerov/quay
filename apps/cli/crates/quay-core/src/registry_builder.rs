@@ -57,6 +57,7 @@ pub fn build_from_hub_clone(hub_clone: &Path, hub_name: &str) -> Result<Registry
         let sha = hex::encode(hasher.finalize());
 
         let files = crate::skill_files::collect_skill_files(&dir)?;
+        let content_hash = crate::lock_hash::folder_hash(&dir)?;
 
         registry.skills.insert(
             name.clone(),
@@ -69,6 +70,7 @@ pub fn build_from_hub_clone(hub_clone: &Path, hub_name: &str) -> Result<Registry
                 sha,
                 files,
                 source_format: meta.format,
+                content_hash,
             },
         );
     }
@@ -106,6 +108,22 @@ mod tests {
             r.skills["bar"].source_format,
             crate::scanner::SkillFormat::SlashCommand
         );
+    }
+
+    #[test]
+    fn build_sets_content_hash_to_folder_hash() {
+        let tmp = TempDir::new().unwrap();
+        let hub = tmp.path();
+        fs::create_dir_all(hub.join("skills/foo")).unwrap();
+        fs::write(hub.join("skills/foo/SKILL.md"), "# /foo\nbody\n").unwrap();
+        fs::write(hub.join("skills/foo/helper.py"), "print('x')\n").unwrap();
+
+        let reg = build_from_hub_clone(hub, "h").unwrap();
+        let entry = reg.entry("foo").expect("foo indexed");
+
+        let expected = crate::lock_hash::folder_hash(&hub.join("skills/foo")).unwrap();
+        assert_eq!(entry.content_hash, expected);
+        assert!(!entry.content_hash.is_empty());
     }
 
     #[test]

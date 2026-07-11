@@ -178,6 +178,7 @@ mod tests {
                     sha: format!("remote-sha-{}", version),
                     files: vec!["SKILL.md".into()],
                     source_format: SkillFormat::Frontmatter,
+                    content_hash: String::new(),
                 },
             )]),
         }

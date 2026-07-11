@@ -269,6 +269,7 @@ mod tests {
                     sha: "abc123".into(),
                     files: vec!["SKILL.md".into()],
                     source_format: crate::scanner::SkillFormat::Frontmatter,
+                    content_hash: String::new(),
                 },
             )]),
         }
@@ -467,6 +468,7 @@ mod tests {
             sha: "abc".into(),
             files: vec!["SKILL.md".into()],
             source_format: crate::scanner::SkillFormat::Frontmatter,
+            content_hash: String::new(),
         };
         let reg = crate::registry::Registry {
             hub: "fixture".into(),

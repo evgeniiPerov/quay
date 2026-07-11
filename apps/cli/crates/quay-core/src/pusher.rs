@@ -257,6 +257,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
         // 7.5. Update registry.json so consumers (`quay search`, Browse,
         // `quay add`) can find this skill. Best-effort: a malformed existing
         // registry.json is replaced with a fresh one.
+        let content_hash = crate::lock_hash::folder_hash(&hub_skill_dir)?;
         update_hub_registry(
             &hub_clone,
             &remote_name,
@@ -264,6 +265,7 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             &manifest,
             &skill_md_sha,
             &skill_files,
+            &content_hash,
         )?;
 
         // 8 & 9. Mode-aware branch + commit + push (+ optional PR).
@@ -463,6 +465,7 @@ fn update_hub_registry(
     manifest: &SkillManifest,
     skill_md_sha: &str,
     files: &[String],
+    content_hash: &str,
 ) -> Result<()> {
     use crate::registry::{Registry, RegistryEntry};
     use std::collections::BTreeMap;
@@ -493,6 +496,7 @@ fn update_hub_registry(
         sha: skill_md_sha.to_string(),
         files: files.to_vec(),
         source_format: manifest.source_format,
+        content_hash: content_hash.to_string(),
     };
     registry.skills.insert(skill_name.to_string(), entry);
     registry.generated_at = chrono::Utc::now().to_rfc3339();
