@@ -24,7 +24,7 @@ jobs:
         run: bash scripts/sync-agents/sync.sh
       - name: Verify it still compiles + parses
         working-directory: apps/cli
-        run: cargo test -p quay-core agents::
+        run: "cargo test -p quay-core agents::"
       - name: Open PR on drift
         uses: peter-evans/create-pull-request@v7
         with:
