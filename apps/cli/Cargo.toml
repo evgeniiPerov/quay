@@ -33,6 +33,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dialoguer = "0.12"
 similar = "3"
 insta = "1"
+dirs = "6.0"
 
 # The profile that 'dist' will build with.
 # Dist config lives at <repo-root>/dist-workspace.toml because the cargo

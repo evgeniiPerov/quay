@@ -3,6 +3,7 @@
 //! built-in registry, then reuses the existing [`quay_core::apply_all`] engine.
 
 use crate::args::AgentsAction;
+use crate::config_io::{read_project_file, write_project_file};
 use quay_core::{
     agent_registry, apply_all, detect_installed, install_config, AgentScope, InstallConfig,
     MirrorAction,
@@ -25,11 +26,11 @@ pub fn run(
     }
 }
 
-/// Best-effort home dir without pulling in a new dependency.
+/// Platform-correct home dir (Windows uses the proper API via `dirs`).
 fn home_dir() -> Result<String, Box<dyn std::error::Error>> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "cannot determine home directory (set $HOME)".into())
+    dirs::home_dir()
+        .and_then(|p| p.to_str().map(String::from))
+        .ok_or_else(|| "cannot determine home directory".into())
 }
 
 fn list(json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -107,6 +108,13 @@ fn link(
         out.push((name.clone(), apply_all(&install, root, name, force)?));
     }
 
+    // Project scope: record the mirrors in `.quay/config.toml` so `quay link`
+    // / `quay link check` tracks them too. Global paths are machine-specific,
+    // so they are never persisted. Only touch an already-initialized project.
+    if !global && project.join(".quay/config.toml").exists() {
+        persist_project_mirrors(&install, project)?;
+    }
+
     if json {
         let payload: Vec<_> = out
             .iter()
@@ -136,6 +144,25 @@ fn link(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Merge freshly-built mirrors into the project config, deduped by path.
+fn persist_project_mirrors(
+    install: &InstallConfig,
+    project: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = read_project_file(project)?;
+    let mut changed = false;
+    for mirror in &install.mirrors {
+        if !file.install.mirrors.iter().any(|m| m.path == mirror.path) {
+            file.install.mirrors.push(mirror.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        write_project_file(project, &file)?;
     }
     Ok(())
 }

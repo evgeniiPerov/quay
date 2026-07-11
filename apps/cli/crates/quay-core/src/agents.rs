@@ -33,6 +33,12 @@ pub struct Agent {
     /// Paths that, if any exists, mean this agent is installed on the machine.
     #[serde(default)]
     pub detect: Vec<String>,
+    /// Set when detection isn't a plain OR-of-path-exists (e.g. `eve` needs a
+    /// package.json dep check). Such agents are never auto-detected — users
+    /// target them explicitly with `--agent`.
+    // ponytail: only `eve` today; if more appear, dispatch on this string.
+    #[serde(default)]
+    pub detect_special: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
