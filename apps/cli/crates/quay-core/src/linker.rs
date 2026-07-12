@@ -5,7 +5,7 @@
 //! path with the requested strategy. Idempotent: re-running on a correctly
 //! mirrored skill is a no-op.
 
-use crate::config::{InstallConfig, MirrorConfig, MirrorStrategy};
+use crate::config::{InstallConfig, MirrorConfig, MirrorRoot, MirrorStrategy};
 use crate::error::{QuayError, Result};
 use std::path::{Path, PathBuf};
 
@@ -244,6 +244,90 @@ pub fn check(
         }
     }
     Ok(drift)
+}
+
+/// Outcome of a discovery-driven reconcile across all known mirror roots.
+#[derive(Debug, Default)]
+pub struct ReconcileReport {
+    /// (skill, mirror_path, action) for every mirror that was created/adopted/etc.
+    pub actions: Vec<(String, PathBuf, MirrorAction)>,
+    /// Diverged mirrors that were not overwritten (no `force`).
+    pub diverged: Vec<MirrorDrift>,
+    /// (skill, target) unmanaged-but-identical dirs awaiting the adopt opt-in.
+    pub needs_optin: Vec<(String, PathBuf)>,
+}
+
+/// Scan every known mirror root on disk (not just `install.mirrors`) and
+/// reconcile each skill against canonical. No-op when the canonical dir is
+/// absent (a lone tool dir is the source of truth — do not invent a canonical).
+pub fn reconcile(
+    install: &InstallConfig,
+    project_root: &Path,
+    skill_names: &[String],
+    force: bool,
+) -> Result<ReconcileReport> {
+    let mut report = ReconcileReport::default();
+    let canonical_root = project_root.join(&install.canonical);
+    if !canonical_root.exists() {
+        return Ok(report);
+    }
+    let adopt = matches!(install.auto_link, Some(true));
+
+    // Effective mirror set: known roots on disk (minus canonical) ∪ configured mirrors.
+    let canonical_str = install.canonical.to_string_lossy();
+    let mut roots: Vec<(PathBuf, MirrorStrategy)> = Vec::new();
+    let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    for m in &install.mirrors {
+        if seen.insert(m.path.clone()) {
+            roots.push((m.path.clone(), m.strategy));
+        }
+    }
+    for root in MirrorRoot::all() {
+        let rel = PathBuf::from(root.dir());
+        if rel.to_string_lossy() == canonical_str {
+            continue;
+        }
+        if project_root.join(&rel).exists() && seen.insert(rel.clone()) {
+            roots.push((rel, MirrorStrategy::Auto));
+        }
+    }
+
+    for name in skill_names {
+        let canonical_skill = canonical_root.join(name);
+        if !canonical_skill.exists() {
+            continue;
+        }
+        for (rel, strategy) in &roots {
+            let mirror_root = project_root.join(rel);
+            let target = mirror_root.join(name);
+            match classify(&target, &canonical_skill)? {
+                MirrorState::Adoptable if !adopt => {
+                    report.needs_optin.push((name.clone(), target));
+                }
+                MirrorState::Diverged { reason } if !force => {
+                    report.diverged.push(MirrorDrift {
+                        skill: name.clone(),
+                        mirror_path: target,
+                        reason,
+                    });
+                }
+                // Missing / Correct / Adoptable(adopt) / Diverged(force) / Conflict:
+                // let apply_one perform the create / adopt / replace / refusal.
+                _ => {
+                    let mirror = MirrorConfig {
+                        path: rel.clone(),
+                        strategy: *strategy,
+                    };
+                    let action =
+                        apply_one(&canonical_skill, &mirror_root, name, &mirror, force, adopt)?;
+                    if !matches!(action, MirrorAction::NoOp) {
+                        report.actions.push((name.clone(), target, action));
+                    }
+                }
+            }
+        }
+    }
+    Ok(report)
 }
 
 /// Resolve `Auto` to the platform-best concrete strategy.
@@ -735,5 +819,74 @@ mod tests {
             std::fs::read(m.join("SKILL.md")).unwrap(),
             b"EDITED AFTER UNLINK"
         );
+    }
+
+    #[test]
+    fn reconcile_noop_when_no_canonical() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        // a lone .claude with no .agents canonical
+        let m = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"solo").unwrap();
+        let install = InstallConfig::default();
+        let report = reconcile(&install, dir.path(), &["foo".to_string()], false).unwrap();
+        assert!(
+            report.actions.is_empty()
+                && report.diverged.is_empty()
+                && report.needs_optin.is_empty()
+        );
+        assert!(std::fs::symlink_metadata(&m).unwrap().file_type().is_dir()); // untouched
+    }
+
+    #[test]
+    fn reconcile_discovers_unconfigured_root_and_flags_optin() {
+        let dir = project_with_skill("csv-parse");
+        // someone added .codex, not in config, identical content, no marker
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        let install = InstallConfig::default(); // no mirrors, auto_link = None
+        let report = reconcile(&install, dir.path(), &["csv-parse".to_string()], false).unwrap();
+        assert_eq!(report.needs_optin.len(), 1);
+        assert_eq!(report.needs_optin[0].1, m);
+        assert!(std::fs::symlink_metadata(&m).unwrap().file_type().is_dir()); // not adopted yet
+    }
+
+    #[test]
+    fn reconcile_adopts_discovered_root_when_opted_in() {
+        let dir = project_with_skill("csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        let install = InstallConfig {
+            auto_link: Some(true),
+            ..InstallConfig::default()
+        };
+        let report = reconcile(&install, dir.path(), &["csv-parse".to_string()], false).unwrap();
+        assert!(report.needs_optin.is_empty());
+        assert!(report
+            .actions
+            .iter()
+            .any(|(_, _, a)| matches!(a, MirrorAction::Adopted { .. })));
+        assert!(std::fs::symlink_metadata(&m)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn reconcile_flags_discovered_diverged_root() {
+        let dir = project_with_skill("csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"HAND WRITTEN, DIFFERENT").unwrap();
+        let install = InstallConfig::default();
+        let report = reconcile(&install, dir.path(), &["csv-parse".to_string()], false).unwrap();
+        assert_eq!(report.diverged.len(), 1);
+        assert!(report.diverged[0].reason.contains("content differs"));
+        assert_eq!(
+            std::fs::read(m.join("SKILL.md")).unwrap(),
+            b"HAND WRITTEN, DIFFERENT"
+        ); // not clobbered
     }
 }
