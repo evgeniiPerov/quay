@@ -81,12 +81,100 @@ pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
         }
     } else if managed {
         MirrorState::Correct
-    } else {
+    } else if dirs_fully_identical(target, canonical)? {
         MirrorState::Adoptable
+    } else {
+        // pushable content matches but the tree isn't byte-for-byte equal
+        // (extra dotfile, dotdir, or symlink) — adoption would delete it.
+        MirrorState::Diverged {
+            reason: "mirror content differs from canonical".into(),
+        }
     })
 }
 
+/// True iff `a` and `b` are the same tree byte-for-byte: identical set of
+/// entries at every level, regular files equal by content, symlinks equal by
+/// link target, subdirectories recursively equal. Nothing is skipped
+/// (dotfiles, `.git`, symlinks all count). Used to gate adoption, which
+/// DELETES the target — anything present in the target but not in canonical
+/// (a hand-added dotfile, a symlink, an extra file) must block adoption.
+fn dirs_fully_identical(a: &Path, b: &Path) -> Result<bool> {
+    use std::collections::BTreeMap;
+    fn entries(dir: &Path) -> Result<BTreeMap<std::ffi::OsString, std::fs::FileType>> {
+        let mut map = BTreeMap::new();
+        for entry in std::fs::read_dir(dir).map_err(|source| QuayError::Io {
+            path: dir.display().to_string(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| QuayError::Io {
+                path: dir.display().to_string(),
+                source,
+            })?;
+            let ft = entry.file_type().map_err(|source| QuayError::Io {
+                path: entry.path().display().to_string(),
+                source,
+            })?;
+            map.insert(entry.file_name(), ft);
+        }
+        Ok(map)
+    }
+    let (ea, eb) = (entries(a)?, entries(b)?);
+    if ea.len() != eb.len() {
+        return Ok(false);
+    }
+    for (name, ft_a) in &ea {
+        let ft_b = match eb.get(name) {
+            Some(ft) => ft,
+            None => return Ok(false),
+        };
+        let (pa, pb) = (a.join(name), b.join(name));
+        if ft_a.is_symlink() || ft_b.is_symlink() {
+            if !ft_a.is_symlink() || !ft_b.is_symlink() {
+                return Ok(false);
+            }
+            let (la, lb) = (
+                std::fs::read_link(&pa).map_err(|source| QuayError::Io {
+                    path: pa.display().to_string(),
+                    source,
+                })?,
+                std::fs::read_link(&pb).map_err(|source| QuayError::Io {
+                    path: pb.display().to_string(),
+                    source,
+                })?,
+            );
+            if la != lb {
+                return Ok(false);
+            }
+        } else if ft_a.is_dir() || ft_b.is_dir() {
+            if !ft_a.is_dir() || !ft_b.is_dir() {
+                return Ok(false);
+            }
+            if !dirs_fully_identical(&pa, &pb)? {
+                return Ok(false);
+            }
+        } else {
+            let (ca, cb) = (
+                std::fs::read(&pa).map_err(|source| QuayError::Io {
+                    path: pa.display().to_string(),
+                    source,
+                })?,
+                std::fs::read(&pb).map_err(|source| QuayError::Io {
+                    path: pb.display().to_string(),
+                    source,
+                })?,
+            );
+            if ca != cb {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Apply a single mirror entry for one skill.
+///
+/// When `adopt` is set, an `Adoptable` mirror — an unmanaged dir byte-identical
+/// to canonical — is converted to a symlink; otherwise it is a no-op.
 pub fn apply_one(
     canonical_skill_dir: &Path,
     mirror_root: &Path,
@@ -327,7 +415,14 @@ pub fn reconcile(
                         reason,
                     });
                 }
-                // Missing / Correct / Adoptable(adopt) / Diverged(force) / Conflict:
+                MirrorState::Conflict { reason } if !force => {
+                    report.diverged.push(MirrorDrift {
+                        skill: name.clone(),
+                        mirror_path: target,
+                        reason,
+                    });
+                }
+                // Missing / Correct / Adoptable(adopt) / Diverged(force) / Conflict(force):
                 // let apply_one perform the create / adopt / replace / refusal.
                 _ => {
                     let mirror = MirrorConfig {
@@ -888,6 +983,53 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn classify_unmanaged_dir_with_extra_dotfile_is_not_adoptable() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        std::fs::write(m.join(".notes.md"), b"hand written notes").unwrap();
+        assert!(
+            matches!(
+                classify(&m, &canonical).unwrap(),
+                MirrorState::Diverged { .. }
+            ),
+            "unmanaged dir with an extra dotfile must not be classified Adoptable"
+        );
+    }
+
+    #[test]
+    fn apply_does_not_delete_extra_files_when_adopting() {
+        let dir = project_with_skill("csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        std::fs::write(m.join(".notes.md"), b"hand written notes").unwrap();
+
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Symlink,
+            }],
+            auto_link: Some(true),
+        };
+        // Diverged without force is a refusal (Err), not a silent no-op — the
+        // point under test is that nothing on disk was touched either way.
+        let _ = apply_all(&install, dir.path(), "csv-parse", false);
+
+        assert!(
+            m.join(".notes.md").exists(),
+            "hand-created file must survive"
+        );
+        assert!(
+            std::fs::symlink_metadata(&m).unwrap().file_type().is_dir(),
+            "target must remain a real directory, not be replaced with a symlink"
+        );
     }
 
     #[test]
