@@ -56,8 +56,8 @@ silently on the next apply. `quay link` now detects and protects those edits:
 ### Adopting an unmanaged dir (`install.auto_link`)
 
 When `quay link` finds an unmanaged tool dir whose content is byte-identical to
-canonical, it can *adopt* it — convert it to a symlink and register it as a
-mirror. This is opt-in: the first interactive run asks, and records your choice
+canonical, it can *adopt* it — convert it to a managed mirror (a symlink on
+most platforms) and register it as a mirror. This is opt-in: the first interactive run asks, and records your choice
 as `install.auto_link` in `.quay/config.toml` (`true` = adopt, `false` = report
 only). Non-interactive runs (`--json`, CI) never adopt or write config; they
 report the dir and exit non-zero so the decision surfaces.
@@ -77,7 +77,7 @@ report the dir and exit non-zero so the decision surfaces.
 ## `--help`
 
 ```text
-Apply or verify mirrors from `[install].mirrors` config
+Apply or verify mirrors, reconciling canonical against known tool dirs on disk
 
 Usage: quay link [OPTIONS] [COMMAND]
 

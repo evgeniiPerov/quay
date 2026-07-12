@@ -53,7 +53,8 @@ pub enum MirrorState {
 }
 
 /// Compare `target` against `canonical`, reusing the pushed-file content hash.
-/// Symlinks are `Correct` here (their target is verified separately by `check`).
+/// Symlinks are `Correct` here (their target is verified separately by
+/// `check()` for configured mirrors).
 pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
     let metadata = match std::fs::symlink_metadata(target) {
         Ok(m) => m,
@@ -174,7 +175,8 @@ fn dirs_fully_identical(a: &Path, b: &Path) -> Result<bool> {
 /// Apply a single mirror entry for one skill.
 ///
 /// When `adopt` is set, an `Adoptable` mirror — an unmanaged dir byte-identical
-/// to canonical — is converted to a symlink; otherwise it is a no-op.
+/// to canonical — is converted to a managed mirror (a symlink on most
+/// platforms; the mirror's configured strategy); otherwise it is a no-op.
 pub fn apply_one(
     canonical_skill_dir: &Path,
     mirror_root: &Path,
@@ -202,7 +204,7 @@ pub fn apply_one(
         MirrorState::Correct => Ok(MirrorAction::NoOp),
         MirrorState::Adoptable => {
             if adopt {
-                // content is byte-identical, so replacing with a symlink loses nothing
+                // content is byte-identical, so replacing with a managed mirror loses nothing
                 replace_mirror(canonical_skill_dir, &target, strategy)?;
                 Ok(MirrorAction::Adopted {
                     path: target,
@@ -408,14 +410,7 @@ pub fn reconcile(
                 MirrorState::Adoptable if !adopt => {
                     report.needs_optin.push((name.clone(), target));
                 }
-                MirrorState::Diverged { reason } if !force => {
-                    report.diverged.push(MirrorDrift {
-                        skill: name.clone(),
-                        mirror_path: target,
-                        reason,
-                    });
-                }
-                MirrorState::Conflict { reason } if !force => {
+                MirrorState::Diverged { reason } | MirrorState::Conflict { reason } if !force => {
                     report.diverged.push(MirrorDrift {
                         skill: name.clone(),
                         mirror_path: target,
@@ -1020,7 +1015,10 @@ mod tests {
         };
         // Diverged without force is a refusal (Err), not a silent no-op — the
         // point under test is that nothing on disk was touched either way.
-        let _ = apply_all(&install, dir.path(), "csv-parse", false);
+        assert!(matches!(
+            apply_all(&install, dir.path(), "csv-parse", false).unwrap_err(),
+            QuayError::MirrorConflict { .. }
+        ));
 
         assert!(
             m.join(".notes.md").exists(),
@@ -1046,5 +1044,70 @@ mod tests {
             std::fs::read(m.join("SKILL.md")).unwrap(),
             b"HAND WRITTEN, DIFFERENT"
         ); // not clobbered
+    }
+
+    #[test]
+    fn classify_conflict_when_target_is_plain_file() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let target = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"not a directory").unwrap();
+        assert!(matches!(
+            classify(&target, &canonical).unwrap(),
+            MirrorState::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_nested_subdir_identical_is_adoptable() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(canonical.join("scripts")).unwrap();
+        std::fs::write(canonical.join("scripts/run.sh"), b"echo hi\n").unwrap();
+
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(m.join("scripts")).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        std::fs::write(m.join("scripts/run.sh"), b"echo hi\n").unwrap();
+
+        assert_eq!(classify(&m, &canonical).unwrap(), MirrorState::Adoptable);
+    }
+
+    #[test]
+    fn classify_nested_subdir_differs_is_diverged() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(canonical.join("scripts")).unwrap();
+        std::fs::write(canonical.join("scripts/run.sh"), b"echo hi\n").unwrap();
+
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(m.join("scripts")).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        std::fs::write(m.join("scripts/run.sh"), b"echo bye\n").unwrap();
+
+        assert!(matches!(
+            classify(&m, &canonical).unwrap(),
+            MirrorState::Diverged { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_unmanaged_dir_with_extra_symlink_is_not_adoptable() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+        std::os::unix::fs::symlink(canonical.join("SKILL.md"), m.join("extra-link")).unwrap();
+
+        assert!(
+            matches!(
+                classify(&m, &canonical).unwrap(),
+                MirrorState::Diverged { .. }
+            ),
+            "unmanaged dir with an extra symlink must not be classified Adoptable"
+        );
     }
 }

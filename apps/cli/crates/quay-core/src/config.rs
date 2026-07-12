@@ -223,7 +223,10 @@ pub struct InstallConfig {
     /// Opt-in: when `Some(true)`, `quay link` may auto-symlink a discovered
     /// unmanaged tool dir whose content is byte-identical to canonical, and
     /// register it as a mirror. `Some(false)` = report only. `None` = the user
-    /// has not decided yet (prompt once, then persist the choice).
+    /// has not decided yet (prompt once, then persist the choice). In a
+    /// non-interactive run (`--json` / no TTY), an undecided `None` is NOT
+    /// prompted — the unmanaged dirs are reported and the command exits
+    /// non-zero (nothing is adopted or persisted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_link: Option<bool>,
 }
@@ -937,6 +940,23 @@ mod tests {
         assert!(s.contains("auto_link = true"), "got:\n{}", s);
         let parsed: InstallConfig = toml::from_str(&s).unwrap();
         assert_eq!(parsed.auto_link, Some(true));
+    }
+
+    #[test]
+    fn auto_link_false_round_trips() {
+        let install = InstallConfig {
+            canonical: PathBuf::from(".agents/skills"),
+            mirrors: Vec::new(),
+            auto_link: Some(false),
+        };
+        let s = toml::to_string(&install).unwrap();
+        assert!(
+            s.contains("auto_link = false"),
+            "Some(false) must serialize (not be omitted), got:\n{}",
+            s
+        );
+        let parsed: InstallConfig = toml::from_str(&s).unwrap();
+        assert_eq!(parsed.auto_link, Some(false));
     }
 
     #[test]

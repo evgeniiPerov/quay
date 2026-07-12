@@ -178,7 +178,7 @@ pub enum Command {
         #[arg(long, value_enum)]
         push_mode: Option<PushModeArg>,
     },
-    /// Apply or verify mirrors from `[install].mirrors` config.
+    /// Apply or verify mirrors, reconciling canonical against known tool dirs on disk.
     Link {
         #[command(subcommand)]
         action: Option<LinkAction>,

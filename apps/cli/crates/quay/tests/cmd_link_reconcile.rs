@@ -128,6 +128,66 @@ fn link_exits_zero_when_needs_optin_and_auto_link_explicitly_false() {
     );
 }
 
+/// `quay link check` must respect the `auto_link = false` opt-out: an
+/// adoptable-but-unmanaged dir is an accepted state, not drift, so `check`
+/// must exit 0 (not just plain `quay link`).
+#[test]
+fn link_check_exits_zero_when_adoptable_and_opted_out() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    make_project_with_skill(&dir, "foo");
+    set_auto_link(&dir, false);
+
+    // Unmanaged `.codex` mirror identical to canonical (adoptable).
+    let canonical_body = b"---\nname: x\ndescription: y\nversion: 0.1.0\n---\nbody\n";
+    let codex_dir = dir.child(".codex/skills/foo");
+    std::fs::create_dir_all(codex_dir.path()).unwrap();
+    std::fs::write(codex_dir.path().join("SKILL.md"), canonical_body).unwrap();
+
+    let p = dir.path().to_str().unwrap();
+    Command::cargo_bin("quay")
+        .unwrap()
+        .args(["--project", p, "link", "check"])
+        .assert()
+        .success();
+}
+
+/// When `auto_link = true` is already set in config (not a first-time
+/// interactive opt-in), a discovered adoptable mirror must still be adopted
+/// AND registered in `[install].mirrors` for future runs.
+#[test]
+fn link_registers_adopted_mirror_when_auto_link_true() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    make_project_with_skill(&dir, "foo");
+    set_auto_link(&dir, true);
+
+    let canonical_body = b"---\nname: x\ndescription: y\nversion: 0.1.0\n---\nbody\n";
+    let codex_dir = dir.child(".codex/skills/foo");
+    std::fs::create_dir_all(codex_dir.path()).unwrap();
+    std::fs::write(codex_dir.path().join("SKILL.md"), canonical_body).unwrap();
+
+    let p = dir.path().to_str().unwrap();
+    Command::cargo_bin("quay")
+        .unwrap()
+        .args(["--project", p, "link"])
+        .assert()
+        .success();
+
+    assert!(
+        std::fs::symlink_metadata(dir.path().join(".codex/skills/foo"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "adoptable dir must be converted to a symlink"
+    );
+
+    let cfg = std::fs::read_to_string(dir.child(".quay/config.toml").path()).unwrap();
+    assert!(
+        cfg.contains(".codex/skills"),
+        "adopted mirror must be registered in [install].mirrors, got:\n{}",
+        cfg
+    );
+}
+
 /// Adds a mirror entry to the project config by reading and rewriting it via
 /// the raw TOML document, mirroring `cmd_link.rs`'s helper of the same name.
 fn append_mirror_to_config(dir: &assert_fs::TempDir, mirror_path: &str, strategy: &str) {

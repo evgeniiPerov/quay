@@ -60,18 +60,19 @@ fn apply(
     if !report.needs_optin.is_empty() && cfg.install.auto_link.is_none() && !json && is_tty() {
         let yes = dialoguer::Confirm::new()
             .with_prompt(format!(
-                "Found {} unmanaged tool dir(s) matching canonical. Symlink them into canonical (adopt)?",
+                "Found {} unmanaged tool dir(s) matching canonical. Adopt them into canonical (symlink on most platforms)?",
                 report.needs_optin.len()
             ))
             .default(true)
             .interact()?;
-        persist_auto_link(project, yes)?;
         cfg.install.auto_link = Some(yes);
         if yes {
             report = reconcile(&cfg.install, project, &skills, force)?;
-            register_adopted_mirrors(project, &report)?;
         }
+        persist_auto_link(project, yes)?;
     }
+
+    register_adopted_mirrors(project, &report)?;
 
     render_report(&report, json)?;
 
@@ -221,11 +222,17 @@ fn check_cmd(
                         reason,
                     });
                 }
-                MirrorState::Adoptable => drift.push(MirrorDrift {
-                    skill: name.clone(),
-                    mirror_path: target,
-                    reason: "unmanaged directory; run `quay link` to adopt".into(),
-                }),
+                MirrorState::Adoptable => {
+                    // When the user has opted out (`auto_link = false`), an
+                    // adoptable dir is an accepted state, not drift.
+                    if cfg.install.auto_link != Some(false) {
+                        drift.push(MirrorDrift {
+                            skill: name.clone(),
+                            mirror_path: target,
+                            reason: "unmanaged directory; run `quay link` to adopt".into(),
+                        });
+                    }
+                }
                 // Missing: a discovered root simply not mirroring this skill is
                 // normal, not drift (configured-mirror Missing is already
                 // reported by `check` above). Correct: nothing to report.
