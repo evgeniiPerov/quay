@@ -49,8 +49,8 @@ pub use github::GithubRawFetcher;
 #[cfg(debug_assertions)]
 pub use github::GithubRawFetcherWithBase;
 pub use linker::{
-    apply_all, apply_one, check, classify, reconcile, MirrorAction, MirrorDrift, MirrorState,
-    ReconcileReport,
+    apply_all, apply_one, check, classify, discover_roots, reconcile, MirrorAction, MirrorDrift,
+    MirrorState, ReconcileReport,
 };
 pub use lock::{
     read as read_lock, source_from_url, write_atomic as write_lock, LockEntry, SkillsLock,

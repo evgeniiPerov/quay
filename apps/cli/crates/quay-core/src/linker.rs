@@ -257,25 +257,19 @@ pub struct ReconcileReport {
     pub needs_optin: Vec<(String, PathBuf)>,
 }
 
-/// Scan every known mirror root on disk (not just `install.mirrors`) and
-/// reconcile each skill against canonical. No-op when the canonical dir is
-/// absent (a lone tool dir is the source of truth — do not invent a canonical).
-pub fn reconcile(
+/// The mirror roots to reconcile: configured mirrors ∪ known roots present on
+/// disk, deduped, canonical excluded. Empty when the canonical dir is absent
+/// (a lone tool dir is the source of truth — nothing to reconcile). Pure
+/// read-only discovery: performs no filesystem writes.
+pub fn discover_roots(
     install: &InstallConfig,
     project_root: &Path,
-    skill_names: &[String],
-    force: bool,
-) -> Result<ReconcileReport> {
-    let mut report = ReconcileReport::default();
-    let canonical_root = project_root.join(&install.canonical);
-    if !canonical_root.exists() {
-        return Ok(report);
+) -> Vec<(PathBuf, MirrorStrategy)> {
+    let mut roots = Vec::new();
+    if !project_root.join(&install.canonical).exists() {
+        return roots;
     }
-    let adopt = matches!(install.auto_link, Some(true));
-
-    // Effective mirror set: known roots on disk (minus canonical) ∪ configured mirrors.
     let canonical_str = install.canonical.to_string_lossy();
-    let mut roots: Vec<(PathBuf, MirrorStrategy)> = Vec::new();
     let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for m in &install.mirrors {
         if seen.insert(m.path.clone()) {
@@ -291,6 +285,28 @@ pub fn reconcile(
             roots.push((rel, MirrorStrategy::Auto));
         }
     }
+    roots
+}
+
+/// Scan every known mirror root on disk (not just `install.mirrors`) and
+/// reconcile each skill against canonical. No-op when the canonical dir is
+/// absent (a lone tool dir is the source of truth — do not invent a canonical).
+///
+/// Mutating: creates/adopts/replaces mirrors on disk. For a read-only check,
+/// use [`discover_roots`] + [`classify`] instead.
+pub fn reconcile(
+    install: &InstallConfig,
+    project_root: &Path,
+    skill_names: &[String],
+    force: bool,
+) -> Result<ReconcileReport> {
+    let mut report = ReconcileReport::default();
+    let canonical_root = project_root.join(&install.canonical);
+    if !canonical_root.exists() {
+        return Ok(report);
+    }
+    let adopt = matches!(install.auto_link, Some(true));
+    let roots = discover_roots(install, project_root);
 
     for name in skill_names {
         let canonical_skill = canonical_root.join(name);
