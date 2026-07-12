@@ -13,8 +13,6 @@
       "Bash(git log:*)"
     ],
     "deny": [
-      "Bash(git commit:*)",
-      "Bash(git push:*)",
       "Bash(rm -rf:*)"
     ]
   },
