@@ -31,6 +31,57 @@ pub struct MirrorDrift {
     pub reason: String,
 }
 
+/// Result of comparing an on-disk mirror path against its canonical skill dir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirrorState {
+    /// Nothing exists at the target.
+    Missing,
+    /// A symlink, or a managed copy whose content matches canonical.
+    Correct,
+    /// An unmanaged real directory whose content is byte-identical to
+    /// canonical — safe to convert to a symlink (no data at risk).
+    Adoptable,
+    /// A directory whose content differs from canonical (managed copy or
+    /// unmanaged real dir). Overwriting it would lose the user's edits.
+    Diverged { reason: String },
+    /// A path that is neither a directory nor a symlink.
+    Conflict { reason: String },
+}
+
+/// Compare `target` against `canonical`, reusing the pushed-file content hash.
+/// Symlinks are `Correct` here (their target is verified separately by `check`).
+pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
+    let metadata = match std::fs::symlink_metadata(target) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(MirrorState::Missing),
+        Err(e) => {
+            return Ok(MirrorState::Conflict {
+                reason: format!("cannot stat: {}", e),
+            })
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(MirrorState::Correct);
+    }
+    if !metadata.is_dir() {
+        return Ok(MirrorState::Conflict {
+            reason: "path exists and is not a directory or symlink".into(),
+        });
+    }
+    let managed = target.join(".quay-mirror").exists();
+    let identical = crate::skill_files::pushable_content_hash(target)?
+        == crate::skill_files::pushable_content_hash(canonical)?;
+    Ok(if !identical {
+        MirrorState::Diverged {
+            reason: "mirror content differs from canonical".into(),
+        }
+    } else if managed {
+        MirrorState::Correct
+    } else {
+        MirrorState::Adoptable
+    })
+}
+
 /// Apply a single mirror entry for one skill.
 pub fn apply_one(
     canonical_skill_dir: &Path,
@@ -47,16 +98,16 @@ pub fn apply_one(
         source,
     })?;
 
-    match inspect(&target) {
-        Inspect::Missing => {
+    match classify(&target, canonical_skill_dir)? {
+        MirrorState::Missing => {
             create_mirror(canonical_skill_dir, &target, strategy)?;
             Ok(MirrorAction::Created {
                 path: target,
                 strategy,
             })
         }
-        Inspect::CorrectMirror => Ok(MirrorAction::NoOp),
-        Inspect::Conflict(reason) => {
+        MirrorState::Correct | MirrorState::Adoptable => Ok(MirrorAction::NoOp),
+        MirrorState::Diverged { reason } | MirrorState::Conflict { reason } => {
             if !force {
                 return Err(QuayError::MirrorConflict {
                     path: target.display().to_string(),
@@ -112,18 +163,27 @@ pub fn check(
         let canonical = project_root.join(&install.canonical).join(name);
         for mirror in &install.mirrors {
             let target = project_root.join(&mirror.path).join(name);
-            match inspect(&target) {
-                Inspect::Missing => drift.push(MirrorDrift {
+            match classify(&target, &canonical)? {
+                MirrorState::Missing => drift.push(MirrorDrift {
                     skill: name.clone(),
                     mirror_path: target,
                     reason: "mirror missing".into(),
                 }),
-                Inspect::Conflict(reason) => drift.push(MirrorDrift {
+                MirrorState::Diverged { reason } | MirrorState::Conflict { reason } => {
+                    drift.push(MirrorDrift {
+                        skill: name.clone(),
+                        mirror_path: target,
+                        reason,
+                    })
+                }
+                MirrorState::Adoptable => drift.push(MirrorDrift {
                     skill: name.clone(),
                     mirror_path: target,
-                    reason,
+                    reason: "unmanaged directory; run `quay link` to adopt".into(),
                 }),
-                Inspect::CorrectMirror => {
+                MirrorState::Correct => {
+                    // Verify a symlink still points at canonical (copies already
+                    // content-checked by classify).
                     if let Ok(linked) = std::fs::read_link(&target) {
                         let resolved = if linked.is_absolute() {
                             linked
@@ -165,32 +225,6 @@ pub fn resolve_strategy(strategy: MirrorStrategy) -> MirrorStrategy {
             }
         }
         other => other,
-    }
-}
-
-#[derive(Debug)]
-enum Inspect {
-    Missing,
-    CorrectMirror,
-    Conflict(String),
-}
-
-fn inspect(target: &Path) -> Inspect {
-    let metadata = match std::fs::symlink_metadata(target) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Inspect::Missing,
-        Err(e) => return Inspect::Conflict(format!("cannot stat: {}", e)),
-    };
-    if metadata.file_type().is_symlink() {
-        Inspect::CorrectMirror
-    } else if metadata.is_dir() {
-        if target.join(".quay-mirror").exists() {
-            Inspect::CorrectMirror
-        } else {
-            Inspect::Conflict("directory exists but is not a quay-managed mirror".into())
-        }
-    } else {
-        Inspect::Conflict("path exists and is not a directory or symlink".into())
     }
 }
 
@@ -456,5 +490,101 @@ mod tests {
     #[test]
     fn resolve_strategy_passes_concrete_through() {
         assert_eq!(resolve_strategy(MirrorStrategy::Copy), MirrorStrategy::Copy);
+    }
+
+    fn write_copy_mirror(
+        dir: &assert_fs::TempDir,
+        root: &str,
+        skill: &str,
+        body: &[u8],
+    ) -> std::path::PathBuf {
+        let m = dir.path().join(root).join(skill);
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), body).unwrap();
+        std::fs::write(m.join(".quay-mirror"), b"").unwrap();
+        m
+    }
+
+    #[test]
+    fn classify_managed_copy_identical_is_correct() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        // identical body to project_with_skill's canonical
+        let m = write_copy_mirror(&dir, ".codex/skills", "csv-parse", b"---\nname: x\n---\n");
+        assert_eq!(classify(&m, &canonical).unwrap(), MirrorState::Correct);
+    }
+
+    #[test]
+    fn classify_managed_copy_edited_is_diverged() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let m = write_copy_mirror(&dir, ".codex/skills", "csv-parse", b"EDITED IN MIRROR");
+        assert!(matches!(
+            classify(&m, &canonical).unwrap(),
+            MirrorState::Diverged { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_unmanaged_dir_identical_is_adoptable() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap(); // no .quay-mirror marker
+        assert_eq!(classify(&m, &canonical).unwrap(), MirrorState::Adoptable);
+    }
+
+    #[test]
+    fn classify_unmanaged_dir_edited_is_diverged() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"DIFFERENT").unwrap();
+        assert!(matches!(
+            classify(&m, &canonical).unwrap(),
+            MirrorState::Diverged { .. }
+        ));
+    }
+
+    #[test]
+    fn check_reports_copy_content_drift() {
+        let dir = project_with_skill("csv-parse");
+        // configure a copy mirror, materialize it, then edit it
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Copy,
+            }],
+            auto_link: None,
+        };
+        apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        let edited = dir.path().join(".codex/skills/csv-parse/SKILL.md");
+        std::fs::write(&edited, b"HAND EDITED").unwrap();
+        let drift = check(&install, dir.path(), &["csv-parse".to_string()]).unwrap();
+        assert_eq!(drift.len(), 1);
+        assert!(
+            drift[0].reason.contains("content differs"),
+            "got: {}",
+            drift[0].reason
+        );
+    }
+
+    #[test]
+    fn check_no_false_drift_for_symlink() {
+        let dir = project_with_skill("csv-parse");
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".claude/skills".into(),
+                strategy: MirrorStrategy::Symlink,
+            }],
+            auto_link: None,
+        };
+        apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        let drift = check(&install, dir.path(), &["csv-parse".to_string()]).unwrap();
+        assert!(drift.is_empty(), "symlink must not drift, got: {:?}", drift);
     }
 }
