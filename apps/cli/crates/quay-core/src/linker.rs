@@ -21,6 +21,10 @@ pub enum MirrorAction {
         path: PathBuf,
         strategy: MirrorStrategy,
     },
+    Adopted {
+        path: PathBuf,
+        strategy: MirrorStrategy,
+    },
 }
 
 /// One mirror that needs attention, surfaced by [`check`].
@@ -89,6 +93,7 @@ pub fn apply_one(
     skill_name: &str,
     mirror: &MirrorConfig,
     force: bool,
+    adopt: bool,
 ) -> Result<MirrorAction> {
     let target = mirror_root.join(skill_name);
     let strategy = resolve_strategy(mirror.strategy);
@@ -106,8 +111,36 @@ pub fn apply_one(
                 strategy,
             })
         }
-        MirrorState::Correct | MirrorState::Adoptable => Ok(MirrorAction::NoOp),
-        MirrorState::Diverged { reason } | MirrorState::Conflict { reason } => {
+        MirrorState::Correct => Ok(MirrorAction::NoOp),
+        MirrorState::Adoptable => {
+            if adopt {
+                // content is byte-identical, so replacing with a symlink loses nothing
+                replace_mirror(canonical_skill_dir, &target, strategy)?;
+                Ok(MirrorAction::Adopted {
+                    path: target,
+                    strategy,
+                })
+            } else {
+                Ok(MirrorAction::NoOp)
+            }
+        }
+        MirrorState::Diverged { reason } => {
+            if !force {
+                return Err(QuayError::MirrorConflict {
+                    path: target.display().to_string(),
+                    reason: format!(
+                        "{reason}\n  keep it: copy your edit to {} then re-run\n  discard: re-run with --force",
+                        canonical_skill_dir.display()
+                    ),
+                });
+            }
+            replace_mirror(canonical_skill_dir, &target, strategy)?;
+            Ok(MirrorAction::Replaced {
+                path: target,
+                strategy,
+            })
+        }
+        MirrorState::Conflict { reason } => {
             if !force {
                 return Err(QuayError::MirrorConflict {
                     path: target.display().to_string(),
@@ -146,6 +179,7 @@ pub fn apply_all(
             skill_name,
             mirror,
             force,
+            matches!(install.auto_link, Some(true)),
         )?;
         actions.push(action);
     }
@@ -586,5 +620,120 @@ mod tests {
         apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         let drift = check(&install, dir.path(), &["csv-parse".to_string()]).unwrap();
         assert!(drift.is_empty(), "symlink must not drift, got: {:?}", drift);
+    }
+
+    #[test]
+    fn apply_refuses_to_overwrite_diverged_copy_without_force() {
+        let dir = project_with_skill("csv-parse");
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Copy,
+            }],
+            auto_link: None,
+        };
+        apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        let edited = dir.path().join(".codex/skills/csv-parse/SKILL.md");
+        std::fs::write(&edited, b"MY EDIT").unwrap();
+
+        let err = apply_all(&install, dir.path(), "csv-parse", false).unwrap_err();
+        assert!(matches!(err, QuayError::MirrorConflict { .. }));
+        // edit survives
+        assert_eq!(std::fs::read(&edited).unwrap(), b"MY EDIT");
+    }
+
+    #[test]
+    fn apply_overwrites_diverged_copy_with_force() {
+        let dir = project_with_skill("csv-parse");
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Copy,
+            }],
+            auto_link: None,
+        };
+        apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        let edited = dir.path().join(".codex/skills/csv-parse/SKILL.md");
+        std::fs::write(&edited, b"MY EDIT").unwrap();
+
+        let actions = apply_all(&install, dir.path(), "csv-parse", true).unwrap();
+        assert!(matches!(actions[0], MirrorAction::Replaced { .. }));
+        assert_eq!(std::fs::read(&edited).unwrap(), b"---\nname: x\n---\n"); // back to canonical
+    }
+
+    #[test]
+    fn apply_adopts_unmanaged_identical_dir_when_opted_in() {
+        let dir = project_with_skill("csv-parse");
+        // unmanaged real dir identical to canonical, no marker
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Symlink,
+            }],
+            auto_link: Some(true),
+        };
+        let actions = apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        assert!(
+            matches!(actions[0], MirrorAction::Adopted { .. }),
+            "got: {:?}",
+            actions[0]
+        );
+        assert!(std::fs::symlink_metadata(&m)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn apply_leaves_unmanaged_identical_dir_when_not_opted_in() {
+        let dir = project_with_skill("csv-parse");
+        let m = dir.path().join(".codex/skills/csv-parse");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"---\nname: x\n---\n").unwrap();
+
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".codex/skills".into(),
+                strategy: MirrorStrategy::Symlink,
+            }],
+            auto_link: None,
+        };
+        let actions = apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        assert_eq!(actions, vec![MirrorAction::NoOp]);
+        assert!(std::fs::symlink_metadata(&m).unwrap().file_type().is_dir()); // still a real dir
+    }
+
+    #[test]
+    fn apply_refuses_symlink_replaced_by_edited_dir_without_force() {
+        let dir = project_with_skill("csv-parse");
+        let install = InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".claude/skills".into(),
+                strategy: MirrorStrategy::Symlink,
+            }],
+            auto_link: None,
+        };
+        apply_all(&install, dir.path(), "csv-parse", false).unwrap();
+        // replace the symlink with a real, edited directory
+        let m = dir.path().join(".claude/skills/csv-parse");
+        std::fs::remove_file(&m).unwrap();
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("SKILL.md"), b"EDITED AFTER UNLINK").unwrap();
+
+        let err = apply_all(&install, dir.path(), "csv-parse", false).unwrap_err();
+        assert!(matches!(err, QuayError::MirrorConflict { .. }));
+        assert_eq!(
+            std::fs::read(m.join("SKILL.md")).unwrap(),
+            b"EDITED AFTER UNLINK"
+        );
     }
 }

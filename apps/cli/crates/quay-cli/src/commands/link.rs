@@ -74,6 +74,11 @@ fn apply(
                             "path": path.display().to_string(),
                             "strategy": format!("{:?}", strategy).to_lowercase(),
                         }),
+                        MirrorAction::Adopted { path, strategy } => json!({
+                            "action": "adopted",
+                            "path": path.display().to_string(),
+                            "strategy": format!("{:?}", strategy).to_lowercase(),
+                        }),
                     }).collect::<Vec<_>>(),
                 })
             })
@@ -92,6 +97,9 @@ fn apply(
                     }
                     MirrorAction::Replaced { path, strategy } => {
                         println!("replaced {} -> {} ({:?})", name, path.display(), strategy);
+                    }
+                    MirrorAction::Adopted { path, strategy } => {
+                        println!("adopted  {} -> {} ({:?})", name, path.display(), strategy);
                     }
                     MirrorAction::NoOp => {
                         println!("ok       {}", name);

@@ -695,6 +695,9 @@ fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: 
                     MirrorAction::Replaced { path, strategy } => {
                         println!("  mirror: replaced {} ({:?})", path.display(), strategy);
                     }
+                    MirrorAction::Adopted { path, strategy } => {
+                        println!("  mirror: adopted {} ({:?})", path.display(), strategy);
+                    }
                     MirrorAction::NoOp => {}
                 }
             }
