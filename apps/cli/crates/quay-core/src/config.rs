@@ -220,6 +220,12 @@ pub struct InstallConfig {
     /// Optional mirror destinations.
     #[serde(default)]
     pub mirrors: Vec<MirrorConfig>,
+    /// Opt-in: when `Some(true)`, `quay link` may auto-symlink a discovered
+    /// unmanaged tool dir whose content is byte-identical to canonical, and
+    /// register it as a mirror. `Some(false)` = report only. `None` = the user
+    /// has not decided yet (prompt once, then persist the choice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_link: Option<bool>,
 }
 
 impl Default for InstallConfig {
@@ -227,6 +233,7 @@ impl Default for InstallConfig {
         Self {
             canonical: default_canonical(),
             mirrors: Vec::new(),
+            auto_link: None,
         }
     }
 }
@@ -900,10 +907,36 @@ mod tests {
                 path: PathBuf::from(".claude/skills"),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         let serialized = toml::to_string(&cfg).unwrap();
         let parsed: InstallConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn auto_link_absent_loads_as_none_and_is_omitted() {
+        let cfg: Config = toml::from_str("[install]\ncanonical = \".agents/skills\"\n").unwrap();
+        assert_eq!(cfg.install.auto_link, None);
+        let s = toml::to_string(&cfg.install).unwrap();
+        assert!(
+            !s.contains("auto_link"),
+            "None auto_link must not serialize, got:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn auto_link_true_round_trips() {
+        let install = InstallConfig {
+            canonical: PathBuf::from(".agents/skills"),
+            mirrors: Vec::new(),
+            auto_link: Some(true),
+        };
+        let s = toml::to_string(&install).unwrap();
+        assert!(s.contains("auto_link = true"), "got:\n{}", s);
+        let parsed: InstallConfig = toml::from_str(&s).unwrap();
+        assert_eq!(parsed.auto_link, Some(true));
     }
 
     #[test]

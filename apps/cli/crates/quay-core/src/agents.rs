@@ -91,7 +91,11 @@ pub fn install_config(
             strategy: MirrorStrategy::Auto,
         });
     }
-    Ok(InstallConfig { canonical, mirrors })
+    Ok(InstallConfig {
+        canonical,
+        mirrors,
+        auto_link: None,
+    })
 }
 
 /// Auto-detect installed agents: any whose `detect` path exists on disk.
@@ -151,7 +155,11 @@ mod tests {
     #[test]
     fn registry_parses_and_has_many_agents() {
         let r = registry();
-        assert!(r.agents.len() > 60, "expected >60 agents, got {}", r.agents.len());
+        assert!(
+            r.agents.len() > 60,
+            "expected >60 agents, got {}",
+            r.agents.len()
+        );
     }
 
     #[test]

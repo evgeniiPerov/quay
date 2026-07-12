@@ -319,6 +319,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         let actions = apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         assert_eq!(actions.len(), 1);
@@ -340,6 +341,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         let actions = apply_all(&install, dir.path(), "csv-parse", false).unwrap();
@@ -359,6 +361,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         let err = apply_all(&install, dir.path(), "csv-parse", false).unwrap_err();
         assert!(matches!(err, QuayError::MirrorConflict { .. }));
@@ -378,6 +381,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         let actions = apply_all(&install, dir.path(), "csv-parse", true).unwrap();
         assert!(matches!(actions[0], MirrorAction::Replaced { .. }));
@@ -397,6 +401,7 @@ mod tests {
                 path: ".cursor/rules".into(),
                 strategy: MirrorStrategy::Copy,
             }],
+            auto_link: None,
         };
         let actions = apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         assert!(matches!(actions[0], MirrorAction::Created { .. }));
@@ -415,6 +420,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         let drift = check(&install, dir.path(), &["csv-parse".to_string()]).unwrap();
         assert_eq!(drift.len(), 1);
@@ -430,6 +436,7 @@ mod tests {
                 path: ".claude/skills".into(),
                 strategy: MirrorStrategy::Symlink,
             }],
+            auto_link: None,
         };
         apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         let drift = check(&install, dir.path(), &["csv-parse".to_string()]).unwrap();
