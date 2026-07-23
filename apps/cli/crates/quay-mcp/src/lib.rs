@@ -35,10 +35,7 @@ pub mod test_support {
     /// added in later tasks can't interfere across concurrent tests.
     pub fn test_server() -> QuayServer {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "quay-mcp-test-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("quay-mcp-test-{}-{n}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         QuayServer::new(ServeOptions {
             project: dir,

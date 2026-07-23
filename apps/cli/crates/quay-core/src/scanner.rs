@@ -42,11 +42,45 @@ impl SkillMeta {
     }
 }
 
+/// Whether a directory under a skills root is a real skill rather than
+/// bookkeeping.
+///
+/// Dot-prefixed directories are never skills: a skill's `name` may not start
+/// with a hyphen or contain uppercase, and by convention tooling hides its own
+/// state behind a dot. Without this, a staging directory stranded by a killed
+/// `quay add` (SIGINT skips the cleanup that a normal error path runs) shows up
+/// in `quay list` as a skill named `.tmpAbCdEf`, and `quay link` mirrors it into
+/// every tool directory.
+pub fn is_skill_dir(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| !n.starts_with('.'))
+}
+
 /// Parse what metadata can be derived from a raw skill file.
 ///
 /// `path` is used for the directory-name fallback and never read from disk here.
 pub fn parse_skill_metadata(raw: &str, path: &Path) -> SkillMeta {
-    let trimmed = raw.trim_start_matches('\u{feff}');
+    let stripped = raw.trim_start_matches('\u{feff}');
+
+    // Every delimiter below is matched literally against `\n`, so a CRLF file
+    // misses them all and a perfectly good frontmatter skill degrades to
+    // Freestyle — losing its name, description and version. git's default
+    // core.autocrlf on Windows rewrites line endings on checkout, so that is the
+    // normal state of a skill there, not an edge case.
+    //
+    // Only the metadata parse normalizes. Content hashing deliberately does not
+    // (see lock_hash), so this cannot shift any digest.
+    let normalized;
+    let trimmed = if stripped.contains("\r\n") {
+        normalized = stripped.replace("\r\n", "\n");
+        normalized.as_str()
+    } else {
+        stripped
+    };
 
     // Frontmatter branch.
     if let Some(rest) = trimmed.strip_prefix("---\n") {
@@ -235,7 +269,7 @@ pub fn scan_local(project_root: &Path, push_log: &crate::push_log::PushLog) -> V
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !is_skill_dir(&path) {
                 continue;
             }
             let Some(skill_file) = pick_skill_file(&path) else {
@@ -306,7 +340,7 @@ pub fn scan_local_skills(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !is_skill_dir(&path) {
                 continue;
             }
             let Some(skill_file) = pick_skill_file(&path) else {
@@ -498,6 +532,51 @@ mod tests {
             fs::create_dir_all(p).unwrap();
         }
         fs::write(path, body).unwrap();
+    }
+
+    /// A CRLF checkout is the normal state of a skill on Windows, where git's
+    /// default core.autocrlf rewrites line endings. Parsing it as Freestyle
+    /// silently drops name, description and version.
+    #[test]
+    fn crlf_frontmatter_still_parses() {
+        let raw =
+            "---\r\nname: foo\r\ndescription: A foo skill\r\nversion: 1.2.3\r\n---\r\nbody\r\n";
+        let meta = parse_skill_metadata(raw, &PathBuf::from("/tmp/skills/foo/SKILL.md"));
+        assert_eq!(meta.format, SkillFormat::Frontmatter);
+        assert_eq!(meta.name, "foo");
+        assert_eq!(meta.description, "A foo skill");
+        assert_eq!(meta.version, "1.2.3");
+    }
+
+    #[test]
+    fn crlf_slash_command_still_parses() {
+        let raw = "# /b-slash\r\n\r\nA slash skill.\r\n";
+        let meta = parse_skill_metadata(raw, &PathBuf::from("/tmp/skills/b-slash/SKILL.md"));
+        assert_eq!(meta.format, SkillFormat::SlashCommand);
+        assert_eq!(meta.name, "b-slash");
+        assert_eq!(meta.description, "A slash skill.");
+    }
+
+    /// A staging dir stranded by a killed `quay add` used to scan as a skill
+    /// named `.tmpAbCdEf`, and `quay link` then mirrored it into every tool dir.
+    #[test]
+    fn dot_prefixed_dirs_are_not_skills() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".agents/skills");
+        write_file(
+            &root.join("real-skill/SKILL.md"),
+            "---\nname: real-skill\ndescription: real\n---\nbody\n",
+        );
+        write_file(
+            &root.join(".tmpAbCdEf/SKILL.md"),
+            "---\nname: real-skill\ndescription: half-fetched\n---\nbody\n",
+        );
+
+        let log = crate::push_log::PushLog::default();
+        let skills = scan_local_skills(std::slice::from_ref(&root), &log);
+
+        assert_eq!(skills.len(), 1, "staging residue must not scan as a skill");
+        assert_eq!(skills[0].meta.name, "real-skill");
     }
 
     #[test]

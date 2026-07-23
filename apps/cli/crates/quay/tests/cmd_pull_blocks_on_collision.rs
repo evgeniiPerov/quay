@@ -79,7 +79,7 @@ fn seed_project(root: &Path, bare: &Path, local_content: &str) -> std::path::Pat
     std::fs::write(
         quay_dir.join("config.toml"),
         format!(
-            "[remotes.hub]\nurl = \"{}\"\ndefault = true\n",
+            "[remotes.hub]\nurl = '{}'\ndefault = true\n",
             bare.to_str().unwrap()
         ),
     )
@@ -172,8 +172,11 @@ fn quay_add_force_overwrites_existing_skill() {
     );
 
     let content = std::fs::read_to_string(proj.join(".agents/skills/csv-parse/SKILL.md")).unwrap();
+    // Line endings normalized: the fixture hub is a real git repo, so a Windows
+    // checkout (core.autocrlf) returns CRLF and quay copies what it fetched.
     assert_eq!(
-        content, SKILL_MD,
+        content.replace("\r\n", "\n"),
+        SKILL_MD.replace("\r\n", "\n"),
         "--force must overwrite the existing file with new content"
     );
 }

@@ -23,6 +23,7 @@ pub mod reconcile;
 pub mod registry;
 pub mod registry_builder;
 pub mod scanner;
+pub use scanner::is_skill_dir;
 pub mod search;
 pub mod skill_files;
 pub mod validate;

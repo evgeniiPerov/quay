@@ -302,7 +302,12 @@ mod tests {
         let bytes = fetcher
             .fetch_path(url, "skills/foo/SKILL.md")
             .expect("fetch_path");
-        assert_eq!(String::from_utf8(bytes).unwrap(), SKILL_MD);
+        // Normalized: the fixture is a real git repo, so a Windows checkout
+        // (core.autocrlf) hands back CRLF.
+        assert_eq!(
+            String::from_utf8(bytes).unwrap().replace("\r\n", "\n"),
+            SKILL_MD.replace("\r\n", "\n")
+        );
     }
 
     #[test]

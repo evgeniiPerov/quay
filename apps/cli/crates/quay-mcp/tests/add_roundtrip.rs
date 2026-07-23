@@ -56,7 +56,7 @@ async fn quay_add_installs_from_local_hub() {
     std::fs::create_dir_all(project.join(".quay")).unwrap();
     std::fs::write(
         project.join(".quay/config.toml"),
-        format!("[install]\ncanonical = \".agents/skills\"\n\n[remotes.h]\nurl = \"{hub_url}\"\ndefault = true\n"),
+        format!("[install]\ncanonical = \".agents/skills\"\n\n[remotes.h]\nurl = '{hub_url}'\ndefault = true\n"),
     )
     .unwrap();
 

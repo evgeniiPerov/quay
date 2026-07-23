@@ -1,0 +1,69 @@
+name: ci
+
+# The gate that was missing: nothing ran the test suite on a PR, so a change
+# could merge with failing tests, clippy warnings, or unformatted code.
+
+on:
+  pull_request:
+    paths:
+      - 'apps/cli/**'
+      - '.github/workflows/ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/cli/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the run in flight for the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: apps/cli
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # No toolchain action: rustup resolves apps/cli/rust-toolchain.toml, which
+      # pins the exact version and its components. One source of truth, shared
+      # with contributors — installing "stable" here would silently diverge from
+      # what everyone runs locally.
+      - name: Install pinned toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/cli
+
+      # Ordered cheapest-first: fmt and clippy fail in seconds and are the most
+      # common breakage, so don't make anyone wait on the suite to learn about them.
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # Windows is a first-class target (junction mirrors, .zip release artifact) and
+  # the paths code is where the two platforms actually diverge.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/cli
+      - name: Test
+        run: cargo test --workspace

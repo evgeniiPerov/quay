@@ -180,7 +180,10 @@ mod tests {
             pr_url: "https://example/pr/1".into(),
             pushed_at: "2026-05-09T18:30:00Z".into(),
             commit_sha: Some("aabbccdd".into()),
-            project_path: project.map(|p| p.to_path_buf()),
+            // Canonicalized to match what pusher.rs writes in production. On
+            // Windows canonicalize adds the \\?\ prefix and expands 8.3 names,
+            // so a raw path would never match the lookup.
+            project_path: project.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf())),
         }
     }
 

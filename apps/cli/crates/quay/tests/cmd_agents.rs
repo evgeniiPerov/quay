@@ -51,7 +51,10 @@ fn link_creates_mirror_symlink_to_canonical() {
 #[test]
 fn link_is_idempotent() {
     let p = project_with_skill();
-    quay(&p).args(["agents", "link", "-a", "claude-code"]).assert().success();
+    quay(&p)
+        .args(["agents", "link", "-a", "claude-code"])
+        .assert()
+        .success();
     quay(&p)
         .args(["agents", "link", "-a", "claude-code"])
         .assert()
@@ -86,8 +89,14 @@ fn project_scope_persists_mirror_into_config() {
     let p = project_with_skill();
     // initialize so persistence kicks in
     p.child(".quay/config.toml").write_str("").unwrap();
-    quay(&p).args(["agents", "link", "-a", "claude-code"]).assert().success();
+    quay(&p)
+        .args(["agents", "link", "-a", "claude-code"])
+        .assert()
+        .success();
 
     let cfg = std::fs::read_to_string(p.path().join(".quay/config.toml")).unwrap();
-    assert!(cfg.contains(".claude/skills"), "mirror should be recorded in config: {cfg}");
+    assert!(
+        cfg.contains(".claude/skills"),
+        "mirror should be recorded in config: {cfg}"
+    );
 }

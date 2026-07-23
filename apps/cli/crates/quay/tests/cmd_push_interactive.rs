@@ -32,9 +32,9 @@ default = true
         .arg(project.path())
         .arg("push")
         .arg("-i")
-        // Pipe /dev/null as stdin — ensures the process sees a non-TTY.
-        .pipe_stdin("/dev/null")
-        .unwrap();
+        // Empty piped stdin — ensures the process sees a non-TTY. Not
+        // /dev/null: that path does not exist on Windows.
+        .write_stdin("");
 
     cmd.assert()
         .failure()
@@ -64,8 +64,7 @@ default = true
         .arg(project.path())
         .arg("push")
         .arg("--interactive")
-        .pipe_stdin("/dev/null")
-        .unwrap();
+        .write_stdin("");
 
     cmd.assert()
         .failure()

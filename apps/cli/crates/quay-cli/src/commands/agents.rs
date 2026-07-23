@@ -5,8 +5,8 @@
 use crate::args::AgentsAction;
 use crate::config_io::{read_project_file, write_project_file};
 use quay_core::{
-    agent_registry, apply_all, detect_installed, install_config, AgentScope, InstallConfig,
-    MirrorAction,
+    agent_registry, apply_all, detect_installed, install_config, is_skill_dir, AgentScope,
+    InstallConfig, MirrorAction,
 };
 use serde_json::json;
 use std::path::Path;
@@ -176,7 +176,7 @@ fn installed_skills(install: &InstallConfig, root: &Path) -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&canonical) {
         for e in entries.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if is_skill_dir(&e.path()) {
                 if let Some(n) = e.file_name().to_str() {
                     names.push(n.to_string());
                 }

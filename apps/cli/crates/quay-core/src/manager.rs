@@ -156,6 +156,11 @@ where
         })?;
 
         for file_rel in &entry.files {
+            // registry.json comes off the network, so its file list is untrusted
+            // input. `Path::join` silently discards the base when handed an
+            // absolute path, and honours `..` — an entry of "../../.ssh/authorized_keys"
+            // would otherwise write straight through the staging dir.
+            reject_unsafe_path(file_rel)?;
             let remote_path = format!("{}/{}", entry.path, file_rel);
             let bytes = match direct_branch.as_deref() {
                 Some(b) => self.file_fetcher.fetch_file_at(&hub_url, &remote_path, b)?,
@@ -286,6 +291,52 @@ where
         self.add_with_force(skill_name, None, true)?;
         Ok(true)
     }
+}
+
+/// Reject a registry-supplied file path that would escape the directory it is
+/// joined onto.
+///
+/// Rejects absolute paths (`Path::join` throws the base away), any `..`
+/// component, and Windows path prefixes such as `C:` or `\\server\share` — which
+/// `Component::Prefix` catches on Windows and the explicit `\` and `:` checks
+/// catch when a Windows-authored registry is consumed on Unix, where the whole
+/// string would otherwise be treated as one innocent-looking filename.
+fn reject_unsafe_path(file_rel: &str) -> Result<()> {
+    use std::path::Component;
+
+    let bad = |reason: &str| {
+        Err(QuayError::InvalidRegistry {
+            reason: format!("unsafe file path {file_rel:?} in registry entry: {reason}"),
+        })
+    };
+
+    if file_rel.is_empty() {
+        return bad("empty");
+    }
+    if file_rel.contains('\0') {
+        return bad("contains a null byte");
+    }
+    // Checked before parsing: on Unix these are ordinary filename characters, so
+    // Components would not flag them.
+    if file_rel.contains('\\') {
+        return bad("contains a backslash");
+    }
+    if file_rel.chars().nth(1) == Some(':') {
+        return bad("looks like a Windows drive path");
+    }
+
+    let path = Path::new(file_rel);
+    if path.is_absolute() || path.has_root() {
+        return bad("is absolute");
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => return bad("contains a `..` component"),
+            Component::RootDir | Component::Prefix(_) => return bad("is absolute"),
+        }
+    }
+    Ok(())
 }
 
 /// Recursively copy anything under `from` that `into` does not already have.
@@ -616,6 +667,57 @@ mod tests {
         // .quay is inside the project (same filesystem as the install dir) and is
         // not one of the roots the scanner walks.
         assert!(dir.path().join(".quay").exists(), "staging root is .quay/");
+    }
+
+    #[test]
+    fn unsafe_registry_paths_are_rejected() {
+        for bad in [
+            "../evil.md",
+            "a/../../evil.md",
+            "/etc/passwd",
+            "//server/share/x",
+            "C:/Windows/system32/x",
+            r"..\evil.md",
+            r"dir\file.md",
+            "",
+        ] {
+            assert!(
+                reject_unsafe_path(bad).is_err(),
+                "should have rejected {bad:?}"
+            );
+        }
+        for ok in ["SKILL.md", "scripts/run.py", "./SKILL.md", "a/b/c.md"] {
+            assert!(reject_unsafe_path(ok).is_ok(), "should have allowed {ok:?}");
+        }
+    }
+
+    /// A hostile or compromised hub controls registry.json. Nothing may be
+    /// written outside the skill's own directory.
+    #[test]
+    fn add_refuses_a_registry_entry_that_escapes_the_skill_dir() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let mut reg = make_registry("csv-parse", "1.0.0");
+        reg.skills.get_mut("csv-parse").unwrap().files = vec!["../../pwned.md".into()];
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([(
+                "skills/csv-parse/../../pwned.md".into(),
+                b"pwned".to_vec(),
+            )])),
+        };
+        let regf = FakeRegistry(reg);
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+
+        let err = mgr.add("csv-parse", None).unwrap_err();
+        assert!(
+            matches!(err, QuayError::InvalidRegistry { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            !dir.path().join("pwned.md").exists(),
+            "traversal must not write outside the skill dir"
+        );
+        assert!(!dir.path().join(".agents/skills/csv-parse").exists());
     }
 
     #[test]
