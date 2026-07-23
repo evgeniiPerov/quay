@@ -467,10 +467,16 @@ fn replace_mirror(canonical: &Path, target: &Path, strategy: MirrorStrategy) -> 
         source,
     })?;
     if metadata.file_type().is_symlink() {
-        std::fs::remove_file(target).map_err(|source| QuayError::Io {
-            path: target.display().to_string(),
-            source,
-        })?;
+        // Windows distinguishes the two: a directory symlink or junction — which
+        // is what every mirror is — unlinks with remove_dir, and remove_file
+        // fails on it. On unix remove_file handles both, so try it first and
+        // fall back rather than cfg-splitting.
+        std::fs::remove_file(target)
+            .or_else(|_| std::fs::remove_dir(target))
+            .map_err(|source| QuayError::Io {
+                path: target.display().to_string(),
+                source,
+            })?;
     } else if metadata.is_dir() {
         std::fs::remove_dir_all(target).map_err(|source| QuayError::Io {
             path: target.display().to_string(),

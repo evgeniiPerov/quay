@@ -63,7 +63,7 @@ fn quay_push_direct_lands_on_hub() {
         format!(
             "[user]\nname = \"Test User\"\nemail = \"test@example.com\"\n\n\
              [install]\ncanonical = \".agents/skills\"\n\n\
-             [remotes.h]\nurl = \"{hub_url}\"\ndefault = true\npush_mode = \"direct\"\n"
+             [remotes.h]\nurl = '{hub_url}'\ndefault = true\npush_mode = \"direct\"\n"
         ),
     )
     .unwrap();
