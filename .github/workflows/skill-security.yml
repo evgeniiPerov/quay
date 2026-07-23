@@ -37,10 +37,13 @@ jobs:
       - name: Install SkillSpector
         run: uv tool install 'skillspector @ git+https://github.com/NVIDIA/skillspector.git@a54947c307fe19a24a43db55f6148e181a987a67'
 
-      # One SARIF per skill. `--recursive` writes concatenated text rather than
-      # merged SARIF, so scan each skill dir separately; upload-sarif takes the
-      # whole directory. Exit 1 means risk > 50 — collect and fail at the end so
-      # every skill still gets scanned and reported.
+      # One scan per skill dir: `--recursive` writes concatenated text rather
+      # than merged SARIF. Exit 1 means risk > 50 — collect and fail at the end
+      # so every skill still gets scanned and reported.
+      #
+      # SkillSpector emits uris relative to the scanned dir ("SKILL.md"), so
+      # each file is rewritten to repo-root-relative or code scanning annotates
+      # the wrong path.
       - name: Scan skills
         id: scan
         run: |
@@ -48,20 +51,42 @@ jobs:
           failed=""
           for dir in .agents/skills/*/; do
             name=$(basename "$dir")
-            skillspector scan "$dir" --no-llm --format sarif --output "sarif/${name}.sarif" \
+            out="sarif/${name}.sarif"
+            skillspector scan "$dir" --no-llm --format sarif --output "$out" \
               || failed="${failed} ${name}"
+            jq --arg p "${dir}" \
+              '(.runs[].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= $p + .' \
+              "$out" > "${out}.tmp" && mv "${out}.tmp" "$out"
           done
           if [ -n "$failed" ]; then
-            echo "over-threshold:${failed}" >> "$GITHUB_OUTPUT"
+            echo "over_threshold=${failed}" >> "$GITHUB_OUTPUT"
             echo "::error::skills over risk threshold:${failed}"
           fi
+
+      # Code scanning rejects multiple runs sharing a category, so the per-skill
+      # files are folded into a single run (rules deduped by id) rather than
+      # uploaded as a directory.
+      - name: Merge SARIF
+        if: always()
+        run: |
+          jq -s '. as $all | {
+            version: "2.1.0",
+            "$schema": $all[0]["$schema"],
+            runs: [{
+              tool: { driver: ($all[0].runs[0].tool.driver
+                       | .rules = ([$all[].runs[0].tool.driver.rules[]?] | unique_by(.id))) },
+              results: [$all[].runs[0].results[]?]
+            }]
+          }' sarif/*.sarif > skills.sarif
+          echo "merged $(jq '.runs[0].results | length' skills.sarif) findings"
 
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: sarif
+          sarif_file: skills.sarif
+          category: skill-security
 
       - name: Fail on over-threshold skills
-        if: steps.scan.outputs.over-threshold != ''
+        if: steps.scan.outputs.over_threshold != ''
         run: exit 1
