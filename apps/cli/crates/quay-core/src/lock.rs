@@ -144,17 +144,16 @@ fn github_owner_repo(url: &str) -> Option<String> {
     // segment like `.../mirror-of-github.com/...` can't be misclassified.
     let u = url.trim();
     let lower = u.to_ascii_lowercase();
-    let after_host = if let Some(rest) = lower.strip_prefix("https://github.com/") {
-        &u[u.len() - rest.len()..]
-    } else if let Some(rest) = lower.strip_prefix("http://github.com/") {
-        &u[u.len() - rest.len()..]
-    } else if let Some(rest) = lower.strip_prefix("git@github.com:") {
-        &u[u.len() - rest.len()..]
-    } else if let Some(rest) = lower.strip_prefix("ssh://git@github.com/") {
-        &u[u.len() - rest.len()..]
-    } else {
-        return None;
-    };
+    // Matched against the lowercased copy, then sliced out of the original so the
+    // owner/repo keep their real case.
+    const PREFIXES: [&str; 4] = [
+        "https://github.com/",
+        "http://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+    ];
+    let rest = PREFIXES.iter().find_map(|p| lower.strip_prefix(p))?;
+    let after_host = &u[u.len() - rest.len()..];
     let trimmed = after_host.trim_end_matches('/');
     let path = trimmed.strip_suffix(".git").unwrap_or(trimmed);
     let mut parts = path.split('/').filter(|s| !s.is_empty());

@@ -22,6 +22,8 @@ pub fn default_config_dir() -> Option<PathBuf> {
     }
 
     // XDG_CONFIG_HOME always wins on any non-Windows platform (useful in tests).
+    // Gated so the Windows build doesn't see it as unreachable after the return above.
+    #[cfg(not(windows))]
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return Some(PathBuf::from(xdg).join("quay"));

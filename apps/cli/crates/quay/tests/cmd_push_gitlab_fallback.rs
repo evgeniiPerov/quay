@@ -23,6 +23,9 @@ fn quay() -> Command {
     Command::cargo_bin("quay").unwrap()
 }
 
+// Shadows PATH with a symlink to a `which`-resolved git, so it is unix-only.
+// `#[ignore]` still has to compile, which is what broke the Windows build.
+#[cfg(unix)]
 #[test]
 #[ignore = "requires git on PATH but no glab; use a shadow PATH dir for a reliable setup"]
 fn push_to_gitlab_url_without_glab_prints_compare_url() {
