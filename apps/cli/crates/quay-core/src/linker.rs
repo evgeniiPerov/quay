@@ -915,7 +915,11 @@ mod tests {
         apply_all(&install, dir.path(), "csv-parse", false).unwrap();
         // replace the symlink with a real, edited directory
         let m = dir.path().join(".claude/skills/csv-parse");
-        std::fs::remove_file(&m).unwrap();
+        // A directory symlink needs remove_dir on Windows; remove_file only
+        // unlinks it on unix.
+        if std::fs::remove_file(&m).is_err() {
+            std::fs::remove_dir(&m).unwrap();
+        }
         std::fs::create_dir_all(&m).unwrap();
         std::fs::write(m.join("SKILL.md"), b"EDITED AFTER UNLINK").unwrap();
 
