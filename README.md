@@ -244,7 +244,7 @@ apps/cli/                  Rust workspace
 .claude/                   Claude Code-specific configuration
 ```
 
-## Security & Fixes (v0.13.3)
+## Security & Fixes (v0.13.4)
 
 - **Registry file paths are now validated.** `registry.json` is fetched from the remote hub, and its `files` list went straight into a path join unchecked — an entry like `"../../../.ssh/authorized_keys"` wrote there, and an absolute path escaped the skill directory entirely. Absolute paths, `..` components and Windows drive/UNC prefixes are rejected before anything is fetched. **If you install from a hub you do not control, update.**
 - **Windows: frontmatter parses in files with CRLF line endings.** Git's default `core.autocrlf` rewrites line endings on checkout, so on Windows every frontmatter skill silently degraded to "freestyle" — losing its name, description and version, and listing as `unversioned`.

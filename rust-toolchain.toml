@@ -6,5 +6,11 @@
 #
 # Bump deliberately: change the version here, run `cargo clippy --workspace
 # --all-targets -- -D warnings`, fix what the new lints find, commit together.
+#
+# Lives at the repo root, not in apps/cli, so every rustup invocation resolves
+# the same toolchain. cargo-dist runs `rustup target add` from here while
+# building the workspace one level down — with the file in apps/cli those were
+# two different toolchains, and the musl release job failed with "can't find
+# crate for `core`" because the target had been added to the other one.
 channel = "1.97.1"
 components = ["clippy", "rustfmt", "rust-analyzer"]
