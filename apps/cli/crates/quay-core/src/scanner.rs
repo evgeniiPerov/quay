@@ -42,6 +42,24 @@ impl SkillMeta {
     }
 }
 
+/// Whether a directory under a skills root is a real skill rather than
+/// bookkeeping.
+///
+/// Dot-prefixed directories are never skills: a skill's `name` may not start
+/// with a hyphen or contain uppercase, and by convention tooling hides its own
+/// state behind a dot. Without this, a staging directory stranded by a killed
+/// `quay add` (SIGINT skips the cleanup that a normal error path runs) shows up
+/// in `quay list` as a skill named `.tmpAbCdEf`, and `quay link` mirrors it into
+/// every tool directory.
+pub fn is_skill_dir(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| !n.starts_with('.'))
+}
+
 /// Parse what metadata can be derived from a raw skill file.
 ///
 /// `path` is used for the directory-name fallback and never read from disk here.
@@ -235,7 +253,7 @@ pub fn scan_local(project_root: &Path, push_log: &crate::push_log::PushLog) -> V
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !is_skill_dir(&path) {
                 continue;
             }
             let Some(skill_file) = pick_skill_file(&path) else {
@@ -306,7 +324,7 @@ pub fn scan_local_skills(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !is_skill_dir(&path) {
                 continue;
             }
             let Some(skill_file) = pick_skill_file(&path) else {
@@ -498,6 +516,28 @@ mod tests {
             fs::create_dir_all(p).unwrap();
         }
         fs::write(path, body).unwrap();
+    }
+
+    /// A staging dir stranded by a killed `quay add` used to scan as a skill
+    /// named `.tmpAbCdEf`, and `quay link` then mirrored it into every tool dir.
+    #[test]
+    fn dot_prefixed_dirs_are_not_skills() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".agents/skills");
+        write_file(
+            &root.join("real-skill/SKILL.md"),
+            "---\nname: real-skill\ndescription: real\n---\nbody\n",
+        );
+        write_file(
+            &root.join(".tmpAbCdEf/SKILL.md"),
+            "---\nname: real-skill\ndescription: half-fetched\n---\nbody\n",
+        );
+
+        let log = crate::push_log::PushLog::default();
+        let skills = scan_local_skills(std::slice::from_ref(&root), &log);
+
+        assert_eq!(skills.len(), 1, "staging residue must not scan as a skill");
+        assert_eq!(skills[0].meta.name, "real-skill");
     }
 
     #[test]

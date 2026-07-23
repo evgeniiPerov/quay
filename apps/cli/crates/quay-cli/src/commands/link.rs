@@ -4,8 +4,8 @@ use crate::args::LinkAction;
 use crate::commands::interactive::is_tty;
 use crate::config_io::{read_project_file, write_project_file};
 use quay_core::{
-    apply_all, check, classify, discover_roots, reconcile, Config, InstallConfig, MirrorAction,
-    MirrorConfig, MirrorDrift, MirrorState, MirrorStrategy, ReconcileReport,
+    apply_all, check, classify, discover_roots, is_skill_dir, reconcile, Config, InstallConfig,
+    MirrorAction, MirrorConfig, MirrorDrift, MirrorState, MirrorStrategy, ReconcileReport,
 };
 use serde_json::json;
 use std::path::Path;
@@ -33,7 +33,7 @@ fn list_installed_skills(install: &InstallConfig, project: &Path) -> Vec<String>
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&canonical) {
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if is_skill_dir(&entry.path()) {
                 if let Some(name) = entry.file_name().to_str() {
                     names.push(name.to_string());
                 }
