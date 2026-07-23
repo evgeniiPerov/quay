@@ -27,12 +27,12 @@ pub mod search;
 pub mod skill_files;
 pub mod validate;
 
-pub use agents::{
-    detect_installed, install_config, registry as agent_registry, Agent,
-    Registry as AgentRegistry, Scope as AgentScope,
-};
 pub use add_plan::{
     build_plan, build_plan_with_prompt, collision_names, CollisionStrategy, SkillAction,
+};
+pub use agents::{
+    detect_installed, install_config, registry as agent_registry, Agent, Registry as AgentRegistry,
+    Scope as AgentScope,
 };
 pub use clone_fetcher::CloneFetcher;
 pub use config::{
@@ -48,7 +48,10 @@ pub use git::{GitClient, GitShellClient};
 pub use github::GithubRawFetcher;
 #[cfg(debug_assertions)]
 pub use github::GithubRawFetcherWithBase;
-pub use linker::{apply_all, apply_one, check, MirrorAction, MirrorDrift};
+pub use linker::{
+    apply_all, apply_one, check, classify, discover_roots, reconcile, MirrorAction, MirrorDrift,
+    MirrorState, ReconcileReport,
+};
 pub use lock::{
     read as read_lock, source_from_url, write_atomic as write_lock, LockEntry, SkillsLock,
     SourceType,

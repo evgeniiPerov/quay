@@ -36,6 +36,32 @@ quay link remove .cursor/rules         # forget the mirror (files stay)
 | `--force` | Overwrite existing entries even if they conflict with quay's layout. |
 | `--profile`, `--user-config`, `--project`, `--json` | Standard globals. |
 
+## Mirror edits & reconcile
+
+Mirrors (`.claude/`, `.codex/`, `.cursor/`) mirror the canonical `.agents/skills/`.
+Symlink/junction mirrors are transparent, but a **copy** mirror (Windows, or
+`strategy = "copy"`) is a real directory — and hand-editing it used to be lost
+silently on the next apply. `quay link` now detects and protects those edits:
+
+- `quay link check` reports a copy mirror whose content differs from canonical
+  (`mirror content differs from canonical`) and exits non-zero. It is read-only —
+  it never creates or overwrites anything.
+- `quay link` **refuses** to overwrite a diverged mirror. Copy your edit into the
+  canonical skill and re-run, or `quay link --force` to discard the mirror edit.
+- Discovery is disk-driven: `quay link` scans all known tool dirs
+  (`.agents`/`.claude`/`.codex`/`.cursor`), so a mirror someone added outside the
+  config is still seen. If no `.agents` canonical exists, a lone tool dir is
+  treated as the source of truth and left untouched.
+
+### Adopting an unmanaged dir (`install.auto_link`)
+
+When `quay link` finds an unmanaged tool dir whose content is byte-identical to
+canonical, it can *adopt* it — convert it to a managed mirror (a symlink on
+most platforms) and register it as a mirror. This is opt-in: the first interactive run asks, and records your choice
+as `install.auto_link` in `.quay/config.toml` (`true` = adopt, `false` = report
+only). Non-interactive runs (`--json`, CI) never adopt or write config; they
+report the dir and exit non-zero so the decision surfaces.
+
 ## When to use this vs …
 
 - [`quay add`](add.md) — already applies your current mirrors. `link` is for *changing* the mirror set or auditing it.
@@ -45,12 +71,13 @@ quay link remove .cursor/rules         # forget the mirror (files stay)
 
 - `link remove` deletes the *config entry*, not the directory on disk. To also clean files, `rm -rf` afterwards.
 - `link check` is the canonical CI gate. Exit code 0 = clean; non-zero = at least one mirror is missing or out-of-sync.
-- `--force` will overwrite hand-edited mirror dirs without backup. Use carefully.
+- `link check` is read-only — it detects drift but never creates or overwrites mirrors.
+- Without `--force`, `quay link` refuses to overwrite a mirror whose content diverged from canonical (your edit is preserved). `--force` overwrites diverged mirror dirs without backup — use carefully.
 
 ## `--help`
 
 ```text
-Apply or verify mirrors from `[install].mirrors` config
+Apply or verify mirrors, reconciling canonical against known tool dirs on disk
 
 Usage: quay link [OPTIONS] [COMMAND]
 

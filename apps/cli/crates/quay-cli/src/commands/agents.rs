@@ -140,6 +140,9 @@ fn link(
                     MirrorAction::Replaced { path, .. } => {
                         println!("replaced {name} -> {}", path.display())
                     }
+                    MirrorAction::Adopted { path, .. } => {
+                        println!("adopted  {name} -> {}", path.display())
+                    }
                     MirrorAction::NoOp => println!("ok       {name}"),
                 }
             }
