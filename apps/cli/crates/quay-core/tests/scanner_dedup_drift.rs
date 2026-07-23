@@ -110,11 +110,11 @@ fn canonical_path_points_to_agents_root() {
     let skills = scan_local(root, &log);
 
     let canonical = skills[0].canonical_path();
+    // Separators normalized: MirrorRoot::dir() is the literal ".agents/skills",
+    // so joining it on Windows yields a mixed path like `...\.agents/skills\my-tool`.
+    let as_posix = canonical.to_str().unwrap().replace('\\', "/");
     assert!(
-        canonical
-            .to_str()
-            .unwrap()
-            .contains(".agents/skills/my-tool"),
+        as_posix.contains(".agents/skills/my-tool"),
         "canonical path should be under .agents/skills/, got: {}",
         canonical.display()
     );
