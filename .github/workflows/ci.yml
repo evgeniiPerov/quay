@@ -32,10 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # rust-toolchain.toml pins the channel and pulls in clippy + rustfmt.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # No toolchain action: rustup resolves apps/cli/rust-toolchain.toml, which
+      # pins the exact version and its components. One source of truth, shared
+      # with contributors — installing "stable" here would silently diverge from
+      # what everyone runs locally.
+      - name: Install pinned toolchain
+        run: rustup show
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -58,7 +60,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned toolchain
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/cli

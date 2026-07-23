@@ -85,6 +85,19 @@ fn quay() -> Command {
     Command::cargo_bin("quay").unwrap()
 }
 
+/// Compare skill content ignoring line endings.
+///
+/// The fixture hub is a real git repo, so on Windows (git's default
+/// core.autocrlf) a checkout hands back CRLF. quay copies what it fetched, so
+/// the bytes legitimately differ per platform while the content does not.
+fn assert_same_content(actual: &str, expected: &str, msg: &str) {
+    assert_eq!(
+        actual.replace("\r\n", "\n"),
+        expected.replace("\r\n", "\n"),
+        "{msg}"
+    );
+}
+
 const HARBOR_SKILL_BODY: &str =
     "---\nname: foo\ndescription: Foo skill\nversion: 1.0.0\n---\nharbor content\n";
 const LOCAL_SKILL_BODY: &str =
@@ -196,9 +209,10 @@ fn force_still_overwrites_without_reconcile() {
     );
 
     let on_disk = std::fs::read_to_string(proj.path().join(".agents/skills/foo/SKILL.md")).unwrap();
-    assert_eq!(
-        on_disk, HARBOR_SKILL_BODY,
-        "--force must overwrite with harbor content"
+    assert_same_content(
+        &on_disk,
+        HARBOR_SKILL_BODY,
+        "--force must overwrite with harbor content",
     );
 }
 
@@ -261,9 +275,10 @@ fn fresh_add_does_not_trigger_reconcile() {
         proj.path()
     );
     let on_disk = std::fs::read_to_string(&installed_path).unwrap();
-    assert_eq!(
-        on_disk, HARBOR_SKILL_BODY,
-        "installed content must match harbor content"
+    assert_same_content(
+        &on_disk,
+        HARBOR_SKILL_BODY,
+        "installed content must match harbor content",
     );
 
     // The reconcile path must NOT have been entered.

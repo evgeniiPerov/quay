@@ -1,3 +1,10 @@
 [toolchain]
-channel = "stable"
+# Pinned, not "stable": a new Rust release turns CI red without anyone touching
+# the code. Clippy 1.97 added `question_mark`, which broke a build that passed
+# locally on 1.93 — pinning is also what keeps local runs honest, since this file
+# is what rustup resolves for contributors too.
+#
+# Bump deliberately: change the version here, run `cargo clippy --workspace
+# --all-targets -- -D warnings`, fix what the new lints find, commit together.
+channel = "1.97.1"
 components = ["clippy", "rustfmt", "rust-analyzer"]
