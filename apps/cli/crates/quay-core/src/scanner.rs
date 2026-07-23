@@ -64,7 +64,23 @@ pub fn is_skill_dir(path: &Path) -> bool {
 ///
 /// `path` is used for the directory-name fallback and never read from disk here.
 pub fn parse_skill_metadata(raw: &str, path: &Path) -> SkillMeta {
-    let trimmed = raw.trim_start_matches('\u{feff}');
+    let stripped = raw.trim_start_matches('\u{feff}');
+
+    // Every delimiter below is matched literally against `\n`, so a CRLF file
+    // misses them all and a perfectly good frontmatter skill degrades to
+    // Freestyle — losing its name, description and version. git's default
+    // core.autocrlf on Windows rewrites line endings on checkout, so that is the
+    // normal state of a skill there, not an edge case.
+    //
+    // Only the metadata parse normalizes. Content hashing deliberately does not
+    // (see lock_hash), so this cannot shift any digest.
+    let normalized;
+    let trimmed = if stripped.contains("\r\n") {
+        normalized = stripped.replace("\r\n", "\n");
+        normalized.as_str()
+    } else {
+        stripped
+    };
 
     // Frontmatter branch.
     if let Some(rest) = trimmed.strip_prefix("---\n") {
@@ -516,6 +532,29 @@ mod tests {
             fs::create_dir_all(p).unwrap();
         }
         fs::write(path, body).unwrap();
+    }
+
+    /// A CRLF checkout is the normal state of a skill on Windows, where git's
+    /// default core.autocrlf rewrites line endings. Parsing it as Freestyle
+    /// silently drops name, description and version.
+    #[test]
+    fn crlf_frontmatter_still_parses() {
+        let raw =
+            "---\r\nname: foo\r\ndescription: A foo skill\r\nversion: 1.2.3\r\n---\r\nbody\r\n";
+        let meta = parse_skill_metadata(raw, &PathBuf::from("/tmp/skills/foo/SKILL.md"));
+        assert_eq!(meta.format, SkillFormat::Frontmatter);
+        assert_eq!(meta.name, "foo");
+        assert_eq!(meta.description, "A foo skill");
+        assert_eq!(meta.version, "1.2.3");
+    }
+
+    #[test]
+    fn crlf_slash_command_still_parses() {
+        let raw = "# /b-slash\r\n\r\nA slash skill.\r\n";
+        let meta = parse_skill_metadata(raw, &PathBuf::from("/tmp/skills/b-slash/SKILL.md"));
+        assert_eq!(meta.format, SkillFormat::SlashCommand);
+        assert_eq!(meta.name, "b-slash");
+        assert_eq!(meta.description, "A slash skill.");
     }
 
     /// A staging dir stranded by a killed `quay add` used to scan as a skill
