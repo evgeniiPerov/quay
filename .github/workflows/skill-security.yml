@@ -28,9 +28,11 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
 
       # Pinned: SkillSpector cuts no releases and lands ~100 commits/month.
       # Bump deliberately, not implicitly.
@@ -82,7 +84,7 @@ jobs:
 
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: skills.sarif
           category: skill-security
