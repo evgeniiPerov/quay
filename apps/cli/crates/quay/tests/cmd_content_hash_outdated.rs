@@ -76,7 +76,7 @@ fn outdated_flags_hand_written_skill_by_content_hash() {
     std::fs::write(
         quay_dir.join("config.toml"),
         format!(
-            "[remotes.hub]\nurl = \"{}\"\ndefault = true\n",
+            "[remotes.hub]\nurl = '{}'\ndefault = true\n",
             bare.to_str().unwrap()
         ),
     )

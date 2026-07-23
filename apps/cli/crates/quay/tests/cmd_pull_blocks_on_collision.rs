@@ -79,7 +79,7 @@ fn seed_project(root: &Path, bare: &Path, local_content: &str) -> std::path::Pat
     std::fs::write(
         quay_dir.join("config.toml"),
         format!(
-            "[remotes.hub]\nurl = \"{}\"\ndefault = true\n",
+            "[remotes.hub]\nurl = '{}'\ndefault = true\n",
             bare.to_str().unwrap()
         ),
     )

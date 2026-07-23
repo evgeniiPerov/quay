@@ -66,7 +66,7 @@ fn rebuild_registry_indexes_nested_files_on_direct_branch() {
         .child(".quay/config.toml")
         .write_str(&format!(
             "[user]\nemail = \"t@t\"\nname = \"t\"\n\n\
-             [remotes.hub]\nurl = \"{url}\"\ndefault = true\n\
+             [remotes.hub]\nurl = '{url}'\ndefault = true\n\
              push_mode = \"direct\"\ndirect_branch = \"develop\"\n"
         ))
         .unwrap();

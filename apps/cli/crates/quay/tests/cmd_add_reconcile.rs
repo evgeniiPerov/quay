@@ -73,11 +73,12 @@ fn make_harbor(skill_body: &str) -> (TempDir, TempDir) {
 }
 
 /// Build a quay project config with a single remote `hub` pointing at `url`.
+///
+/// Single-quoted TOML literal string, not a basic string: on Windows the url
+/// carries a temp path like `C:\Users\...`, and inside a basic string `\U` is
+/// read as a unicode escape ("too few unicode value digits").
 fn project_config_for_url(url: &str) -> String {
-    format!(
-        "[remotes.hub]\nurl = \"{url}\"\ndefault = true\n",
-        url = url
-    )
+    format!("[remotes.hub]\nurl = '{url}'\ndefault = true\n")
 }
 
 fn quay() -> Command {

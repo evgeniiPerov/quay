@@ -304,7 +304,7 @@ default = true
         project
             .child(".quay/config.toml")
             .write_str(&format!(
-                "[remotes.local-hub]\nurl = \"{}\"\ndefault = true\n",
+                "[remotes.local-hub]\nurl = '{}'\ndefault = true\n",
                 bare_url
             ))
             .unwrap();

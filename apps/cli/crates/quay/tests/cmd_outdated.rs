@@ -88,7 +88,7 @@ fn outdated_lists_stale_skill() {
     std::fs::write(
         quay_dir.join("config.toml"),
         format!(
-            "[remotes.hub]\nurl = \"{}\"\ndefault = true\n",
+            "[remotes.hub]\nurl = '{}'\ndefault = true\n",
             bare.to_str().unwrap()
         ),
     )
