@@ -48,15 +48,20 @@ Commit the baseline.
 
 ## Gate it in CI
 
-quay's own repo runs [`.github/workflows/skill-security.yml`](https://github.com/evgeniiPerov/quay/blob/main/.github/workflows/skill-security.yml)
-on every PR that touches `.agents/skills/`, uploading SARIF to GitHub code
-scanning. Copy it. Two things it works around:
+If you want this on every PR, four things are worth knowing before you write the
+workflow — each one cost us a red run:
 
-- `--recursive` with `--format sarif` writes concatenated text, **not** merged
-  SARIF. Scan each skill directory separately and point `upload-sarif` at the
-  output directory.
-- A skill over threshold exits `1` mid-loop. Collect failures and fail the job
-  at the end, or one bad skill hides the rest.
+- **`--recursive` with `--format sarif` writes concatenated text, not merged
+  SARIF.** Scan each skill directory separately.
+- **Uploading a directory of per-skill SARIF files is rejected**: code scanning
+  refuses multiple runs sharing a category. Fold them into a single run (dedupe
+  `tool.driver.rules` by `id`) and upload one file.
+- **Findings carry uris relative to the scanned dir** (a bare `SKILL.md`), so
+  rewrite them to repo-root-relative or every annotation lands on a path that
+  doesn't exist.
+- **Exit code 1 means "over threshold"; anything else means the scan didn't
+  happen.** Treat them differently — an unscanned skill is not a safe skill, and
+  collapsing both into one branch is how a crashed scanner produces a green check.
 
 Pin the install to a commit. SkillSpector publishes no tagged releases and moves
 fast; an unpinned `git+https://` install means your CI gate changes without you.
