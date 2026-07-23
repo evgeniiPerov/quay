@@ -46,6 +46,7 @@
 - [Seed an empty hub](recipes/seed-empty-hub.md)
 - [Protected default branches](recipes/branch-policy-fallback.md)
 - [SSH key setup](recipes/ssh-key-setup.md)
+- [Vet a skill before `add`](recipes/vet-skills-before-add.md)
 
 # Reference
 

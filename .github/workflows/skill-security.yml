@@ -1,0 +1,67 @@
+name: skill-security
+
+# Static security scan of the vendored skills in .agents/skills/.
+# Skills are Markdown that agents execute with implicit trust — this is the
+# gate that a prompt-injection / exfiltration payload has to get past.
+#
+# Static only (--no-llm): no skill content leaves the runner.
+
+on:
+  pull_request:
+    paths:
+      - '.agents/skills/**'
+      - '.github/workflows/skill-security.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.agents/skills/**'
+  schedule:
+    # Weekly — patterns and OSV data move even when our skills don't.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      # Pinned: SkillSpector cuts no releases and lands ~100 commits/month.
+      # Bump deliberately, not implicitly.
+      - name: Install SkillSpector
+        run: uv tool install 'skillspector @ git+https://github.com/NVIDIA/skillspector.git@a54947c307fe19a24a43db55f6148e181a987a67'
+
+      # One SARIF per skill. `--recursive` writes concatenated text rather than
+      # merged SARIF, so scan each skill dir separately; upload-sarif takes the
+      # whole directory. Exit 1 means risk > 50 — collect and fail at the end so
+      # every skill still gets scanned and reported.
+      - name: Scan skills
+        id: scan
+        run: |
+          mkdir -p sarif
+          failed=""
+          for dir in .agents/skills/*/; do
+            name=$(basename "$dir")
+            skillspector scan "$dir" --no-llm --format sarif --output "sarif/${name}.sarif" \
+              || failed="${failed} ${name}"
+          done
+          if [ -n "$failed" ]; then
+            echo "over-threshold:${failed}" >> "$GITHUB_OUTPUT"
+            echo "::error::skills over risk threshold:${failed}"
+          fi
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sarif
+
+      - name: Fail on over-threshold skills
+        if: steps.scan.outputs.over-threshold != ''
+        run: exit 1
