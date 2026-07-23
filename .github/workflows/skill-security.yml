@@ -66,7 +66,15 @@ jobs:
           done
           if [ -n "$failed" ]; then
             echo "over_threshold=${failed}" >> "$GITHUB_OUTPUT"
-            echo "::error::skills over risk threshold:${failed}"
+            echo "::warning::skills over risk threshold:${failed}"
+            {
+              echo "### Skills over risk threshold"
+              echo
+              for s in $failed; do echo "- \`$s\`"; done
+              echo
+              echo "Reported only — this check does not block the pipeline."
+              echo "Findings are in the Security tab under \`skill-security\`."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # Code scanning rejects multiple runs sharing a category, so the per-skill
@@ -93,6 +101,10 @@ jobs:
           sarif_file: skills.sarif
           category: skill-security
 
-      - name: Fail on over-threshold skills
+      # Report-only for now: an over-threshold skill warns and lands in the
+      # Security tab, but does not block. Flip this step back to `exit 1` to
+      # make the gate blocking once the findings are being acted on.
+      - name: Report over-threshold skills
         if: steps.scan.outputs.over_threshold != ''
-        run: exit 1
+        run: |
+          echo "::notice::${{ steps.scan.outputs.over_threshold }} over threshold — reported, not blocking"

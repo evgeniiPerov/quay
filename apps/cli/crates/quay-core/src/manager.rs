@@ -123,8 +123,20 @@ where
             return Err(QuayError::AlreadyExists(dest_dir.display().to_string()));
         }
 
-        std::fs::create_dir_all(&dest_dir).map_err(|source| QuayError::Io {
-            path: dest_dir.display().to_string(),
+        let install_dir = self.install_dir();
+        std::fs::create_dir_all(&install_dir).map_err(|source| QuayError::Io {
+            path: install_dir.display().to_string(),
+            source,
+        })?;
+
+        // Fetch into a staging dir alongside the destination, then rename it into
+        // place. A fetch that dies partway leaves nothing behind: TempDir removes
+        // itself on drop, including when `?` returns early. Writing directly into
+        // dest_dir would strand a partial skill that then blocks its own retry
+        // with AlreadyExists. Staging next to the destination (not /tmp) keeps the
+        // rename on one filesystem, so it stays atomic.
+        let staging = tempfile::TempDir::new_in(&install_dir).map_err(|source| QuayError::Io {
+            path: install_dir.display().to_string(),
             source,
         })?;
 
@@ -134,7 +146,7 @@ where
                 Some(b) => self.file_fetcher.fetch_file_at(&hub_url, &remote_path, b)?,
                 None => self.file_fetcher.fetch_file(&hub_url, &remote_path)?,
             };
-            let local = dest_dir.join(file_rel);
+            let local = staging.path().join(file_rel);
             if let Some(parent) = local.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
                     path: parent.display().to_string(),
@@ -146,6 +158,29 @@ where
                 source,
             })?;
         }
+
+        // Every file landed. `force` already passed the exists check above, so an
+        // existing dest is being deliberately replaced; rename onto a non-empty
+        // dir fails, so clear it first.
+        // ponytail: the gap between remove and rename is not crash-safe. Matches
+        // the old in-place overwrite, so no regression; swap for a
+        // rename-aside-then-delete dance if that ever matters.
+        if dest_dir.exists() {
+            std::fs::remove_dir_all(&dest_dir).map_err(|source| QuayError::Io {
+                path: dest_dir.display().to_string(),
+                source,
+            })?;
+        }
+
+        let staged = staging.keep();
+        std::fs::rename(&staged, &dest_dir).map_err(|source| {
+            // Don't leak the staging dir if the rename is what failed.
+            let _ = std::fs::remove_dir_all(&staged);
+            QuayError::Io {
+                path: dest_dir.display().to_string(),
+                source,
+            }
+        })?;
 
         Ok(())
     }
@@ -314,6 +349,53 @@ mod tests {
             !dir.path().join(".agents/skills.lock.json").exists(),
             "lockfile must NOT be created"
         );
+    }
+
+    /// A fetch that dies partway must leave nothing behind — no partial skill
+    /// dir (which would block the retry with AlreadyExists) and no staging dir.
+    #[test]
+    fn add_leaves_nothing_behind_when_a_fetch_fails_midway() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let body = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\nbody\n".to_vec();
+
+        // Two files, only the first fetchable: the loop dies on the second.
+        let mut reg = make_registry("csv-parse", "1.0.0");
+        reg.skills.get_mut("csv-parse").unwrap().files =
+            vec!["SKILL.md".into(), "reference.md".into()];
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([(
+                "skills/csv-parse/SKILL.md".into(),
+                body.clone(),
+            )])),
+        };
+        let regf = FakeRegistry(reg);
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+
+        let err = mgr.add("csv-parse", None).unwrap_err();
+        assert!(matches!(err, QuayError::SkillNotFound { .. }), "got {err:?}");
+
+        let dest = dir.path().join(".agents/skills/csv-parse");
+        assert!(!dest.exists(), "partial skill dir must not survive a failed fetch");
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging dir must be cleaned up, found {leftovers:?}"
+        );
+
+        // The retry is the point: without staging this hit AlreadyExists.
+        files.files.borrow_mut().insert(
+            "skills/csv-parse/reference.md".into(),
+            b"reference\n".to_vec(),
+        );
+        mgr.add("csv-parse", None).unwrap();
+        assert!(dest.join("SKILL.md").exists());
+        assert!(dest.join("reference.md").exists());
     }
 
     #[test]
