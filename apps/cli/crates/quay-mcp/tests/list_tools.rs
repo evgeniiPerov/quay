@@ -42,7 +42,13 @@ async fn lists_all_read_tools_with_correct_annotations() {
     let (client_io, server_io) = tokio::io::duplex(8192);
     let server = test_server();
     let h = tokio::spawn(async move {
-        server.serve(server_io).await.unwrap().waiting().await.unwrap();
+        server
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
     });
     let client = ().serve(client_io).await.unwrap();
     let tools = client.list_all_tools().await.unwrap();
@@ -89,7 +95,13 @@ async fn write_tools_are_not_read_only_and_remove_is_destructive() {
     let (client_io, server_io) = tokio::io::duplex(8192);
     let server = test_server();
     let h = tokio::spawn(async move {
-        server.serve(server_io).await.unwrap().waiting().await.unwrap();
+        server
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
     });
     let client = ().serve(client_io).await.unwrap();
     let tools = client.list_all_tools().await.unwrap();
@@ -114,7 +126,13 @@ async fn outward_tools_advertise_open_world() {
     let (client_io, server_io) = tokio::io::duplex(8192);
     let server = test_server();
     let h = tokio::spawn(async move {
-        server.serve(server_io).await.unwrap().waiting().await.unwrap();
+        server
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
     });
     let client = ().serve(client_io).await.unwrap();
     let tools = client.list_all_tools().await.unwrap();
