@@ -40,8 +40,7 @@ fn profile_use_interactive_non_tty_exits_with_error() {
         "use",
         "-i",
     ])
-    .pipe_stdin("/dev/null")
-    .unwrap();
+    .write_stdin("");
 
     cmd.assert()
         .failure()

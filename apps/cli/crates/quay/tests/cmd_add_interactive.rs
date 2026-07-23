@@ -22,12 +22,13 @@ default = true
         .unwrap();
 
     let mut cmd = Command::cargo_bin("quay").unwrap();
+    // write_stdin rather than pipe_stdin("/dev/null"): the point is only that
+    // stdin is a pipe rather than a TTY, and /dev/null does not exist on Windows.
     cmd.arg("--project")
         .arg(project.path())
         .arg("add")
         .arg("-i")
-        .pipe_stdin("/dev/null")
-        .unwrap();
+        .write_stdin("");
 
     // Non-TTY: either the registry fetch fails (no real remote) or interactive
     // mode fails.  Either way exit code must be non-zero.  If the error is the
