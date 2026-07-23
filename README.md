@@ -244,6 +244,14 @@ apps/cli/                  Rust workspace
 .claude/                   Claude Code-specific configuration
 ```
 
+## Security & Fixes (v0.13.3)
+
+- **Registry file paths are now validated.** `registry.json` is fetched from the remote hub, and its `files` list went straight into a path join unchecked — an entry like `"../../../.ssh/authorized_keys"` wrote there, and an absolute path escaped the skill directory entirely. Absolute paths, `..` components and Windows drive/UNC prefixes are rejected before anything is fetched. **If you install from a hub you do not control, update.**
+- **Windows: frontmatter parses in files with CRLF line endings.** Git's default `core.autocrlf` rewrites line endings on checkout, so on Windows every frontmatter skill silently degraded to "freestyle" — losing its name, description and version, and listing as `unversioned`.
+- **Windows: `--force` can replace a symlinked mirror.** Unlinking used `remove_file`, which fails on the directory symlinks and junctions that mirrors are on Windows, so `quay link --force`, `quay add --force` and `quay agents link --force` could not replace an existing mirror.
+- **Dot-prefixed directories are never treated as skills.** A staging directory left by an interrupted `quay add` could appear in `quay list` as a skill named `.tmpAbCdEf` and be mirrored into every tool directory by `quay link`.
+- **CI now runs fmt, clippy and the test suite on Linux and Windows.** The suite had never compiled on Windows, which is how the two bugs above went unnoticed. The Rust toolchain is pinned in `apps/cli/rust-toolchain.toml` so a new release cannot turn CI red on its own.
+
 ## Behavior Changes (v0.13.0)
 
 - `quay link` now **refuses to overwrite a mirror whose content diverged** from canonical. Previously copy-strategy mirrors were re-materialized unconditionally and hand edits were lost silently. Pass `--force` to discard the mirror edit, or copy it into the canonical skill first. See [`quay link`](docs/book/src/cli/link.md).
