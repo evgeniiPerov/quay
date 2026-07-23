@@ -348,8 +348,9 @@ fn identical_content_is_noop() {
 
     // File must be unchanged.
     let on_disk = std::fs::read_to_string(proj.path().join(".agents/skills/foo/SKILL.md")).unwrap();
-    assert_eq!(
-        on_disk, HARBOR_SKILL_BODY,
-        "identical content must leave the local file unchanged"
+    assert_same_content(
+        &on_disk,
+        HARBOR_SKILL_BODY,
+        "identical content must leave the local file unchanged",
     );
 }
