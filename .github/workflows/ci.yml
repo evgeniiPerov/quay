@@ -12,6 +12,12 @@ on:
     branches: [main]
     paths:
       - 'apps/cli/**'
+  # Both triggers above are path-filtered, so a break caused from outside the
+  # repo — a deprecated action, a yanked crate, an expiring token — would not
+  # surface until someone happened to touch apps/cli. Monday morning catches it
+  # within a week instead.
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:

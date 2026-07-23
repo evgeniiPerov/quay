@@ -3,6 +3,12 @@ on:
   push:
     branches: [main]
     paths: [docs/book/**, .github/workflows/docs.yml]
+  # deploy is gated on build, so a broken build does not error anywhere — the
+  # site just stops updating. That went unnoticed for two weeks when an
+  # unpinned mdbook-mermaid released a version built for mdbook 0.5. The push
+  # trigger is path-filtered and could not have caught it; nothing was pushed.
+  schedule:
+    - cron: '30 6 * * 1'
   workflow_dispatch: {}
 
 permissions:
