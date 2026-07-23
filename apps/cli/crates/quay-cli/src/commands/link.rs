@@ -67,7 +67,10 @@ fn apply(
             .interact()?;
         cfg.install.auto_link = Some(yes);
         if yes {
-            report = reconcile(&cfg.install, project, &skills, force)?;
+            merge_second_pass(
+                &mut report,
+                reconcile(&cfg.install, project, &skills, force)?,
+            );
         }
         persist_auto_link(project, yes)?;
     }
@@ -88,6 +91,18 @@ fn apply(
         return Err(format!("{} mirror(s) need attention", unresolved).into());
     }
     Ok(())
+}
+
+/// Fold the post-opt-in reconcile into the first pass.
+///
+/// The first pass already created/replaced mirrors on disk; the second pass
+/// sees those as `Correct` and reports them as `NoOp`, so its actions must be
+/// *appended* rather than replace the first pass's. The unresolved sets are
+/// point-in-time state, so the second pass's values win outright.
+fn merge_second_pass(report: &mut ReconcileReport, second: ReconcileReport) {
+    report.actions.extend(second.actions);
+    report.diverged = second.diverged;
+    report.needs_optin = second.needs_optin;
 }
 
 /// Write `install.auto_link = <yes>` back to the project config file.
@@ -355,4 +370,53 @@ fn remove_mirror(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn created(skill: &str, path: &str) -> (String, PathBuf, MirrorAction) {
+        (
+            skill.into(),
+            PathBuf::from(path),
+            MirrorAction::Created {
+                path: PathBuf::from(path),
+                strategy: MirrorStrategy::Symlink,
+            },
+        )
+    }
+
+    #[test]
+    fn merge_second_pass_keeps_first_pass_actions() {
+        let mut first = ReconcileReport {
+            actions: vec![created("alpha", ".claude/skills/alpha")],
+            diverged: vec![],
+            needs_optin: vec![("beta".into(), PathBuf::from(".codex/skills/beta"))],
+        };
+        // The adopt pass re-reconciles: `alpha` is now Correct (NoOp, dropped by
+        // reconcile) and `beta` is adopted.
+        let second = ReconcileReport {
+            actions: vec![(
+                "beta".into(),
+                PathBuf::from(".codex/skills/beta"),
+                MirrorAction::Adopted {
+                    path: PathBuf::from(".codex/skills/beta"),
+                    strategy: MirrorStrategy::Symlink,
+                },
+            )],
+            diverged: vec![],
+            needs_optin: vec![],
+        };
+
+        merge_second_pass(&mut first, second);
+
+        let skills: Vec<&str> = first.actions.iter().map(|(s, _, _)| s.as_str()).collect();
+        assert_eq!(skills, ["alpha", "beta"], "first-pass action must survive");
+        assert!(
+            first.needs_optin.is_empty(),
+            "second pass resolves the opt-in"
+        );
+    }
 }
