@@ -244,6 +244,13 @@ apps/cli/                  Rust workspace
 .claude/                   Claude Code-specific configuration
 ```
 
+## Behavior Changes (v0.13.0)
+
+- `quay link` now **refuses to overwrite a mirror whose content diverged** from canonical. Previously copy-strategy mirrors were re-materialized unconditionally and hand edits were lost silently. Pass `--force` to discard the mirror edit, or copy it into the canonical skill first. See [`quay link`](docs/book/src/cli/link.md).
+- `quay link` discovery is disk-driven: all known tool dirs (`.agents`/`.claude`/`.codex`/`.cursor`) are scanned, not just `[install].mirrors`.
+- `quay link check` is read-only — it detects drift but never creates or overwrites.
+- New opt-in `install.auto_link` in `.quay/config.toml`: adopt an unmanaged tool dir that is byte-identical to canonical. Asked once interactively; non-interactive runs (`--json`, CI) never adopt.
+
 ## Breaking Changes (v0.2.0)
 
 - `quay sync` removed. Skills are tracked by git history — commit your `.agents/skills/` changes normally.
