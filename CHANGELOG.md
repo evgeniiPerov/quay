@@ -1,0 +1,103 @@
+# Changelog
+
+Notable changes per release. This file is also the source of the GitHub release
+notes — `dist` reads the section matching the version being tagged.
+
+## 0.13.4 — 2026-07-23
+
+### Security
+
+- **`registry.json` file paths are validated before anything is fetched.** The
+  registry is downloaded from the remote hub, and its `files` list went straight
+  into a path join unchecked — an entry like `"../../../.ssh/authorized_keys"`
+  wrote there, and an absolute path escaped the skill directory entirely.
+  Absolute paths, `..` components and Windows drive/UNC prefixes are now
+  rejected. **If you install from a hub you do not control, update.**
+
+### Fixed
+
+- **Windows: frontmatter is parsed in files with CRLF line endings.** Git's
+  default `core.autocrlf` rewrites line endings on checkout, so on Windows every
+  frontmatter skill silently degraded to "freestyle" — losing its name,
+  description and version, and listing as `unversioned`.
+- **Windows: `--force` can replace a symlinked mirror.** Unlinking used
+  `remove_file`, which fails on the directory symlinks and junctions that
+  mirrors are on Windows, so `quay link --force`, `quay add --force` and
+  `quay agents link --force` could not replace an existing mirror.
+- **Dot-prefixed directories are never treated as skills.** A staging directory
+  left behind by an interrupted `quay add` could appear in `quay list` as a
+  skill named `.tmpAbCdEf`, and `quay link` would mirror it into every tool
+  directory.
+
+### Internal
+
+- CI runs `cargo fmt`, `cargo clippy` and the test suite on every pull request,
+  on Linux **and Windows**. The suite had never compiled on Windows, which is
+  how the two bugs above went unnoticed.
+- The Rust toolchain is pinned in `rust-toolchain.toml` at the repo root, so a
+  new Rust release cannot turn CI red on its own and contributors resolve the
+  same compiler CI uses.
+
+> 0.13.3 was tagged but never published — the release build failed — and its
+> changes are included here.
+
+## 0.13.2 — 2026-07-23
+
+### Fixed
+
+- **`quay add` no longer leaves a partial skill behind when a fetch fails.**
+  Files were written directly into `.agents/skills/<name>/` as they downloaded,
+  so a network failure part-way through stranded a half-installed skill that
+  then blocked its own retry with `AlreadyExists`. The fetch now stages in a
+  temporary directory and is renamed into place only once every file has landed.
+- **A failed `--force` install no longer destroys the existing skill.** The
+  previous copy is moved aside and restored if the replace fails, rather than
+  deleted up front.
+- **`quay update` preserves files that are not in the skill manifest** — local
+  notes, files dropped upstream — matching the previous overwrite-in-place
+  behaviour.
+
+## 0.13.1 — 2026-07-23
+
+### Fixed
+
+- `quay link` reported mirrors it had just created as no-ops when the interactive
+  adopt opt-in triggered a second reconcile pass. The actions from the first pass
+  are now kept.
+
+## 0.13.0 — 2026-07-23
+
+### Added
+
+- **Mirror reconcile.** `quay link` scans all known tool directories on disk
+  (`.agents`/`.claude`/`.codex`/`.cursor`), not just the ones in
+  `[install].mirrors`, so a mirror added outside the config is still seen.
+- **`install.auto_link`** (opt-in) in `.quay/config.toml`: adopt an unmanaged
+  tool directory that is byte-identical to canonical, converting it to a managed
+  mirror. Asked once interactively and remembered; non-interactive runs
+  (`--json`, CI) never adopt.
+
+### Changed
+
+- **`quay link` refuses to overwrite a mirror whose content diverged from
+  canonical.** Copy-strategy mirrors were previously re-materialised
+  unconditionally and hand edits were lost silently. Pass `--force` to discard
+  the mirror edit, or copy it into the canonical skill first.
+- **`quay link check` is read-only** — it detects drift but never creates or
+  overwrites.
+
+## 0.2.0
+
+### Removed
+
+- `quay sync` — skills are tracked by git history; commit your `.agents/skills/`
+  changes normally.
+- `quay create` — write `SKILL.md` directly, with your editor, an AI agent, or
+  any tool.
+- `skills.lock.json` is no longer written. If a legacy lockfile exists, quay
+  prints a one-time notice and instructions to delete it.
+
+### Changed
+
+- `quay add` JSON output no longer returns `version`/`remote` fields — those came
+  from the lockfile.

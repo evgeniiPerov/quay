@@ -3,6 +3,7 @@
 [Introduction](intro.md)
 [Getting started](getting-started.md)
 [Concepts](concepts.md)
+[Releases](releases.md)
 
 # AI agents (MCP)
 

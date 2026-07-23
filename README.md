@@ -244,27 +244,15 @@ apps/cli/                  Rust workspace
 .claude/                   Claude Code-specific configuration
 ```
 
-## Security & Fixes (v0.13.4)
+## Changelog
 
-- **Registry file paths are now validated.** `registry.json` is fetched from the remote hub, and its `files` list went straight into a path join unchecked — an entry like `"../../../.ssh/authorized_keys"` wrote there, and an absolute path escaped the skill directory entirely. Absolute paths, `..` components and Windows drive/UNC prefixes are rejected before anything is fetched. **If you install from a hub you do not control, update.**
-- **Windows: frontmatter parses in files with CRLF line endings.** Git's default `core.autocrlf` rewrites line endings on checkout, so on Windows every frontmatter skill silently degraded to "freestyle" — losing its name, description and version, and listing as `unversioned`.
-- **Windows: `--force` can replace a symlinked mirror.** Unlinking used `remove_file`, which fails on the directory symlinks and junctions that mirrors are on Windows, so `quay link --force`, `quay add --force` and `quay agents link --force` could not replace an existing mirror.
-- **Dot-prefixed directories are never treated as skills.** A staging directory left by an interrupted `quay add` could appear in `quay list` as a skill named `.tmpAbCdEf` and be mirrored into every tool directory by `quay link`.
-- **CI now runs fmt, clippy and the test suite on Linux and Windows.** The suite had never compiled on Windows, which is how the two bugs above went unnoticed. The Rust toolchain is pinned in `apps/cli/rust-toolchain.toml` so a new release cannot turn CI red on its own.
+Release notes live in [`CHANGELOG.md`](CHANGELOG.md), rendered in the docs under
+[Releases](https://evgeniiperov.github.io/quay/releases.html). Binaries for every
+release are on the [releases page](https://github.com/evgeniiPerov/quay/releases).
 
-## Behavior Changes (v0.13.0)
-
-- `quay link` now **refuses to overwrite a mirror whose content diverged** from canonical. Previously copy-strategy mirrors were re-materialized unconditionally and hand edits were lost silently. Pass `--force` to discard the mirror edit, or copy it into the canonical skill first. See [`quay link`](docs/book/src/cli/link.md).
-- `quay link` discovery is disk-driven: all known tool dirs (`.agents`/`.claude`/`.codex`/`.cursor`) are scanned, not just `[install].mirrors`.
-- `quay link check` is read-only — it detects drift but never creates or overwrites.
-- New opt-in `install.auto_link` in `.quay/config.toml`: adopt an unmanaged tool dir that is byte-identical to canonical. Asked once interactively; non-interactive runs (`--json`, CI) never adopt.
-
-## Breaking Changes (v0.2.0)
-
-- `quay sync` removed. Skills are tracked by git history — commit your `.agents/skills/` changes normally.
-- `quay create` removed. Write `SKILL.md` directly (with your editor, AI agent, or any tool).
-- `skills.lock.json` no longer written. If a legacy lockfile exists, quay prints a one-time notice and instructions to delete it.
-- `quay add` JSON output changed: no longer returns `version`/`remote` fields (those came from the lockfile).
+Most recent: **v0.13.4** — registry path-traversal fix (update if you install
+from a hub you do not control), two Windows-only fixes, and CI now running the
+suite on Linux and Windows.
 
 ## Contributing
 
