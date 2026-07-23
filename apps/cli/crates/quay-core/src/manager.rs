@@ -129,14 +129,29 @@ where
             source,
         })?;
 
-        // Fetch into a staging dir alongside the destination, then rename it into
-        // place. A fetch that dies partway leaves nothing behind: TempDir removes
-        // itself on drop, including when `?` returns early. Writing directly into
-        // dest_dir would strand a partial skill that then blocks its own retry
-        // with AlreadyExists. Staging next to the destination (not /tmp) keeps the
-        // rename on one filesystem, so it stays atomic.
-        let staging = tempfile::TempDir::new_in(&install_dir).map_err(|source| QuayError::Io {
-            path: install_dir.display().to_string(),
+        // Fetch into a staging dir, then rename it into place. A fetch that returns
+        // early via `?` leaves nothing behind: TempDir removes itself on drop.
+        // Writing directly into dest_dir would strand a partial skill that then
+        // blocks its own retry with AlreadyExists.
+        //
+        // Drop does not run on SIGINT/SIGKILL, so a killed fetch still strands a
+        // staging dir — which is the other reason it does not live in the install
+        // dir (see below).
+        //
+        // Staging lives under `.quay/`, not in the install dir: it is inside the
+        // project (so the rename stays on one filesystem, and therefore atomic)
+        // but outside every root `scanner::scan_project` walks. A staging dir
+        // orphaned by SIGKILL is invisible rather than showing up in `quay list`
+        // as a skill named `.tmpAbCdEf`.
+        // ponytail: no reaper for those orphans — they are hidden and rare. Add a
+        // sweep here if they ever accumulate, but it must not race a concurrent add.
+        let staging_root = self.project_root.join(".quay");
+        std::fs::create_dir_all(&staging_root).map_err(|source| QuayError::Io {
+            path: staging_root.display().to_string(),
+            source,
+        })?;
+        let staging = tempfile::TempDir::new_in(&staging_root).map_err(|source| QuayError::Io {
+            path: staging_root.display().to_string(),
             source,
         })?;
 
@@ -159,28 +174,74 @@ where
             })?;
         }
 
-        // Every file landed. `force` already passed the exists check above, so an
-        // existing dest is being deliberately replaced; rename onto a non-empty
-        // dir fails, so clear it first.
-        // ponytail: the gap between remove and rename is not crash-safe. Matches
-        // the old in-place overwrite, so no regression; swap for a
-        // rename-aside-then-delete dance if that ever matters.
+        // Every file landed; commit the swap.
+        //
+        // Re-check rather than trusting the check at the top: the fetch loop above
+        // is seconds to minutes of network, and a `force = false` add must never
+        // delete a directory that appeared during it.
         if dest_dir.exists() {
-            std::fs::remove_dir_all(&dest_dir).map_err(|source| QuayError::Io {
+            if !force {
+                return Err(QuayError::AlreadyExists(dest_dir.display().to_string()));
+            }
+            // Overwriting in place used to leave files that aren't in the manifest
+            // (local notes, files dropped upstream) untouched, because it wrote
+            // over the directory rather than replacing it. `quay update` runs this
+            // path on every skill, so preserve them: whether `update` should clobber
+            // them is an open product question, not something to settle in a patch.
+            copy_missing_into(&dest_dir, staging.path())?;
+        }
+
+        // Move the old tree aside instead of deleting it, so a failed rename can
+        // put it back. Deleting first would mean a failure at exactly the wrong
+        // moment leaves the skill gone entirely — worse than the in-place
+        // overwrite this replaces.
+        let backup = dest_dir.exists().then(|| {
+            let mut p = dest_dir.clone();
+            p.set_file_name(format!(".{skill_name}.replaced"));
+            p
+        });
+        if let Some(backup) = &backup {
+            let _ = std::fs::remove_dir_all(backup);
+            std::fs::rename(&dest_dir, backup).map_err(|source| QuayError::Io {
                 path: dest_dir.display().to_string(),
                 source,
             })?;
         }
 
         let staged = staging.keep();
-        std::fs::rename(&staged, &dest_dir).map_err(|source| {
-            // Don't leak the staging dir if the rename is what failed.
-            let _ = std::fs::remove_dir_all(&staged);
-            QuayError::Io {
+        if let Err(source) = std::fs::rename(&staged, &dest_dir) {
+            // Put the original back before surfacing the error, and don't strand
+            // the staging copy on disk. Both are best-effort, but say so when they
+            // fail: the user is about to get a rename errno, and "your skill is in
+            // <path>" is the difference between recoverable and not.
+            if let Some(backup) = &backup {
+                if let Err(e) = std::fs::rename(backup, &dest_dir) {
+                    eprintln!(
+                        "warning: could not restore {} from {}: {e}; the previous copy is still there",
+                        dest_dir.display(),
+                        backup.display()
+                    );
+                }
+            }
+            if let Err(e) = std::fs::remove_dir_all(&staged) {
+                eprintln!(
+                    "warning: could not remove staging dir {}: {e}; the fetched copy is intact there",
+                    staged.display()
+                );
+            }
+            return Err(QuayError::Io {
                 path: dest_dir.display().to_string(),
                 source,
+            });
+        }
+        if let Some(backup) = &backup {
+            if let Err(e) = std::fs::remove_dir_all(backup) {
+                eprintln!(
+                    "warning: install succeeded but the replaced copy remains at {}: {e}",
+                    backup.display()
+                );
             }
-        })?;
+        }
 
         Ok(())
     }
@@ -225,6 +286,36 @@ where
         self.add_with_force(skill_name, None, true)?;
         Ok(true)
     }
+}
+
+/// Recursively copy anything under `from` that `into` does not already have.
+///
+/// Used to carry files the manifest doesn't list — local notes, files dropped
+/// upstream — across a replace, matching what writing over the directory in
+/// place used to do. Files present in `into` win: those are the freshly fetched
+/// ones.
+fn copy_missing_into(from: &Path, into: &Path) -> Result<()> {
+    let entries = std::fs::read_dir(from).map_err(|source| QuayError::Io {
+        path: from.display().to_string(),
+        source,
+    })?;
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = into.join(entry.file_name());
+        if src.is_dir() {
+            std::fs::create_dir_all(&dst).map_err(|source| QuayError::Io {
+                path: dst.display().to_string(),
+                source,
+            })?;
+            copy_missing_into(&src, &dst)?;
+        } else if !dst.exists() {
+            std::fs::copy(&src, &dst).map_err(|source| QuayError::Io {
+                path: dst.display().to_string(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Print a one-time migration notice if legacy state files are present.
@@ -373,10 +464,16 @@ mod tests {
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
 
         let err = mgr.add("csv-parse", None).unwrap_err();
-        assert!(matches!(err, QuayError::SkillNotFound { .. }), "got {err:?}");
+        assert!(
+            matches!(err, QuayError::SkillNotFound { .. }),
+            "got {err:?}"
+        );
 
         let dest = dir.path().join(".agents/skills/csv-parse");
-        assert!(!dest.exists(), "partial skill dir must not survive a failed fetch");
+        assert!(
+            !dest.exists(),
+            "partial skill dir must not survive a failed fetch"
+        );
 
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
             .unwrap()
@@ -396,6 +493,129 @@ mod tests {
         mgr.add("csv-parse", None).unwrap();
         assert!(dest.join("SKILL.md").exists());
         assert!(dest.join("reference.md").exists());
+    }
+
+    /// `quay update` runs the force path on every skill. A fetch that dies partway
+    /// through it must leave the working install exactly as it was — the ordering
+    /// that guarantees this (swap only after every file has landed) is easy to
+    /// "simplify" away, and the cost of getting it wrong is a deleted skill.
+    #[test]
+    fn force_add_leaves_the_existing_install_intact_when_a_fetch_fails() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let original = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\noriginal\n";
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([(
+                "skills/csv-parse/SKILL.md".into(),
+                original.to_vec(),
+            )])),
+        };
+        let regf = FakeRegistry(make_registry("csv-parse", "1.0.0"));
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add("csv-parse", None).unwrap();
+
+        // Second version adds a file that cannot be fetched.
+        let mut reg2 = make_registry("csv-parse", "2.0.0");
+        reg2.skills.get_mut("csv-parse").unwrap().files =
+            vec!["SKILL.md".into(), "reference.md".into()];
+        files.files.borrow_mut().insert(
+            "skills/csv-parse/SKILL.md".into(),
+            b"---\nname: csv-parse\ndescription: x.\nversion: 2.0.0\n---\nnew\n".to_vec(),
+        );
+        let regf2 = FakeRegistry(reg2);
+        let mgr2 = SkillManager::new(&cfg, &regf2, &files, dir.path().to_path_buf());
+
+        mgr2.add_with_force("csv-parse", None, true).unwrap_err();
+
+        let installed =
+            std::fs::read(dir.path().join(".agents/skills/csv-parse/SKILL.md")).unwrap();
+        assert_eq!(
+            installed, original,
+            "a failed force-add must not disturb the working install"
+        );
+        let names: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            1,
+            "no backup or staging left behind: {names:?}"
+        );
+    }
+
+    /// Overwriting used to write over the directory, so files outside the manifest
+    /// survived. Replacing it wholesale would silently delete them on every
+    /// `quay update` — whether it should is an open question, not a patch-level
+    /// decision.
+    #[test]
+    fn force_add_keeps_files_outside_the_manifest() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let body = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\nbody\n".to_vec();
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([(
+                "skills/csv-parse/SKILL.md".into(),
+                body.clone(),
+            )])),
+        };
+        let regf = FakeRegistry(make_registry("csv-parse", "1.0.0"));
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add("csv-parse", None).unwrap();
+
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("NOTES.md"), b"my notes").unwrap();
+        std::fs::create_dir_all(skill_dir.join("local")).unwrap();
+        std::fs::write(skill_dir.join("local/scratch.txt"), b"scratch").unwrap();
+
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        assert_eq!(
+            std::fs::read(skill_dir.join("NOTES.md")).unwrap(),
+            b"my notes",
+            "unmanifested file must survive a force overwrite"
+        );
+        assert_eq!(
+            std::fs::read(skill_dir.join("local/scratch.txt")).unwrap(),
+            b"scratch",
+            "nested unmanifested file must survive too"
+        );
+        assert!(skill_dir.join("SKILL.md").exists());
+    }
+
+    /// The rename is only atomic while staging and destination share a filesystem.
+    /// Staging under `/tmp` would pass on a dev box and fail on any user whose
+    /// `/tmp` is a tmpfs, so pin where it lives.
+    #[test]
+    fn staging_stays_inside_the_project_and_out_of_the_scanned_dir() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let body = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\nbody\n".to_vec();
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([(
+                "skills/csv-parse/SKILL.md".into(),
+                body.clone(),
+            )])),
+        };
+        let regf = FakeRegistry(make_registry("csv-parse", "1.0.0"));
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add("csv-parse", None).unwrap();
+
+        // Success path must not leave staging behind either.
+        let names: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["csv-parse"],
+            "install dir must hold only the skill, no staging residue"
+        );
+        // .quay is inside the project (same filesystem as the install dir) and is
+        // not one of the roots the scanner walks.
+        assert!(dir.path().join(".quay").exists(), "staging root is .quay/");
     }
 
     #[test]

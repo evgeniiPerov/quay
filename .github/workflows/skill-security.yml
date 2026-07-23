@@ -49,32 +49,59 @@ jobs:
       #
       # Accepted findings live in .skillspector-baseline.yaml — fingerprinted by
       # content, so an edit to a suppressed file surfaces again.
+      # Exit 1 means "over the risk threshold" and is report-only. Anything else
+      # means the scan did not happen — bad flags after a pin bump, a malformed
+      # baseline, an OOM — and must stay blocking: an unscanned skill is not a
+      # safe skill, and a green check would claim otherwise.
       - name: Scan skills
         id: scan
         run: |
           mkdir -p sarif
-          failed=""
-          for dir in .agents/skills/*/; do
+          shopt -s nullglob
+          dirs=(.agents/skills/*/)
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "::error::no skills found under .agents/skills/ — nothing was scanned"
+            exit 1
+          fi
+          over=""
+          broke=""
+          for dir in "${dirs[@]}"; do
             name=$(basename "$dir")
             out="sarif/${name}.sarif"
+            rc=0
             skillspector scan "$dir" --no-llm --format sarif --output "$out" \
-              --baseline .skillspector-baseline.yaml \
-              || failed="${failed} ${name}"
+              --baseline .skillspector-baseline.yaml || rc=$?
+            case "$rc" in
+              0) ;;
+              1) over="${over} ${name}" ;;
+              *) echo "::error::skillspector could not scan ${name} (exit ${rc})"
+                 broke="${broke} ${name}"
+                 continue ;;
+            esac
+            [ -f "$out" ] || { echo "::error::no SARIF produced for ${name}"; broke="${broke} ${name}"; continue; }
             jq --arg p "${dir}" \
               '(.runs[].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= $p + .' \
               "$out" > "${out}.tmp" && mv "${out}.tmp" "$out"
           done
-          if [ -n "$failed" ]; then
-            echo "over_threshold=${failed}" >> "$GITHUB_OUTPUT"
-            echo "::warning::skills over risk threshold:${failed}"
+          if [ -n "$over" ]; then
+            echo "over_threshold=${over}" >> "$GITHUB_OUTPUT"
+            echo "::warning::skills over risk threshold:${over}"
             {
               echo "### Skills over risk threshold"
               echo
-              for s in $failed; do echo "- \`$s\`"; done
+              for s in $over; do echo "- \`$s\`"; done
               echo
-              echo "Reported only — this check does not block the pipeline."
+              echo "Reported only — this does not block the pipeline."
               echo "Findings are in the Security tab under \`skill-security\`."
             } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$broke" ]; then
+            {
+              echo "### Skills that could not be scanned"
+              echo
+              for s in $broke; do echo "- \`$s\`"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
       # Code scanning rejects multiple runs sharing a category, so the per-skill
@@ -101,10 +128,18 @@ jobs:
           sarif_file: skills.sarif
           category: skill-security
 
-      # Report-only for now: an over-threshold skill warns and lands in the
-      # Security tab, but does not block. Flip this step back to `exit 1` to
-      # make the gate blocking once the findings are being acted on.
-      - name: Report over-threshold skills
+      # Report-only for now. `continue-on-error` means this step goes red while
+      # the job still passes — a green tick next to a step named "over threshold"
+      # would read as the opposite of what happened. Drop the continue-on-error
+      # line to make the gate blocking once the findings are being acted on.
+      #
+      # Never interpolate ${{ }} into run: — skill dir names come from the PR
+      # tree, so they reach the shell as data, not as script.
+      - name: Skills over risk threshold (report-only)
         if: steps.scan.outputs.over_threshold != ''
+        continue-on-error: true
+        env:
+          OVER: ${{ steps.scan.outputs.over_threshold }}
         run: |
-          echo "::notice::${{ steps.scan.outputs.over_threshold }} over threshold — reported, not blocking"
+          echo "over threshold:${OVER}"
+          exit 1
