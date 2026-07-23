@@ -46,6 +46,9 @@ jobs:
       # SkillSpector emits uris relative to the scanned dir ("SKILL.md"), so
       # each file is rewritten to repo-root-relative or code scanning annotates
       # the wrong path.
+      #
+      # Accepted findings live in .skillspector-baseline.yaml — fingerprinted by
+      # content, so an edit to a suppressed file surfaces again.
       - name: Scan skills
         id: scan
         run: |
@@ -55,6 +58,7 @@ jobs:
             name=$(basename "$dir")
             out="sarif/${name}.sarif"
             skillspector scan "$dir" --no-llm --format sarif --output "$out" \
+              --baseline .skillspector-baseline.yaml \
               || failed="${failed} ${name}"
             jq --arg p "${dir}" \
               '(.runs[].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= $p + .' \
