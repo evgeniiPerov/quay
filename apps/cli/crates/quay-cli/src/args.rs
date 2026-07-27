@@ -85,6 +85,14 @@ pub enum Command {
         #[arg(long)]
         tag: Option<String>,
     },
+    /// Show how a locally installed skill differs from the hub's copy
+    Diff {
+        /// Installed skill name
+        skill: String,
+        /// Hub to compare against (defaults to the default remote)
+        #[arg(long)]
+        remote: Option<String>,
+    },
     /// List installed skills that have newer versions available
     Outdated,
     /// Update installed skills to the latest available version

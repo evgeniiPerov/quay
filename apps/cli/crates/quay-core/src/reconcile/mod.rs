@@ -5,6 +5,7 @@
 pub mod action;
 pub mod baseline;
 pub mod diff;
+pub mod folder;
 pub mod harbor_history;
 pub mod verdict;
 

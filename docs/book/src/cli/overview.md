@@ -23,7 +23,8 @@
 - `list` — list currently installed skills (no dedicated page; covered briefly below).
 - [`info`](info.md) — show metadata for a skill without installing.
 - [`search`](search.md) — free-text search across configured remotes.
-- [`outdated`](outdated.md) — list installed skills with newer hub versions.
+- [`outdated`](outdated.md) — list installed skills that differ from the hub.
+- [`diff`](diff.md) — show what differs, file by file, for one skill.
 - [`update`](update.md) — pull newer versions over installed skills.
 - [`remove`](remove.md) — uninstall a skill (optionally `--everywhere`).
 - [`link`](link.md) — manage mirror dirs (`.claude/`, `.cursor/`, …).
@@ -76,6 +77,7 @@ Commands:
   remove            Remove a previously installed skill
   info              Show metadata for a skill (without installing)
   search            Search across configured remotes
+  diff              Show how a locally installed skill differs from the hub's copy
   outdated          List installed skills that have newer versions available
   update            Update installed skills to the latest available version
   scan              Discover local skills under `.agents/skills/` and report their sync status

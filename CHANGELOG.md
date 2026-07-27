@@ -5,6 +5,19 @@ notes — `dist` reads the section matching the version being tagged.
 
 ## Unreleased
 
+### Added
+
+- **`quay diff <skill>`** — read-only report of how a locally installed skill
+  differs from the hub's copy. `quay outdated` says *that* something differs;
+  this says *what*, file by file, with a verdict derived from hub history rather
+  than from version numbers (`hub is ahead by N commits`, `your copy is ahead`,
+  `no longer on the hub`, …). Supports `--remote` and `--json`.
+
+  It compares the whole skill **directory**. The reconcile engine that backs
+  `quay add`'s collision prompt only ever looked at `SKILL.md`, so a skill whose
+  `references/` or `scripts/` moved on the hub reported as identical. Diffs are
+  pull-oriented: `+` is what the hub would give you.
+
 ### Fixed
 
 - **`quay outdated` no longer misses a hub edit that shipped without a version
