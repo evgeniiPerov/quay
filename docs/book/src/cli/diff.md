@@ -42,6 +42,8 @@ Per-file markers:
 
 Binary (non-UTF-8) files report byte counts instead of a diff body.
 
+Line endings are normalized to LF on both sides before comparing. git's default `core.autocrlf` on Windows hands back CRLF at checkout while the hub's blobs hold LF, so a raw byte comparison would mark every file in every skill as modified there. A skill that differs *only* in line endings therefore reports as up to date.
+
 ## Examples
 
 ```sh

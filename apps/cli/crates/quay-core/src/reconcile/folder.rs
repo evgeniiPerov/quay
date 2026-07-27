@@ -5,6 +5,11 @@
 //! though — `references/`, `scripts/`, assets — and when `SKILL.md` is
 //! byte-identical while a sibling moved, the single-file verdict is `Identical`,
 //! which is wrong rather than merely incomplete.
+//!
+//! Both sides are compared with line endings normalized to LF. git's default
+//! `core.autocrlf` on Windows hands back CRLF at checkout while the harbor's
+//! blobs hold LF, so a raw byte comparison would mark every file in every skill
+//! as modified on that platform.
 
 use crate::error::{QuayError, Result};
 use crate::reconcile::diff::{render, Diff};
@@ -12,7 +17,7 @@ use crate::reconcile::harbor_history::HarborHistory;
 use crate::reconcile::verdict::{
     classify, semver_hint, BaseFacts, BasePosition, SemverRel, Verdict,
 };
-use crate::skill_files::{collect_skill_files, content_hash_of};
+use crate::skill_files::{collect_skill_files, content_hash_of, normalize_crlf};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -49,7 +54,11 @@ pub struct FolderReport {
     /// True when the skill directory does not exist on harbor HEAD (deleted or
     /// renamed upstream).
     pub absent_on_head: bool,
+    /// Content hash of the local copy, in the LF-normalized space this report
+    /// compares in — equal to `head_hash` iff the two copies match. Not the
+    /// digest a registry publishes; see `skill_files::content_hash_of`.
     pub local_hash: String,
+    /// Content hash of harbor HEAD's copy, same space as `local_hash`.
     pub head_hash: String,
 }
 
@@ -182,7 +191,7 @@ fn read_local(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             path: full.display().to_string(),
             source,
         })?;
-        out.insert(rel, bytes);
+        out.insert(rel, normalize_crlf(bytes));
     }
     Ok(out)
 }
@@ -209,7 +218,7 @@ fn read_harbor(
             continue;
         }
         if let Some(bytes) = harbor.bytes_at(rev, &path)? {
-            out.insert(rel, bytes);
+            out.insert(rel, normalize_crlf(bytes));
         }
     }
     Ok(out)

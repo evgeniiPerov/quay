@@ -157,6 +157,20 @@ fn a_hub_dotfile_is_not_permanent_drift() {
 }
 
 #[test]
+fn crlf_line_endings_alone_are_not_a_difference() {
+    // git's default core.autocrlf on Windows hands back CRLF at checkout, while
+    // the hub's blobs hold LF. Comparing raw bytes would mark every file in
+    // every skill as Modified on that platform.
+    let (_src, h) = harbor(&[&[("SKILL.md", b"a\nb\n"), ("refs/x.md", b"c\nd\n")]]);
+    let loc = local(&[("SKILL.md", b"a\r\nb\r\n"), ("refs/x.md", b"c\r\nd\r\n")]);
+
+    let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
+
+    assert_eq!(r.verdict, Verdict::Identical, "{:?}", r.files);
+    assert_eq!(r.changed().count(), 0);
+}
+
+#[test]
 fn local_edit_with_an_untouched_hub_is_not_blamed_on_the_hub() {
     let (_src, h) = harbor(&[&[("SKILL.md", b"body")]]);
     let loc = local(&[("SKILL.md", b"body\nmy tweak\n")]);

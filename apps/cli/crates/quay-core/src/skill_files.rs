@@ -67,8 +67,9 @@ fn hash_with(skill_dir: &Path, normalize_eol: bool) -> Result<String> {
 ///
 /// The folder-level comparison in `reconcile::folder` holds a harbor tree as
 /// bytes and has no directory to walk; hashing it through the same function
-/// keeps the two sides comparable — and keeps both comparable to the
-/// `content_hash` a registry publishes.
+/// keeps the two sides comparable. (That caller normalizes line endings first,
+/// so its digests are not the value a registry publishes — only equal-to-each-
+/// other. A caller that passes raw bytes does reproduce the published digest.)
 ///
 /// The caller owns the file set: keys must be skill-directory-relative POSIX
 /// paths, with dotfiles and symlinks already excluded, exactly as
@@ -94,7 +95,11 @@ pub fn content_hash_of(files: &BTreeMap<String, Vec<u8>>) -> String {
 }
 
 /// CRLF -> LF for valid UTF-8; binary content is returned untouched.
-fn normalize_crlf(content: Vec<u8>) -> Vec<u8> {
+///
+/// Public because `reconcile::folder` needs the same treatment: it compares a
+/// harbor tree against a working copy, and on Windows the working copy holds
+/// CRLF while the harbor's blobs hold LF.
+pub fn normalize_crlf(content: Vec<u8>) -> Vec<u8> {
     match String::from_utf8(content) {
         Ok(s) if s.contains("\r\n") => s.replace("\r\n", "\n").into_bytes(),
         Ok(s) => s.into_bytes(),
