@@ -237,11 +237,21 @@ impl LocalSkill {
     /// install hash equal. Distinct from the lockfile's `folder_hash` (which
     /// includes dotfiles); see [`crate::skill_files::pushable_content_hash`].
     pub fn content_hash(&self) -> crate::error::Result<String> {
-        let dir = self
-            .canonical_path()
+        crate::skill_files::pushable_content_hash(self.skill_dir())
+    }
+
+    /// [`Self::content_hash`] computed as if every text file used LF line
+    /// endings. Compared against alongside the raw hash so a Windows checkout
+    /// (`core.autocrlf`) does not read as a content change; see
+    /// [`crate::skill_files::pushable_content_hash_lf`].
+    pub fn content_hash_lf(&self) -> crate::error::Result<String> {
+        crate::skill_files::pushable_content_hash_lf(self.skill_dir())
+    }
+
+    fn skill_dir(&self) -> &Path {
+        self.canonical_path()
             .parent()
-            .expect("SKILL.md path always has a parent dir");
-        crate::skill_files::pushable_content_hash(dir)
+            .expect("SKILL.md path always has a parent dir")
     }
 }
 

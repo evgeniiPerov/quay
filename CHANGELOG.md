@@ -3,6 +3,27 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## Unreleased
+
+### Fixed
+
+- **`quay outdated` no longer misses a hub edit that shipped without a version
+  bump.** Frontmatter skills were compared by semver alone, so a hub maintainer
+  who fixed a typo or edited `references/` without touching `version` left every
+  consumer reading "everything up to date" on a stale copy. Content is now
+  compared for every skill format and reported as its own row —
+  `differs from hub at <version>` — alongside the existing `local -> <version>`
+  upgrade rows. `--json` and the `quay_outdated` MCP tool gain a
+  `content_drift` field so the two reasons can be told apart.
+
+  Drift is direction-neutral: two hashes prove the bytes differ, not which side
+  changed them. `quay update` still acts on version upgrades only, so drift rows
+  point at `quay add <name> --force`.
+
+  Line endings are normalized before comparing, so a Windows checkout
+  (`core.autocrlf`) does not report every installed skill as drifted. The
+  published `content_hash` is unchanged — no registry needs regenerating.
+
 ## 0.13.4 — 2026-07-23
 
 ### Security

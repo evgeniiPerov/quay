@@ -2,19 +2,35 @@
 //! remote hub's registry entry.
 //!
 //! A `skills-lock.json` now records what is installed and from where (see the
-//! `lock` module). Comparison here branches on skill format: frontmatter
-//! skills compare `registry.json` `version` (semver) against the local
-//! parsed version; hand-written skills (`SlashCommand` and `Freestyle`) have
-//! no semver, so they compare the hub entry's `content_hash` against the
-//! local content hash (`LocalSkill::content_hash`). A missing
-//! `content_hash` on a hub entry means the hub registry predates
-//! content-hash indexing — it is displayed as `unversioned` and never flagged
-//! as an upgrade (no false positives). The same `unversioned`, never-flag
-//! fallback applies when the local content hash cannot be computed (e.g. an
-//! unreadable file); that case additionally logs a warning to stderr. The
-//! `sha` field remains an informational, git-object-SHA column. The lockfile
-//! contributes a `locked` flag per row and offline content-hash drift
-//! detection via `quay lock --check`.
+//! `lock` module).
+//!
+//! Two comparisons run per row, and they answer different questions.
+//!
+//! **Content** (`content_drift`) is compared for every format: the hub entry's
+//! `content_hash` against `LocalSkill::content_hash`. Bumping `version` on push
+//! is a convention quay does not enforce, so this is the only signal that
+//! catches a hub edit shipped at an unchanged version. It is direction-neutral
+//! — two hashes prove the bytes differ, not which side moved them. The local
+//! side is also hashed with line endings normalized
+//! (`LocalSkill::content_hash_lf`) and either digest matching counts as
+//! unchanged, because git's `core.autocrlf` on Windows would otherwise make
+//! every installed skill look drifted.
+//!
+//! **Version** (`upgrade_available`) is semver for frontmatter skills.
+//! Hand-written skills (`SlashCommand` and `Freestyle`) have no semver, so for
+//! them content drift *is* the upgrade signal.
+//!
+//! A missing `content_hash` on a hub entry means the hub registry predates
+//! content-hash indexing — no comparison is possible, so nothing is flagged (no
+//! false positives) and hand-written rows display `unversioned`. The same
+//! never-flag fallback applies when the local content hash cannot be computed
+//! (e.g. an unreadable file); that case additionally logs a warning to stderr.
+//!
+//! The `sha` field remains an informational, git-object-SHA column. The
+//! lockfile contributes a `locked` flag per row and offline content-hash drift
+//! detection via `quay lock --check` — note that check uses `lock_hash`'s
+//! whole-folder digest, a different hash space from the pushable content hash
+//! compared here.
 
 use crate::config::Config;
 use crate::error::Result;
@@ -50,6 +66,23 @@ pub struct OutdatedEntry {
     /// rather than semver.
     #[serde(default)]
     pub by_content_hash: bool,
+    /// True when the local bytes differ from the hub's recorded
+    /// `content_hash`, regardless of what the versions say. Set for every
+    /// format, so a frontmatter skill whose hub copy was edited without a
+    /// version bump no longer reports as up to date.
+    ///
+    /// **Direction-neutral by design.** "Differs" is all two hashes can prove:
+    /// a hub-side edit and a local-side edit are the same observation from
+    /// here. The lockfile cannot break the tie — its `computed_hash` is a
+    /// `lock_hash::folder_hash` (dotfiles included, for vercel interop) while
+    /// this compares `skill_files::pushable_content_hash`, so the two are not
+    /// in the same hash space. Deciding which side moved needs harbor history
+    /// (see the `reconcile` module).
+    ///
+    /// False when the comparison could not be made at all: a hub registry
+    /// predating content-hash indexing, or an unreadable local skill.
+    #[serde(default)]
+    pub content_drift: bool,
 }
 
 /// Compare every locally-found skill against every configured remote's
@@ -96,6 +129,10 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
     for skill in skills {
         let local_sha = skill.canonical_sha256().to_string();
         let local_version = skill.meta.version.clone();
+        // Hashing walks the skill folder, so do it at most once per skill
+        // rather than once per remote. Outer `None` means "not computed yet";
+        // inner `None` means the walk failed and was already warned about.
+        let mut local_hash: Option<Option<(String, String)>> = None;
 
         for (remote_name, remote_cfg) in &config.remotes {
             let registry = match registry_cache.get(remote_name) {
@@ -113,36 +150,53 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 continue;
             };
 
-            let (available, upgrade_available, by_content_hash) = if matches!(
-                skill.meta.format,
-                crate::scanner::SkillFormat::SlashCommand | crate::scanner::SkillFormat::Freestyle
-            ) {
-                // Hand-written skill: no semver. Compare content hashes.
-                let remote_hash = &entry.content_hash;
-                if remote_hash.is_empty() {
-                    // Hub registry predates content-hash indexing — cannot
-                    // compare. Report but never flag (no false positives).
-                    (String::from("unversioned"), false, true)
-                } else {
-                    // Remote hash known — compare against the local content hash.
-                    // A local read failure is indistinguishable from "changed" if
-                    // we default to empty, so treat it as unknown: never flag —
-                    // but warn, so a corrupt/unreadable install isn't silent.
-                    match skill.content_hash() {
-                        Ok(local_hash) => {
-                            let changed = *remote_hash != local_hash;
-                            (short_hash(remote_hash), changed, true)
-                        }
-                        Err(e) => {
+            // Content comparison, made for every format. `None` means the
+            // comparison was impossible: either the hub registry predates
+            // content-hash indexing, or the local skill could not be hashed. A
+            // local read failure is indistinguishable from "changed" if it
+            // defaults to empty, so it stays unknown rather than being flagged
+            // — but it warns, so a corrupt install is not silent.
+            let remote_hash = &entry.content_hash;
+            let drift: Option<bool> = if remote_hash.is_empty() {
+                None
+            } else {
+                let computed = local_hash.get_or_insert_with(|| {
+                    // Raw and LF-normalized. Matching either means "unchanged":
+                    // a Windows checkout differs from the hub's LF bytes only in
+                    // line endings, and flagging that would light up every row
+                    // on the platform.
+                    match (skill.content_hash(), skill.content_hash_lf()) {
+                        (Ok(raw), Ok(lf)) => Some((raw, lf)),
+                        (Err(e), _) | (_, Err(e)) => {
                             eprintln!(
                                 "warning: could not hash {}: {e}; skipping content-hash comparison",
                                 skill.meta.name
                             );
-                            (String::from("unversioned"), false, true)
+                            None
                         }
                     }
+                });
+                computed
+                    .as_ref()
+                    .map(|(raw, lf)| remote_hash != raw && remote_hash != lf)
+            };
+
+            let (available, upgrade_available, by_content_hash) = if matches!(
+                skill.meta.format,
+                crate::scanner::SkillFormat::SlashCommand | crate::scanner::SkillFormat::Freestyle
+            ) {
+                // Hand-written skill: no semver, so content drift *is* the
+                // upgrade signal. An impossible comparison displays as
+                // `unversioned` and never flags (no false positives).
+                match drift {
+                    Some(changed) => (short_hash(remote_hash), changed, true),
+                    None => (String::from("unversioned"), false, true),
                 }
             } else {
+                // Frontmatter skill: semver decides whether an *upgrade* is
+                // available. Drift is reported separately — bumping the version
+                // is a convention, not something quay enforces on push, so an
+                // equal-version hub edit must not read as up to date.
                 let up = match (
                     Version::parse(&entry.version),
                     Version::parse(&local_version),
@@ -162,6 +216,7 @@ pub fn outdated_for_skills<R: RegistryFetcher>(
                 upgrade_available,
                 locked: locked_names.contains(&skill.meta.name),
                 by_content_hash,
+                content_drift: drift.unwrap_or(false),
             });
         }
     }
@@ -375,6 +430,125 @@ mod tests {
         }
     }
 
+    fn frontmatter_skill_on_disk(dir: &std::path::Path, body: &str, version: &str) -> LocalSkill {
+        std::fs::write(dir.join("SKILL.md"), body).unwrap();
+        LocalSkill {
+            meta: SkillMeta {
+                name: "csv-parse".into(),
+                description: "Parse CSV.".into(),
+                version: version.into(),
+                tags: vec![],
+                format: SkillFormat::Frontmatter,
+            },
+            locations: vec![LocalLocation {
+                root: crate::config::MirrorRoot::Agents,
+                path: dir.join("SKILL.md"),
+                sha256: "irrelevant".into(),
+            }],
+            status: ScanStatus::Local,
+        }
+    }
+
+    fn frontmatter_registry(version: &str, content_hash: &str) -> Registry {
+        let mut r = make_registry(version);
+        r.skills.get_mut("csv-parse").unwrap().content_hash = content_hash.into();
+        r
+    }
+
+    #[test]
+    fn frontmatter_drifts_when_hub_edited_without_a_version_bump() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill =
+            frontmatter_skill_on_disk(tmp.path(), "---\nname: csv-parse\n---\nbody\n", "1.0.0");
+        let cfg = make_config();
+        // Same version on both sides; the hub's bytes differ.
+        let f = FakeRegistry(frontmatter_registry("1.0.0", &"a".repeat(64)));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].upgrade_available,
+            "versions are equal, so this is not a semver upgrade"
+        );
+        assert!(
+            rows[0].content_drift,
+            "hub content hash differs from local, so the row must report drift"
+        );
+    }
+
+    #[test]
+    fn frontmatter_does_not_drift_when_content_matches() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill =
+            frontmatter_skill_on_disk(tmp.path(), "---\nname: csv-parse\n---\nbody\n", "1.0.0");
+        let hash = skill.content_hash().unwrap();
+        let cfg = make_config();
+        let f = FakeRegistry(frontmatter_registry("1.0.0", &hash));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(!rows[0].content_drift);
+        assert!(!rows[0].upgrade_available);
+    }
+
+    #[test]
+    fn crlf_only_difference_is_not_drift() {
+        // git's default core.autocrlf on Windows hands back CRLF at checkout,
+        // so the local bytes differ from the LF bytes the hub hashed. Every
+        // skill would report drift on Windows if that counted.
+        let lf = "---\nname: csv-parse\n---\nbody\nmore\n";
+        let hub = tempfile::TempDir::new().unwrap();
+        let hub_skill = frontmatter_skill_on_disk(hub.path(), lf, "1.0.0");
+        let hub_hash = hub_skill.content_hash().unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill = frontmatter_skill_on_disk(tmp.path(), &lf.replace('\n', "\r\n"), "1.0.0");
+        let cfg = make_config();
+        let f = FakeRegistry(frontmatter_registry("1.0.0", &hub_hash));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(
+            !rows[0].content_drift,
+            "line endings alone must not read as a content change"
+        );
+    }
+
+    #[test]
+    fn frontmatter_never_drifts_when_hub_registry_has_no_content_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill =
+            frontmatter_skill_on_disk(tmp.path(), "---\nname: csv-parse\n---\nbody\n", "1.0.0");
+        let cfg = make_config();
+        // `make_registry` leaves `content_hash` empty — a registry.json written
+        // before content-hash indexing. Nothing to compare against.
+        let f = FakeRegistry(make_registry("1.0.0"));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(!rows[0].content_drift, "no hub hash means no claim");
+    }
+
+    #[test]
+    fn frontmatter_reports_drift_and_upgrade_together_when_hub_is_newer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill =
+            frontmatter_skill_on_disk(tmp.path(), "---\nname: csv-parse\n---\nbody\n", "1.0.0");
+        let cfg = make_config();
+        let f = FakeRegistry(frontmatter_registry("2.0.0", &"a".repeat(64)));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(rows[0].upgrade_available, "2.0.0 > 1.0.0");
+        assert!(
+            rows[0].content_drift,
+            "drift is reported alongside an upgrade, not instead of it"
+        );
+    }
+
+    #[test]
+    fn frontmatter_drifts_when_local_version_is_ahead_but_content_differs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill =
+            frontmatter_skill_on_disk(tmp.path(), "---\nname: csv-parse\n---\nbody\n", "3.0.0");
+        let cfg = make_config();
+        let f = FakeRegistry(frontmatter_registry("1.0.0", &"a".repeat(64)));
+        let rows = outdated_for_skills(&[skill], &cfg, &f, &BTreeSet::new()).unwrap();
+        assert!(!rows[0].upgrade_available, "local semver is ahead");
+        assert!(rows[0].content_drift, "the bytes still differ");
+    }
+
     #[test]
     fn non_frontmatter_up_to_date_when_hashes_match() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -399,6 +573,11 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].by_content_hash);
         assert!(rows[0].upgrade_available);
+        assert!(
+            rows[0].content_drift,
+            "content_drift is set for every format, so one field answers \
+             'do my bytes differ from the hub' regardless of skill kind"
+        );
     }
 
     #[test]
