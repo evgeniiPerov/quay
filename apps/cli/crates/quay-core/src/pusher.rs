@@ -210,20 +210,21 @@ impl<'a, G: GitClient, P: PrOpener> SkillPusher<'a, G, P> {
             source,
         })?;
 
-        // 6. Write the file. For Frontmatter + bump, we re-emit normalized YAML frontmatter
-        // so the on-hub file's version matches the bumped version. For all other cases
-        // (Frontmatter without bump, SlashCommand, Freestyle), we copy raw bytes through.
+        // 6. Write the file. For Frontmatter + bump, rewrite the `version:` scalar
+        // in place so the on-hub file matches the bumped version. Everything else
+        // — including fields quay does not model, such as `allowed-tools` — passes
+        // through byte for byte. For all other cases (Frontmatter without bump,
+        // SlashCommand, Freestyle) the raw bytes are copied unchanged.
         let bytes_to_write: Vec<u8> = if matches!(meta.format, SkillFormat::Frontmatter)
             && !matches!(bump, BumpKind::AsWritten)
         {
-            // Re-emit only the frontmatter; preserve the body verbatim.
-            let body = strip_frontmatter(&raw).unwrap_or("");
-            let yaml =
-                serde_yaml::to_string(&manifest).map_err(|e| QuayError::InvalidFrontmatter {
+            set_frontmatter_version(&raw, &manifest.version)
+                .ok_or_else(|| QuayError::InvalidFrontmatter {
                     path: hub_skill_dir.display().to_string(),
-                    reason: format!("could not serialize frontmatter: {}", e),
-                })?;
-            format!("---\n{}\n---\n{}", yaml.trim_end(), body).into_bytes()
+                    reason: "skill is frontmatter format but has no frontmatter block to bump"
+                        .into(),
+                })?
+                .into_bytes()
         } else {
             raw.as_bytes().to_vec()
         };
@@ -445,10 +446,54 @@ fn commit_message(skill_name: &str, manifest: &SkillManifest) -> String {
 
 /// If `raw` starts with a `---\n…\n---\n` YAML frontmatter block, return
 /// just the body that follows it. Otherwise return `None`.
-fn strip_frontmatter(raw: &str) -> Option<&str> {
+/// Rewrite the `version:` scalar inside an existing frontmatter block, leaving
+/// every other byte of the file untouched. Returns `None` when `raw` has no
+/// frontmatter delimiters.
+///
+/// Re-serializing the parsed manifest instead would be lossy by construction: a
+/// struct can only emit the fields it models, so `license`, `allowed-tools`,
+/// `compatibility`, `metadata` and anything else the spec allows are dropped,
+/// and every absent optional comes back as an explicit `null`. The hub copy is
+/// what other people install, so that loss is permanent for every consumer.
+///
+/// A bump changes exactly one scalar, so exactly one scalar is changed.
+fn set_frontmatter_version(raw: &str, version: &str) -> Option<String> {
+    let bom = if raw.starts_with('\u{feff}') {
+        "\u{feff}"
+    } else {
+        ""
+    };
     let trimmed = raw.trim_start_matches('\u{feff}');
-    let rest = trimmed.strip_prefix("---\n")?;
-    rest.split_once("\n---\n").map(|(_yaml, body)| body)
+    // Match both line endings: a CRLF checkout is the normal state on Windows,
+    // and missing the delimiter there would silently skip the bump.
+    let (open, sep, eol) = if let Some(rest) = trimmed.strip_prefix("---\r\n") {
+        (rest, "\r\n---\r\n", "\r\n")
+    } else {
+        (trimmed.strip_prefix("---\n")?, "\n---\n", "\n")
+    };
+    let (yaml, body) = open.split_once(sep)?;
+
+    let mut replaced = false;
+    let mut out_yaml = String::with_capacity(yaml.len());
+    for line in yaml.split(eol) {
+        if !replaced && line.trim_start().starts_with("version:") {
+            // Keep the original indentation; only the value moves.
+            let indent = &line[..line.len() - line.trim_start().len()];
+            out_yaml.push_str(&format!("{indent}version: {version}"));
+            replaced = true;
+        } else {
+            out_yaml.push_str(line);
+        }
+        out_yaml.push_str(eol);
+    }
+    let out_yaml = out_yaml.trim_end_matches(eol);
+    if !replaced {
+        // No `version:` key to rewrite — add one rather than dropping the bump.
+        return Some(format!(
+            "{bom}---{eol}{out_yaml}{eol}version: {version}{eol}---{eol}{body}"
+        ));
+    }
+    Some(format!("{bom}---{eol}{out_yaml}{eol}---{eol}{body}"))
 }
 
 fn sha256_of_bytes(bytes: &[u8]) -> String {
@@ -529,6 +574,53 @@ fn pr_body(skill_name: &str, manifest: &SkillManifest) -> String {
 
 #[cfg(test)]
 mod tests {
+    const AUTHORED: &str = "---\nname: demo\ndescription: A demo.\nversion: 1.0.0\nlicense: MIT\nallowed-tools: [Bash, Read]\ncompatibility:\n  claude-code: \">=1.0\"\n---\n\n# Demo\n\nBody stays put.\n";
+
+    #[test]
+    fn bumping_the_version_leaves_every_other_byte_alone() {
+        // Re-serializing the frontmatter can only emit fields the manifest
+        // struct models, so anything else is dropped and every absent optional
+        // comes back as an explicit `null`. `license: MIT` silently became
+        // `license: null` on a real hub, and `allowed-tools` — the only
+        // machine-readable statement of what a skill may do — goes the same way.
+        let out = set_frontmatter_version(AUTHORED, "1.1.0").expect("has frontmatter");
+
+        assert!(out.contains("version: 1.1.0"), "the bump applies: {out}");
+        assert!(!out.contains("version: 1.0.0"));
+        assert!(
+            out.contains("license: MIT"),
+            "authored value survives: {out}"
+        );
+        assert!(
+            out.contains("allowed-tools: [Bash, Read]"),
+            "unmodelled fields survive: {out}"
+        );
+        assert!(
+            out.contains("claude-code: \">=1.0\""),
+            "nested keys survive"
+        );
+        assert!(!out.contains("null"), "no nulls injected: {out}");
+        assert!(
+            out.ends_with("# Demo\n\nBody stays put.\n"),
+            "body verbatim"
+        );
+    }
+
+    #[test]
+    fn a_file_without_frontmatter_is_left_for_the_caller_to_handle() {
+        assert!(set_frontmatter_version("# /slash-command\n\nbody\n", "1.1.0").is_none());
+    }
+
+    #[test]
+    fn crlf_frontmatter_is_bumped_too() {
+        // A Windows checkout hands back CRLF; missing the delimiter there would
+        // silently skip the bump.
+        let crlf = AUTHORED.replace('\n', "\r\n");
+        let out = set_frontmatter_version(&crlf, "2.0.0").expect("has frontmatter");
+        assert!(out.contains("version: 2.0.0"), "{out}");
+        assert!(out.contains("license: MIT"));
+    }
+
     use super::*;
     use crate::config::RemoteConfig;
     use crate::provider::FakeOpener;
