@@ -20,9 +20,15 @@ pub trait HarborHistory {
     fn head_sha(&self) -> Result<CommitId>;
     /// Bytes of `skill_path` at `rev`; `None` if the path does not exist there.
     fn bytes_at(&self, rev: &str, skill_path: &str) -> Result<Option<Vec<u8>>>;
-    /// Repo-relative paths of every file under the directory `prefix` at `rev`,
-    /// sorted. Empty when the directory does not exist there — a skill is a
-    /// directory, and `bytes_at` can only answer about a path already known.
+    /// Repo-relative paths of every **regular file** under the directory
+    /// `prefix` at `rev`, sorted. Empty when the directory does not exist there
+    /// — a skill is a directory, and `bytes_at` can only answer about a path
+    /// already known.
+    ///
+    /// Symlinks and gitlinks are excluded, matching the file set
+    /// `skill_files::collect_skill_files` collects locally. Including them would
+    /// report a difference no `quay add` could resolve, since the installer
+    /// skips them too.
     ///
     /// `prefix` matches whole path components: `skills/x` must not return files
     /// under `skills/x-tra`.
@@ -68,6 +74,15 @@ fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
         )));
     }
     Ok(out)
+}
+
+/// One `git ls-tree -r -z` record: `<mode> SP <type> SP <sha> TAB <path>`.
+/// Returns the path only for a regular file blob (`100644`/`100755`); symlinks
+/// (`120000`), gitlinks (`160000`) and anything unrecognized are dropped.
+fn parse_ls_tree_regular_file(record: &str) -> Option<String> {
+    let (meta, path) = record.split_once('\t')?;
+    let mode = meta.split(' ').next()?;
+    matches!(mode, "100644" | "100755").then(|| path.to_string())
 }
 
 impl GitHarborHistory {
@@ -148,18 +163,19 @@ impl HarborHistory for GitHarborHistory {
 
     fn paths_at(&self, rev: &str, prefix: &str) -> Result<Vec<String>> {
         // `ls-tree <rev> -- <path>` is a pathspec match, and a pathspec of
-        // `skills/x` matches the directory itself, not `skills/x-tra`. Trailing
-        // slashes would break that, so they are trimmed.
+        // `skills/x` matches the directory itself, not `skills/x-tra`. The
+        // trailing slash is trimmed for the caller's benefit, not git's: git
+        // accepts either, but `read_harbor` strips this same prefix off each
+        // result to get a skill-relative path.
         let prefix = prefix.trim_end_matches('/');
-        let o = git(
-            &self.repo,
-            &["ls-tree", "-r", "--name-only", "-z", rev, "--", prefix],
-        )?;
-        // NUL-separated so a path containing a newline cannot split a record.
+        // Modes are needed to drop symlinks (120000) and gitlinks (160000), so
+        // this cannot use `--name-only`. `-z` makes records NUL-separated, so a
+        // path containing a newline cannot split one.
+        let o = git(&self.repo, &["ls-tree", "-r", "-z", rev, "--", prefix])?;
         let mut paths: Vec<String> = String::from_utf8_lossy(&o.stdout)
             .split('\0')
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
+            .filter_map(parse_ls_tree_regular_file)
             .collect();
         paths.sort();
         Ok(paths)

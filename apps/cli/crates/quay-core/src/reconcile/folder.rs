@@ -51,9 +51,17 @@ pub struct FolderReport {
     pub semver: SemverRel,
     /// Every file on either side, sorted, unchanged ones included.
     pub files: Vec<FileChange>,
-    /// True when the skill directory does not exist on harbor HEAD (deleted or
-    /// renamed upstream).
+    /// True when nothing exists under the skill's prefix on harbor HEAD —
+    /// deleted or renamed upstream.
     pub absent_on_head: bool,
+    /// True when the base-commit search hit [`WALK_CAP`] without matching.
+    ///
+    /// Without this, exhausting the walk is indistinguishable from genuinely
+    /// finding no base, and `classify` turns "no base" into
+    /// `ChangedUnknownDirection { local_edited: true }` — telling a user who
+    /// never touched the skill that they edited it. A truncated search is not a
+    /// conclusion, and callers must not present it as one.
+    pub base_search_truncated: bool,
     /// Content hash of the local copy, in the LF-normalized space this report
     /// compares in — equal to `head_hash` iff the two copies match. Not the
     /// digest a registry publishes; see `skill_files::content_hash_of`.
@@ -69,9 +77,14 @@ impl FolderReport {
     }
 }
 
-/// Cap on the history walk when deriving the base commit, mirroring
-/// `baseline`'s. A skill whose matching commit is older than this reports
-/// `ChangedUnknownDirection` rather than paying for an unbounded walk.
+/// Cap on the history walk when deriving the base commit.
+///
+/// Deliberately tighter than `baseline::WALK_CAP` (200): that walk reads one
+/// blob per commit for a single `SKILL.md`, while this one reads a whole tree —
+/// an `ls-tree` plus one blob per file — for every candidate commit, and walks
+/// commits touching the entire directory rather than one file. Exceeding it
+/// sets [`FolderReport::base_search_truncated`] rather than silently reporting
+/// "no base found".
 const WALK_CAP: usize = 50;
 
 /// Compare `local_dir` against `skill_prefix` at harbor HEAD.
@@ -88,9 +101,13 @@ pub fn folder_report(
     let local = read_local(local_dir)?;
     let head = read_harbor(harbor, "HEAD", skill_prefix)?;
 
-    // An empty tree hashes to a perfectly ordinary value, so "absent on harbor"
-    // has to come from the listing. Comparing hashes cannot tell the two apart.
-    let absent_on_head = head.is_empty();
+    // Absence comes from the listing, not from `head` being empty. Two reasons:
+    // an empty tree hashes to a perfectly ordinary value, so hashes cannot show
+    // it; and `read_harbor` filters dotfiles, so a hub directory holding only a
+    // `.gitkeep` yields an empty map while the skill is very much still there.
+    let absent_on_head = harbor
+        .paths_at("HEAD", skill_prefix.trim_end_matches('/'))?
+        .is_empty();
 
     let local_hash = content_hash_of(&local);
     let head_hash = content_hash_of(&head);
@@ -121,13 +138,28 @@ pub fn folder_report(
         })
         .collect();
 
-    let verdict = if absent_on_head {
-        Verdict::ChangedUnknownDirection {
-            local_edited: false,
-        }
+    let (verdict, base_search_truncated) = if absent_on_head {
+        (
+            Verdict::ChangedUnknownDirection {
+                local_edited: false,
+            },
+            false,
+        )
     } else {
-        let base = derive_base(&local_hash, &head_hash, harbor, skill_prefix)?;
-        classify(&local_hash, &head_hash, base)
+        let search = derive_base(&local_hash, &head_hash, harbor, skill_prefix)?;
+        let verdict = match classify(&local_hash, &head_hash, search.base) {
+            // `classify` reads "no base" as "the user edited it". That inference
+            // only holds if the whole history was searched. Past the cap we
+            // simply did not look far enough, so claiming a local edit would be
+            // a statement of fact we have not established.
+            Verdict::ChangedUnknownDirection { .. } if search.truncated => {
+                Verdict::ChangedUnknownDirection {
+                    local_edited: false,
+                }
+            }
+            v => v,
+        };
+        (verdict, search.truncated)
     };
 
     Ok(FolderReport {
@@ -135,6 +167,7 @@ pub fn folder_report(
         semver: semver_hint(hub_version, local_version),
         files,
         absent_on_head,
+        base_search_truncated,
         local_hash,
         head_hash,
     })
@@ -152,9 +185,13 @@ fn derive_base(
     head_hash: &str,
     harbor: &dyn HarborHistory,
     skill_prefix: &str,
-) -> Result<Option<BaseFacts>> {
+) -> Result<BaseSearch> {
     if local_hash == head_hash {
-        return Ok(None); // identical: `classify` short-circuits before using base
+        // identical: `classify` short-circuits before using base
+        return Ok(BaseSearch {
+            base: None,
+            truncated: false,
+        });
     }
     let head_sha = harbor.head_sha()?;
     let commits = harbor.commits_touching(skill_prefix)?;
@@ -173,12 +210,26 @@ fn derive_base(
         } else {
             BasePosition::HeadAncestorOfBase
         };
-        return Ok(Some(BaseFacts {
-            base: commit.id.clone(),
-            position,
-        }));
+        return Ok(BaseSearch {
+            base: Some(BaseFacts {
+                base: commit.id.clone(),
+                position,
+            }),
+            truncated: false,
+        });
     }
-    Ok(None)
+    Ok(BaseSearch {
+        base: None,
+        truncated: commits.len() > WALK_CAP,
+    })
+}
+
+/// Outcome of the base-commit walk. `base: None` with `truncated: true` means
+/// "did not look far enough", which is a different claim from "looked at
+/// everything and found nothing".
+struct BaseSearch {
+    base: Option<BaseFacts>,
+    truncated: bool,
 }
 
 /// Skill directory on disk, keyed by path relative to it. Uses the push file
@@ -198,9 +249,11 @@ fn read_local(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
 
 /// Skill directory at `rev` on the harbor, keyed relative to the skill dir.
 ///
-/// Dotfiles are dropped to match [`read_local`]: a hub may carry a `.gitkeep`
-/// that no install ever receives, and counting it would report a difference no
-/// `quay add` could resolve.
+/// Dotfiles are dropped here to match [`read_local`]: a hub may carry a
+/// `.gitkeep` that no install ever receives, and counting it would report a
+/// difference no `quay add` could resolve. The other half of that parity —
+/// symlinks and gitlinks — is enforced by `paths_at`, which lists regular file
+/// blobs only.
 fn read_harbor(
     harbor: &dyn HarborHistory,
     rev: &str,
@@ -209,17 +262,30 @@ fn read_harbor(
     let prefix = prefix.trim_end_matches('/');
     let mut out = BTreeMap::new();
     for path in harbor.paths_at(rev, prefix)? {
+        // `paths_at` promises paths under `prefix`; guessing on a mismatch would
+        // key the map by a repo-relative path, which then hashes as a different
+        // file and shows up as both added upstream and deleted locally.
         let rel = path
             .strip_prefix(prefix)
-            .unwrap_or(&path)
+            .ok_or_else(|| {
+                QuayError::Reconcile(format!("harbor listed '{path}', not under '{prefix}'"))
+            })?
             .trim_start_matches('/')
             .to_string();
         if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
             continue;
         }
-        if let Some(bytes) = harbor.bytes_at(rev, &path)? {
-            out.insert(rel, normalize_crlf(bytes));
-        }
+        // The listing just promised this path exists at this rev, so `None` is a
+        // broken invariant rather than an absence — most likely a partial
+        // clone's lazy blob fetch failing. Skipping it would report the file as
+        // local-only, or, if every fetch fails, report a live skill as deleted
+        // upstream.
+        let bytes = harbor.bytes_at(rev, &path)?.ok_or_else(|| {
+            QuayError::Reconcile(format!(
+                "harbor listed '{path}' at {rev} but its content could not be read                  (a partial-clone blob fetch may have failed — check access to the hub)"
+            ))
+        })?;
+        out.insert(rel, normalize_crlf(bytes));
     }
     Ok(out)
 }

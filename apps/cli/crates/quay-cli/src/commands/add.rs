@@ -637,12 +637,14 @@ fn print_verdict_line(name: &str, verdict: &Verdict, semver: SemverRel) {
 fn print_diff(diff: &Diff) {
     match diff {
         Diff::Text(s) => print!("{}", s),
+        // Push-oriented call site: `reconcile` renders render(harbor, local),
+        // so old = harbor and new = local.
         Diff::Binary {
-            hub_bytes,
-            local_bytes,
+            old_bytes: harbor_bytes,
+            new_bytes: local_bytes,
         } => println!(
             "(binary/non-UTF8: {} bytes harbor vs {} local)",
-            hub_bytes, local_bytes
+            harbor_bytes, local_bytes
         ),
     }
 }

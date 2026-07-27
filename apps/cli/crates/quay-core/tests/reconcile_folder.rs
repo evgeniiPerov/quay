@@ -171,6 +171,106 @@ fn crlf_line_endings_alone_are_not_a_difference() {
 }
 
 #[test]
+fn binary_byte_counts_are_attributed_to_the_right_side() {
+    use quay_core::reconcile::diff::Diff;
+    // 4 bytes on the hub, 2 locally. `render`'s arguments are passed
+    // local-then-hub to get pull-oriented diff signs, so a struct whose fields
+    // are named by side would silently receive them backwards.
+    let (_src, h) = harbor(&[&[
+        ("SKILL.md", b"body"),
+        ("logo.png", &[0xff, 0xfe, 0x00, 0x01]),
+    ]]);
+    let loc = local(&[("SKILL.md", b"body"), ("logo.png", &[0xff, 0xfe])]);
+
+    let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
+    let f = r.changed().find(|f| f.rel == "logo.png").expect("listed");
+
+    assert_eq!(
+        f.diff,
+        // folder_report renders render(local, hub): old = local, new = hub.
+        Some(Diff::Binary {
+            old_bytes: 2,
+            new_bytes: 4
+        }),
+        "byte counts must follow their argument position"
+    );
+}
+
+#[test]
+fn a_hub_symlink_is_not_permanent_unresolvable_drift() {
+    // `read_local` skips symlinks (a link must not pull in out-of-tree files),
+    // so counting one on the hub side makes the skill differ forever: `quay add
+    // --force` skips it too, and the user gets blamed for an edit they cannot
+    // undo.
+    let src = tempdir().unwrap();
+    let p = src.path();
+    run(p, &["init", "--initial-branch=main"]);
+    run(p, &["config", "user.email", "t@t.t"]);
+    run(p, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(p.join("skills/x")).unwrap();
+    std::fs::write(p.join("skills/x/SKILL.md"), b"body").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("SKILL.md", p.join("skills/x/alias.md")).unwrap();
+    run(p, &["add", "-A"]);
+    run(p, &["commit", "-m", "seed"]);
+    let h = GitHarborHistory::clone_harbor(&format!("file://{}", p.display()), None).unwrap();
+
+    let loc = local(&[("SKILL.md", b"body")]);
+    let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
+
+    assert_eq!(r.verdict, Verdict::Identical, "{:?}", r.files);
+}
+
+#[test]
+fn exhausting_the_history_walk_does_not_claim_the_user_edited_the_skill() {
+    // Past WALK_CAP a matching commit exists but is never reached. Saying "no
+    // commit matches your copy" is then a false statement of fact, and
+    // `local_edited: true` blames the user for an edit they never made.
+    let src = tempdir().unwrap();
+    let p = src.path();
+    run(p, &["init", "--initial-branch=main"]);
+    run(p, &["config", "user.email", "t@t.t"]);
+    run(p, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(p.join("skills/x")).unwrap();
+    for i in 0..60 {
+        std::fs::write(p.join("skills/x/SKILL.md"), format!("body {i}\n")).unwrap();
+        run(p, &["add", "-A"]);
+        run(p, &["commit", "-q", "-m", &format!("rev {i}")]);
+    }
+    let h = GitHarborHistory::clone_harbor(&format!("file://{}", p.display()), None).unwrap();
+
+    // Matches the oldest commit, well past the cap.
+    let loc = local(&[("SKILL.md", b"body 0\n")]);
+    let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
+
+    assert!(
+        r.base_search_truncated,
+        "the walk hit its cap, so 'no base found' is not a conclusion"
+    );
+    assert_ne!(
+        r.verdict,
+        Verdict::ChangedUnknownDirection { local_edited: true },
+        "a truncated search must not be reported as a local edit"
+    );
+}
+
+#[test]
+fn a_hub_directory_holding_only_dotfiles_is_not_deleted_upstream() {
+    // `absent_on_head` drives the headline "no longer on the hub". Deriving it
+    // from the post-filter map means a hub carrying only a `.gitkeep` reports a
+    // live skill as deleted.
+    let (_src, h) = harbor(&[&[(".gitkeep", b"")]]);
+    let loc = local(&[("SKILL.md", b"body")]);
+
+    let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
+
+    assert!(
+        !r.absent_on_head,
+        "the directory exists on the hub; it just holds nothing installable"
+    );
+}
+
+#[test]
 fn local_edit_with_an_untouched_hub_is_not_blamed_on_the_hub() {
     let (_src, h) = harbor(&[&[("SKILL.md", b"body")]]);
     let loc = local(&[("SKILL.md", b"body\nmy tweak\n")]);

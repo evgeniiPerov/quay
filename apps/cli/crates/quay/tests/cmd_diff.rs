@@ -168,6 +168,84 @@ fn json_carries_the_verdict_and_per_file_kinds() {
 }
 
 #[test]
+fn an_unknown_remote_is_named_in_the_error() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let (proj, user_cfg, cfg_home) = fixture(
+        tmp.path(),
+        &[("SKILL.md", SKILL_V1)],
+        &[("SKILL.md", SKILL_V1)],
+    );
+
+    diff(&proj, &user_cfg, &cfg_home, &["--remote", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("nope"));
+}
+
+#[test]
+fn a_skill_the_remote_does_not_publish_is_an_error() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let (proj, user_cfg, cfg_home) = fixture(
+        tmp.path(),
+        &[("SKILL.md", SKILL_V1)],
+        &[("SKILL.md", SKILL_V1)],
+    );
+    // Installed locally under a second name the registry never lists.
+    let other = proj.join(".agents/skills/other-skill");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join("SKILL.md"),
+        "---\nname: other-skill\ndescription: x\nversion: 1.0.0\n---\nbody\n",
+    )
+    .unwrap();
+
+    let mut c = Command::cargo_bin("quay").unwrap();
+    c.env("XDG_CONFIG_HOME", &cfg_home)
+        .args([
+            "--project",
+            proj.to_str().unwrap(),
+            "--user-config",
+            user_cfg.to_str().unwrap(),
+            "diff",
+            "other-skill",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("does not publish"));
+}
+
+#[test]
+fn a_local_only_change_is_not_offered_a_bare_force_overwrite() {
+    // The hub never moves; the local copy is edited. `--force` would discard
+    // that work, so a read-only report must not present it as *the* next step.
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let (proj, user_cfg, cfg_home) = fixture(
+        tmp.path(),
+        &[("SKILL.md", SKILL_V1)],
+        &[(
+            "SKILL.md",
+            "---\nname: csv-parse\nversion: 1.0.0\n---\nmy own edits\n",
+        )],
+    );
+
+    let out = diff(&proj, &user_cfg, &cfg_home, &[])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        !text.contains("Take the hub copy with"),
+        "unconditional overwrite must not be the advice here:\n{text}"
+    );
+    assert!(
+        text.contains("may hold local changes"),
+        "the risk has to be named:\n{text}"
+    );
+}
+
+#[test]
 fn an_unknown_skill_is_an_error_not_an_empty_report() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let (proj, user_cfg, cfg_home) = fixture(

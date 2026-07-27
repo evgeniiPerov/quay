@@ -77,8 +77,8 @@ Commands:
   remove            Remove a previously installed skill
   info              Show metadata for a skill (without installing)
   search            Search across configured remotes
-  outdated          List installed skills that have newer versions available
   diff              Show how a locally installed skill differs from the hub's copy
+  outdated          List installed skills that have newer versions available
   update            Update installed skills to the latest available version
   scan              Discover local skills under `.agents/skills/` and report their sync status
   validate          Validate a local skill's frontmatter (offline, no network)

@@ -1,4 +1,10 @@
-//! Unified diff: harbor-HEAD bytes (old) vs local bytes (new). Pure.
+//! Unified diff between two byte strings. Pure.
+//!
+//! Parameters are named by POSITION (`old`, `new`), never by side. Callers
+//! choose which side is which: `reconcile` is push-oriented (old = harbor, so
+//! `+` is what you would send) while `reconcile::folder` is pull-oriented
+//! (old = local, so `+` is what the hub would give you). Side-named fields
+//! would silently hold the wrong value for one of them.
 
 use similar::{ChangeTag, TextDiff};
 
@@ -7,18 +13,16 @@ use similar::{ChangeTag, TextDiff};
 pub enum Diff {
     /// Unified text diff (may be empty string when identical).
     Text(String),
-    /// Non-UTF8 / binary: human note instead of a body.
-    Binary {
-        hub_bytes: usize,
-        local_bytes: usize,
-    },
+    /// Non-UTF8 / binary: human note instead of a body. Sizes follow the
+    /// argument positions, so the caller labels them.
+    Binary { old_bytes: usize, new_bytes: usize },
 }
 
-pub fn render(hub: &[u8], local: &[u8]) -> Diff {
-    let (Ok(h), Ok(l)) = (std::str::from_utf8(hub), std::str::from_utf8(local)) else {
+pub fn render(old: &[u8], new: &[u8]) -> Diff {
+    let (Ok(h), Ok(l)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
         return Diff::Binary {
-            hub_bytes: hub.len(),
-            local_bytes: local.len(),
+            old_bytes: old.len(),
+            new_bytes: new.len(),
         };
     };
     let td = TextDiff::from_lines(h, l);
@@ -48,8 +52,8 @@ mod tests {
         assert_eq!(
             d,
             Diff::Binary {
-                hub_bytes: 2,
-                local_bytes: 4
+                old_bytes: 2,
+                new_bytes: 4
             }
         );
     }
