@@ -22,6 +22,30 @@ use std::path::Path;
 /// this answers "does the local install match what the hub published?" — and
 /// only the pushed file set can ever be on the hub.
 pub fn pushable_content_hash(skill_dir: &Path) -> Result<String> {
+    hash_with(skill_dir, false)
+}
+
+/// Same digest, but computed as if every UTF-8 text file used LF line endings.
+///
+/// git's default `core.autocrlf` on Windows rewrites line endings at checkout,
+/// so a skill installed there differs byte-for-byte from the LF copy the hub
+/// hashed — and a raw comparison reports drift for every skill on the platform.
+/// Comparing against this digest as well absorbs that.
+///
+/// It deliberately does NOT replace [`pushable_content_hash`]: that digest is
+/// what registry writers publish, and changing it would invalidate the
+/// `content_hash` of every registry.json already in the wild. Non-UTF-8 files
+/// are hashed raw, so a binary asset is unaffected.
+///
+/// Residual gap: this normalizes the *local* side only. A hub whose published
+/// hash was computed from CRLF bytes still mismatches an LF checkout — fixing
+/// that direction means normalizing at publish time, which is a registry
+/// format migration.
+pub fn pushable_content_hash_lf(skill_dir: &Path) -> Result<String> {
+    hash_with(skill_dir, true)
+}
+
+fn hash_with(skill_dir: &Path, normalize_eol: bool) -> Result<String> {
     let rels = collect_skill_files(skill_dir)?;
     let mut hasher = Sha256::new();
     for rel in &rels {
@@ -30,6 +54,10 @@ pub fn pushable_content_hash(skill_dir: &Path) -> Result<String> {
             path: full.display().to_string(),
             source,
         })?;
+        let content = match normalize_eol {
+            true => normalize_crlf(content),
+            false => content,
+        };
         // Length-prefix each field so distinct (path, content) splits can never
         // hash the same (e.g. "a"+"bc" vs "ab"+"c"). Order is deterministic
         // (collect_skill_files sorts, SKILL.md first).
@@ -39,6 +67,15 @@ pub fn pushable_content_hash(skill_dir: &Path) -> Result<String> {
         hasher.update(&content);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+/// CRLF -> LF for valid UTF-8; binary content is returned untouched.
+fn normalize_crlf(content: Vec<u8>) -> Vec<u8> {
+    match String::from_utf8(content) {
+        Ok(s) if s.contains("\r\n") => s.replace("\r\n", "\n").into_bytes(),
+        Ok(s) => s.into_bytes(),
+        Err(e) => e.into_bytes(),
+    }
 }
 
 /// Walk `skill_dir` depth-first and return the relative paths (POSIX `/`
@@ -176,6 +213,41 @@ mod tests {
     fn unreadable_dir_errors() {
         let missing = TempDir::new().unwrap().path().join("does-not-exist");
         assert!(collect_skill_files(&missing).is_err());
+    }
+
+    #[test]
+    fn lf_hash_collapses_crlf_but_leaves_binary_bytes_alone() {
+        let lf = TempDir::new().unwrap();
+        fs::write(lf.path().join("SKILL.md"), "a\nb\n").unwrap();
+        fs::write(lf.path().join("logo.png"), [0xff, 0x0d, 0x0a, 0xfe]).unwrap();
+
+        let crlf = TempDir::new().unwrap();
+        fs::write(crlf.path().join("SKILL.md"), "a\r\nb\r\n").unwrap();
+        // Same bytes: a 0d0a inside binary content must NOT be rewritten, or the
+        // digest would depend on where a byte pair happened to land.
+        fs::write(crlf.path().join("logo.png"), [0xff, 0x0d, 0x0a, 0xfe]).unwrap();
+
+        assert_ne!(
+            pushable_content_hash(lf.path()).unwrap(),
+            pushable_content_hash(crlf.path()).unwrap(),
+            "the raw digest stays byte-exact — it is what registries publish"
+        );
+        assert_eq!(
+            pushable_content_hash_lf(lf.path()).unwrap(),
+            pushable_content_hash_lf(crlf.path()).unwrap(),
+            "the LF digest sees the two checkouts as the same skill"
+        );
+
+        // Binary content still has to reach the digest — normalization must not
+        // quietly drop the bytes it cannot decode.
+        let other = TempDir::new().unwrap();
+        fs::write(other.path().join("SKILL.md"), "a\nb\n").unwrap();
+        fs::write(other.path().join("logo.png"), [0xff, 0x0d, 0x0a, 0x00]).unwrap();
+        assert_ne!(
+            pushable_content_hash_lf(lf.path()).unwrap(),
+            pushable_content_hash_lf(other.path()).unwrap(),
+            "an edited binary asset must change the LF digest"
+        );
     }
 
     #[test]

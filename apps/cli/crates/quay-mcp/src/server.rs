@@ -134,21 +134,35 @@ impl QuayServer {
             .ctx
             .load_config_with(p.profile.as_deref())
             .map_err(to_mcp_err)?;
+        Ok(Json(self.outdated_report(&cfg).map_err(to_mcp_err)?))
+    }
+
+    /// Rows worth acting on: a higher version on the hub, or content that
+    /// differs at an unchanged version. The latter is invisible to semver —
+    /// bumping `version` on push is a convention quay does not enforce.
+    fn outdated_report(&self, cfg: &quay_core::Config) -> quay_core::Result<OutdatedReport> {
         let fetcher = self.ctx.fetcher();
-        let rows = outdated_for_local(&self.ctx.project, self.ctx.config_dir(), &cfg, &fetcher)
-            .map_err(to_mcp_err)?;
+        let rows = outdated_for_local(&self.ctx.project, self.ctx.config_dir(), cfg, &fetcher)?;
         let outdated = rows
             .into_iter()
-            .filter(|r| r.upgrade_available)
+            .filter(|r| r.upgrade_available || r.content_drift)
             .map(|r| OutdatedRow {
                 name: r.name,
                 remote: r.remote,
                 local_sha: r.local_sha,
                 remote_sha: r.remote_sha,
                 available: r.available,
+                content_drift: r.content_drift,
             })
             .collect();
-        Ok(Json(OutdatedReport { outdated }))
+        Ok(OutdatedReport { outdated })
+    }
+
+    /// Test-only: run the outdated logic without the MCP wrapper.
+    #[doc(hidden)]
+    pub fn quay_outdated_for_test(&self) -> anyhow::Result<OutdatedReport> {
+        let cfg = self.ctx.load_config_with(None)?;
+        Ok(self.outdated_report(&cfg)?)
     }
 
     /// List all SKILL.md files found in this project (canonical + mirrors).

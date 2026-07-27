@@ -99,6 +99,12 @@ pub struct OutdatedRow {
     pub remote_sha: String,
     /// Version available on the hub.
     pub available: String,
+    /// True when the local bytes differ from the hub's recorded content hash.
+    /// Rows can be listed for two different reasons — a higher version on the
+    /// hub, or content that differs at an unchanged version — and only this
+    /// field tells them apart. Direction-neutral: either side may have been
+    /// edited.
+    pub content_drift: bool,
 }
 
 /// Object wrapper — rmcp 1.7 requires object-rooted tool output.
