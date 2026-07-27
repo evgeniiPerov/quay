@@ -20,7 +20,15 @@ pub trait HarborHistory {
     fn head_sha(&self) -> Result<CommitId>;
     /// Bytes of `skill_path` at `rev`; `None` if the path does not exist there.
     fn bytes_at(&self, rev: &str, skill_path: &str) -> Result<Option<Vec<u8>>>;
-    /// Commits touching `skill_path`, newest-first.
+    /// Repo-relative paths of every file under the directory `prefix` at `rev`,
+    /// sorted. Empty when the directory does not exist there — a skill is a
+    /// directory, and `bytes_at` can only answer about a path already known.
+    ///
+    /// `prefix` matches whole path components: `skills/x` must not return files
+    /// under `skills/x-tra`.
+    fn paths_at(&self, rev: &str, prefix: &str) -> Result<Vec<String>>;
+    /// Commits touching `skill_path`, newest-first. `skill_path` may be a
+    /// directory, in which case any file under it counts.
     fn commits_touching(&self, skill_path: &str) -> Result<Vec<Commit>>;
     /// True iff `a` is an ancestor of `b`.
     fn is_ancestor(&self, a: &CommitId, b: &CommitId) -> Result<bool>;
@@ -138,6 +146,25 @@ impl HarborHistory for GitHarborHistory {
         Ok(Some(out.stdout))
     }
 
+    fn paths_at(&self, rev: &str, prefix: &str) -> Result<Vec<String>> {
+        // `ls-tree <rev> -- <path>` is a pathspec match, and a pathspec of
+        // `skills/x` matches the directory itself, not `skills/x-tra`. Trailing
+        // slashes would break that, so they are trimmed.
+        let prefix = prefix.trim_end_matches('/');
+        let o = git(
+            &self.repo,
+            &["ls-tree", "-r", "--name-only", "-z", rev, "--", prefix],
+        )?;
+        // NUL-separated so a path containing a newline cannot split a record.
+        let mut paths: Vec<String> = String::from_utf8_lossy(&o.stdout)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        paths.sort();
+        Ok(paths)
+    }
+
     fn commits_touching(&self, skill_path: &str) -> Result<Vec<Commit>> {
         let o = git(&self.repo, &["log", "--format=%H%x1f%cI", "--", skill_path])?;
         Ok(String::from_utf8_lossy(&o.stdout)
@@ -191,6 +218,22 @@ pub mod fake {
                 rev.to_string()
             };
             Ok(self.blobs.get(&(id, skill_path.to_string())).cloned())
+        }
+        fn paths_at(&self, rev: &str, prefix: &str) -> Result<Vec<String>> {
+            let id = if rev == "HEAD" {
+                self.head_sha()?
+            } else {
+                rev.to_string()
+            };
+            let dir = format!("{}/", prefix.trim_end_matches('/'));
+            let mut paths: Vec<String> = self
+                .blobs
+                .keys()
+                .filter(|(c, p)| *c == id && p.starts_with(&dir))
+                .map(|(_, p)| p.clone())
+                .collect();
+            paths.sort();
+            Ok(paths)
         }
         fn commits_touching(&self, _skill_path: &str) -> Result<Vec<Commit>> {
             let mut v = self.chain.clone();

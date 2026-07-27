@@ -125,6 +125,14 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 cli.json,
             )?;
         }
+        Command::Diff { skill, remote } => commands::diff::run(
+            &project,
+            &skill,
+            remote.as_deref(),
+            cli.profile.as_deref(),
+            user_config.as_deref(),
+            cli.json,
+        )?,
         Command::Outdated => commands::outdated::run(
             &project,
             cli.profile.as_deref(),

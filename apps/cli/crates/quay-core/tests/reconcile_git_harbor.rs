@@ -48,3 +48,38 @@ fn reads_history_from_a_real_harbor() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn lists_every_file_under_a_skill_directory() {
+    // A skill is a directory, so a diff has to enumerate it. `bytes_at` can
+    // only answer about a path you already know.
+    let src = tempdir().unwrap();
+    let p = src.path();
+    run(p, &["init", "--initial-branch=main"]);
+    run(p, &["config", "user.email", "t@t.t"]);
+    run(p, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(p.join("skills/x/references")).unwrap();
+    std::fs::write(p.join("skills/x/SKILL.md"), b"body").unwrap();
+    std::fs::write(p.join("skills/x/references/api.md"), b"api").unwrap();
+    // A sibling skill must not leak into the listing.
+    std::fs::create_dir_all(p.join("skills/x-tra")).unwrap();
+    std::fs::write(p.join("skills/x-tra/SKILL.md"), b"other").unwrap();
+    run(p, &["add", "-A"]);
+    run(p, &["commit", "-m", "seed"]);
+
+    let url = format!("file://{}", p.display());
+    let h = GitHarborHistory::clone_harbor(&url, None).unwrap();
+
+    assert_eq!(
+        h.paths_at("HEAD", "skills/x").unwrap(),
+        vec![
+            "skills/x/SKILL.md".to_string(),
+            "skills/x/references/api.md".to_string(),
+        ],
+        "nested files included, the `skills/x-tra` prefix match excluded"
+    );
+    assert!(
+        h.paths_at("HEAD", "skills/gone").unwrap().is_empty(),
+        "a skill absent at this rev lists nothing"
+    );
+}

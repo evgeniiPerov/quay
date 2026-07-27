@@ -27,6 +27,7 @@
 - [`update`](cli/update.md)
 - [`search`](cli/search.md)
 - [`outdated`](cli/outdated.md)
+- [`diff`](cli/diff.md)
 - [`scan`](cli/scan.md)
 - [`validate`](cli/validate.md)
 - [`info`](cli/info.md)

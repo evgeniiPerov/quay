@@ -161,6 +161,10 @@ mod tests {
                 Ok(None)
             }
         }
+        fn paths_at(&self, _rev: &str, _prefix: &str) -> Result<Vec<String>> {
+            // Single-file baseline derivation never lists a directory.
+            Ok(Vec::new())
+        }
         fn commits_touching(&self, _skill_path: &str) -> Result<Vec<Commit>> {
             Ok(vec![Commit {
                 id: self.match_id.clone(),

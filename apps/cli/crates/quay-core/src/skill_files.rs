@@ -8,6 +8,7 @@
 
 use crate::error::{QuayError, Result};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Content hash over exactly the files quay pushes — the [`collect_skill_files`]
@@ -46,10 +47,9 @@ pub fn pushable_content_hash_lf(skill_dir: &Path) -> Result<String> {
 }
 
 fn hash_with(skill_dir: &Path, normalize_eol: bool) -> Result<String> {
-    let rels = collect_skill_files(skill_dir)?;
-    let mut hasher = Sha256::new();
-    for rel in &rels {
-        let full = skill_dir.join(rel);
+    let mut files = BTreeMap::new();
+    for rel in collect_skill_files(skill_dir)? {
+        let full = skill_dir.join(&rel);
         let content = std::fs::read(&full).map_err(|source| QuayError::Io {
             path: full.display().to_string(),
             source,
@@ -58,15 +58,39 @@ fn hash_with(skill_dir: &Path, normalize_eol: bool) -> Result<String> {
             true => normalize_crlf(content),
             false => content,
         };
+        files.insert(rel, content);
+    }
+    Ok(content_hash_of(&files))
+}
+
+/// [`pushable_content_hash`] over a file set already in memory.
+///
+/// The folder-level comparison in `reconcile::folder` holds a harbor tree as
+/// bytes and has no directory to walk; hashing it through the same function
+/// keeps the two sides comparable — and keeps both comparable to the
+/// `content_hash` a registry publishes.
+///
+/// The caller owns the file set: keys must be skill-directory-relative POSIX
+/// paths, with dotfiles and symlinks already excluded, exactly as
+/// [`collect_skill_files`] returns them.
+pub fn content_hash_of(files: &BTreeMap<String, Vec<u8>>) -> String {
+    let mut hasher = Sha256::new();
+    // SKILL.md first, then the rest in sorted order — `collect_skill_files`
+    // hoists it, so hashing a BTreeMap in plain key order would disagree for a
+    // skill carrying a file that sorts ahead of it (e.g. `AGENTS.md`).
+    let ordered = files
+        .iter()
+        .filter(|(rel, _)| rel.as_str() == "SKILL.md")
+        .chain(files.iter().filter(|(rel, _)| rel.as_str() != "SKILL.md"));
+    for (rel, content) in ordered {
         // Length-prefix each field so distinct (path, content) splits can never
-        // hash the same (e.g. "a"+"bc" vs "ab"+"c"). Order is deterministic
-        // (collect_skill_files sorts, SKILL.md first).
+        // hash the same (e.g. "a"+"bc" vs "ab"+"c").
         hasher.update((rel.len() as u64).to_le_bytes());
         hasher.update(rel.as_bytes());
         hasher.update((content.len() as u64).to_le_bytes());
-        hasher.update(&content);
+        hasher.update(content);
     }
-    Ok(hex::encode(hasher.finalize()))
+    hex::encode(hasher.finalize())
 }
 
 /// CRLF -> LF for valid UTF-8; binary content is returned untouched.
@@ -247,6 +271,31 @@ mod tests {
             pushable_content_hash_lf(lf.path()).unwrap(),
             pushable_content_hash_lf(other.path()).unwrap(),
             "an edited binary asset must change the LF digest"
+        );
+    }
+
+    #[test]
+    fn in_memory_hash_matches_the_on_disk_one() {
+        // The folder report hashes a harbor tree it holds in memory and compares
+        // it against a local directory. The two must be the same digest, or the
+        // comparison is meaningless — and matching `pushable_content_hash` also
+        // keeps it comparable to the `content_hash` registries publish.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("SKILL.md"), "body").unwrap();
+        // Sorts BEFORE "SKILL.md" bytewise, so this catches an implementation
+        // that sorts naively instead of hoisting SKILL.md first.
+        fs::write(dir.path().join("AGENTS.md"), "agents").unwrap();
+        fs::create_dir_all(dir.path().join("scripts")).unwrap();
+        fs::write(dir.path().join("scripts/run.sh"), "echo").unwrap();
+
+        let in_memory = BTreeMap::from([
+            ("SKILL.md".to_string(), b"body".to_vec()),
+            ("AGENTS.md".to_string(), b"agents".to_vec()),
+            ("scripts/run.sh".to_string(), b"echo".to_vec()),
+        ]);
+        assert_eq!(
+            content_hash_of(&in_memory),
+            pushable_content_hash(dir.path()).unwrap()
         );
     }
 
