@@ -3,6 +3,18 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.14.1 — 2026-07-27
+
+### Fixed
+
+- **`push --bump` no longer rewrites your frontmatter.** It re-emitted the whole
+  block from the parsed manifest, so the hub copy kept only the fields quay
+  models: `license: MIT` came back as `license: null`, and `compatibility`,
+  `metadata` and `allowed-tools` were dropped outright. `allowed-tools` is the
+  only machine-readable statement of what a skill may do, and the hub copy is
+  what everyone else installs. The bump now rewrites the `version:` scalar and
+  passes every other byte through, CRLF frontmatter included.
+
 ## 0.14.0 — 2026-07-27
 
 ### Added
