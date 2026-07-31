@@ -41,8 +41,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             force,
             interactive,
             no_diff,
+            keep_extra,
+            delete_extra,
         } => {
+            use commands::extras::ExtraPolicy;
             use commands::interactive::should_auto_interactive;
+            let policy = ExtraPolicy::from_flags(keep_extra, delete_extra);
             if should_auto_interactive(skill.is_some(), interactive) {
                 commands::add::run_interactive(
                     remote.as_deref(),
@@ -51,6 +55,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &project,
                     user_config.as_deref(),
                     cli.json,
+                    policy,
                 )?;
             } else if let Some(skill) = skill {
                 commands::add::run(
@@ -62,6 +67,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &project,
                     user_config.as_deref(),
                     cli.json,
+                    policy,
                 )?;
             } else {
                 return Err(
@@ -144,8 +150,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             interactive,
             all,
+            keep_extra,
+            delete_extra,
         } => {
+            use commands::extras::ExtraPolicy;
             use commands::interactive::is_tty;
+            let policy = ExtraPolicy::from_flags(keep_extra, delete_extra);
             if all {
                 // Explicit bypass: update everything without the picker.
                 commands::update::run(
@@ -155,6 +165,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &project,
                     user_config.as_deref(),
                     cli.json,
+                    policy,
                 )?;
             } else if interactive {
                 commands::update::run_interactive(
@@ -163,6 +174,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &project,
                     user_config.as_deref(),
                     cli.json,
+                    policy,
                 )?;
             } else if let Some(skill) = skill {
                 commands::update::run(
@@ -172,6 +184,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &project,
                     user_config.as_deref(),
                     cli.json,
+                    policy,
                 )?;
             } else {
                 // Bare invocation: TTY → picker, non-TTY → update all.
@@ -182,6 +195,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &project,
                         user_config.as_deref(),
                         cli.json,
+                        policy,
                     )?;
                 } else {
                     commands::update::run(
@@ -191,6 +205,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &project,
                         user_config.as_deref(),
                         cli.json,
+                        policy,
                     )?;
                 }
             }

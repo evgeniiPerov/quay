@@ -1,3 +1,5 @@
+use crate::commands::extras::{Decider, ExtraPolicy};
+use crate::commands::interactive::is_tty;
 use quay_core::{
     add_plan::{
         build_plan, build_plan_with_prompt, collision_names, CollisionStrategy, SkillAction,
@@ -98,6 +100,7 @@ pub fn run_interactive(
     project: &Path,
     user_config: Option<&Path>,
     json: bool,
+    policy: ExtraPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
@@ -314,6 +317,7 @@ pub fn run_interactive(
 
     // Execute plan.
     let f = CloneFetcher::new();
+    let decider = Decider::new(policy, is_tty() && !json);
     let mut installed = 0usize;
     let mut updated = 0usize;
     let mut skipped = 0usize;
@@ -339,6 +343,7 @@ pub fn run_interactive(
                     false,
                     project,
                     json,
+                    &decider,
                 ) {
                     Ok(()) => {
                         if do_force {
@@ -359,6 +364,10 @@ pub fn run_interactive(
                     }
                 }
             }
+        }
+        if decider.interrupted() {
+            eprintln!("aborted");
+            break;
         }
     }
 
@@ -434,6 +443,7 @@ pub fn run(
     project: &Path,
     user_config: Option<&Path>,
     json: bool,
+    policy: ExtraPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
@@ -441,7 +451,10 @@ pub fn run(
     crate::commands::ensure_remotes_configured(&cfg)?;
 
     let f = CloneFetcher::new();
-    run_with(&cfg, &f, &f, skill, remote, force, no_diff, project, json)?;
+    let decider = Decider::new(policy, is_tty() && !json);
+    run_with(
+        &cfg, &f, &f, skill, remote, force, no_diff, project, json, &decider,
+    )?;
 
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
@@ -459,11 +472,12 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     no_diff: bool,
     project: &Path,
     json: bool,
+    decider: &Decider,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
     if force {
         // Fast path: unconditional overwrite, no reconcile, no harbor clone.
-        mgr.add_with_force(skill, remote, true)?;
+        mgr.add_with_extras(skill, remote, true, &|s, e| decider.decide(s, e))?;
     } else {
         match mgr.add(skill, remote) {
             Ok(()) => {
