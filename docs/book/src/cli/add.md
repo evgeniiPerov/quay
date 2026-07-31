@@ -29,6 +29,8 @@ Inside a TTY, omitting `SKILL` and not passing `-i` triggers the picker automati
 | `--remote <NAME>` | Use a specific remote instead of the profile default. |
 | `--force` | Overwrite the skill even if it already exists locally. |
 | `-i, --interactive` | Open the checkbox picker. Mutually exclusive with `SKILL`. |
+| `--keep-extra` | With `--force`, keep local files the new version does not contain, without prompting or printing the note. |
+| `--delete-extra` | With `--force`, delete local files the new version does not contain, without prompting. |
 | `--profile`, `--user-config`, `--project`, `--json` | Standard globals. |
 
 ## When to use this vs …

@@ -27,6 +27,8 @@ quay update -i                       # explicit picker
 | `--dry-run` | Show what would change without writing. |
 | `-i, --interactive` | Open the picker. |
 | `--all` | Skip the TTY auto-picker; update everything outdated. |
+| `--keep-extra` | Keep local files the new version does not contain, without prompting or printing the note. |
+| `--delete-extra` | Delete local files the new version does not contain, without prompting. |
 | `--profile`, `--user-config`, `--project`, `--json` | Standard globals. |
 
 ## When to use this vs …
@@ -67,12 +69,22 @@ note: csv-parse — kept 2 files not in the new version
 
 | Flag | Effect |
 |---|---|
-| `--keep-extra` | Keep them, no prompt, no note. The unattended default. |
+| `--keep-extra` | Keep them, no prompt, and no note either — this is the only way to suppress it. |
 | `--delete-extra` | Delete them, no prompt. Works without a terminal. |
+
+Note that the bare unattended default (no flag, no terminal) also keeps everything —
+`--keep-extra` only changes whether the note is printed.
 
 Dotfiles, dot-directories and symlinks are never offered and never deleted. They
 are outside the set quay manages, and one of them — `.quay-mirror` — is what marks
 a copy mirror as quay-managed.
+
+The "not in the new version" set is derived from the hub's `registry.json`
+`files` list for that skill, not from the actual fetched tree. A hub whose
+registry has gone stale — edited by hand without a `quay rebuild-registry` —
+can therefore list a file as missing when it still exists upstream. An
+interactive prompt shows the filename, so a human can recognize and keep it;
+`--delete-extra` in an unattended run has no such backstop and will delete it.
 
 ## `--help`
 

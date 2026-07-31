@@ -5,13 +5,15 @@ notes — `dist` reads the section matching the version being tagged.
 
 ## 0.15.0 — 2026-07-31
 
-### Added
+### Changed
 
-- **`update` and `add --force` no longer keep files the hub deleted.** Both
-  re-materialize a skill from a fresh fetch, and both used to carry forward
-  every local file the new version did not contain. That preserved the notes
-  you wrote — and also resurrected every file the hub had removed, so
-  `quay diff` reported it as local-only for the life of the install.
+- **`update` and `add --force` now notice local files the hub deleted, and
+  ask what to do with them.** Both re-materialize a skill from a fresh fetch,
+  and both used to silently carry forward every local file the new version
+  did not contain, forever. That preserved the notes you wrote — and also
+  resurrected every file the hub had removed, so `quay diff` reported it as
+  local-only for the life of the install. The default is still to keep
+  everything; nothing is deleted without a flag or an explicit answer.
 
   quay cannot tell the two apart on its own: the lockfile records a content
   hash, not a file list, so nothing on disk says what the previous install put

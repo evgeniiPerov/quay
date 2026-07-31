@@ -61,7 +61,6 @@ pub fn run_interactive(
     let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
     let decider = Decider::new(policy, is_tty() && !json);
     let mut ok = 0usize;
-    let mut fail = 0usize;
     for idx in &picks {
         let e = &candidates[*idx];
         match mgr.update_one_with_extras(&e.name, &|s, x| decider.decide(s, x)) {
@@ -73,7 +72,6 @@ pub fn run_interactive(
             }
             Err(err) => {
                 eprintln!("\u{2717} {}: {}", e.name, err);
-                fail += 1;
             }
         }
         // This loop counts failures and keeps going, so without this an
@@ -85,7 +83,7 @@ pub fn run_interactive(
     }
 
     if !json {
-        println!("updated {} of {} selected", ok, ok + fail);
+        println!("updated {} of {} selected", ok, picks.len());
     }
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);

@@ -131,7 +131,9 @@ where
     /// Like [`add`] but with explicit overwrite control.
     ///
     /// Keeps every local file the new version does not contain — the historical
-    /// behaviour, and what non-interactive callers such as `quay-mcp` want. Use
+    /// behaviour, and what non-interactive callers such as `quay-mcp` want. An
+    /// empty local directory is not recreated (it is only ever materialized
+    /// lazily, when a kept file lands in it), but no file is ever dropped. Use
     /// [`add_with_extras`] to let the caller decide instead.
     pub fn add_with_force(
         &self,
@@ -442,7 +444,22 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
             format!("{prefix}/{name}")
         };
         let dst = into.join(entry.file_name());
-        if src.is_dir() {
+        let file_type = entry.file_type().map_err(|source| QuayError::Io {
+            path: src.display().to_string(),
+            source,
+        })?;
+        if file_type.is_symlink() {
+            // Symlinks are outside `collect_skill_files`'s managed set, so
+            // `compute_extras` never lists one and `skip` never names one —
+            // it is always carried forward. `std::fs::copy` follows a symlink
+            // and would silently replace it with a plain copy of its target's
+            // bytes (or, for a symlink to a directory, `is_dir()` below would
+            // recurse into the target as if it belonged to this skill), so
+            // the link itself is recreated instead of dereferenced.
+            if !dst.exists() {
+                copy_symlink(&src, &dst)?;
+            }
+        } else if file_type.is_dir() {
             // Recurse without creating `dst` first: a directory materializes
             // only when a file actually lands in it, so skipping every child
             // leaves no empty husk behind.
@@ -461,6 +478,55 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
         }
     }
     Ok(())
+}
+
+/// Recreate the symlink `src` at `dst`, preserving the link rather than
+/// dereferencing it.
+fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
+    let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
+        path: src.display().to_string(),
+        source,
+    })?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    create_symlink_at(src, &link_target, dst)
+}
+
+#[cfg(unix)]
+fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(link_target, dst).map_err(|source| QuayError::Io {
+        path: dst.display().to_string(),
+        source,
+    })
+}
+
+#[cfg(windows)]
+fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+    // Windows distinguishes a file link from a directory link. `src`'s own
+    // metadata (which follows the link) tells us which; a dangling link falls
+    // back to a file link.
+    let target_is_dir = std::fs::metadata(src).map(|m| m.is_dir()).unwrap_or(false);
+    if target_is_dir {
+        std::os::windows::fs::symlink_dir(link_target, dst)
+    } else {
+        std::os::windows::fs::symlink_file(link_target, dst)
+    }
+    .map_err(|source| QuayError::Io {
+        path: dst.display().to_string(),
+        source,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
+    Err(QuayError::Io {
+        path: dst.display().to_string(),
+        source: std::io::Error::other("symlinks are not supported on this platform"),
+    })
 }
 
 /// Files in the existing install that the freshly fetched copy does not have.
@@ -874,8 +940,11 @@ mod tests {
         .unwrap();
 
         assert!(
-            std::fs::symlink_metadata(skill_dir.join("link.txt")).is_ok(),
-            "the symlink must survive"
+            std::fs::symlink_metadata(skill_dir.join("link.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink must survive as a symlink, not be replaced by a regular file"
         );
     }
 

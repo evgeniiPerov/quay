@@ -132,7 +132,7 @@ fn update_without_a_flag_keeps_extras_and_notes_them() {
         .args(["--project", &p, "update", "foo"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("kept 1 files"))
+        .stderr(predicates::str::contains("kept 1 file "))
         .stderr(predicates::str::contains("notes.md"))
         .stderr(predicates::str::contains("--delete-extra"));
 
@@ -167,7 +167,7 @@ fn update_keep_extra_is_silent() {
         .args(["--project", &p, "update", "foo", "--keep-extra"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("kept 1 files").not());
+        .stderr(predicates::str::contains("--delete-extra").not());
 
     assert!(project.path().join(".agents/skills/foo/notes.md").exists());
 }
