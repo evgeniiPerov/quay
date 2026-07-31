@@ -434,7 +434,15 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
         path: from.display().to_string(),
         source,
     })?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        // Not `.flatten()`: this walk *is* the deletion mechanism, so an entry
+        // dropped here is a file destroyed by omission. A transient EIO or a
+        // permission change mid-walk must fail the install, not silently take
+        // a file with it.
+        let entry = entry.map_err(|source| QuayError::Io {
+            path: from.display().to_string(),
+            source,
+        })?;
         let src = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -457,7 +465,7 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
             // recurse into the target as if it belonged to this skill), so
             // the link itself is recreated instead of dereferenced.
             if !dst.exists() {
-                copy_symlink(&src, &dst, &rel, skip)?;
+                copy_symlink(&src, &dst, &rel)?;
             }
         } else if file_type.is_dir() {
             // Recurse without creating `dst` first: a directory materializes
@@ -483,10 +491,10 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
 /// Recreate the symlink `src` at `dst`, preserving the link rather than
 /// dereferencing it.
 ///
-/// `rel` and `skip` exist only for the Windows degrade path (see
-/// [`degrade_symlink_failure`]) — recreating a symlink never consults `skip`,
-/// since symlinks are outside the managed set entirely.
-fn copy_symlink(src: &Path, dst: &Path, rel: &str, skip: &BTreeSet<String>) -> Result<()> {
+/// `rel` exists only to name the link in the Windows degrade path's warnings
+/// (see [`degrade_symlink_failure`]); recreating a symlink never consults
+/// `skip`, since symlinks are outside the managed set entirely.
+fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
     let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
         path: src.display().to_string(),
         source,
@@ -499,32 +507,40 @@ fn copy_symlink(src: &Path, dst: &Path, rel: &str, skip: &BTreeSet<String>) -> R
     }
     match create_symlink_at(src, &link_target, dst) {
         Ok(()) => Ok(()),
-        Err(e) => degrade_symlink_failure(src, dst, &link_target, rel, skip, e),
+        Err(e) => degrade_symlink_failure(src, dst, &link_target, rel, e),
     }
 }
 
 /// Whether a symlink-creation failure is the class Windows raises when the
-/// caller lacks Developer Mode or elevation (`ERROR_PRIVILEGE_NOT_HELD`,
-/// which Rust maps to `io::ErrorKind::PermissionDenied`), as opposed to a real
-/// failure — a full disk, a broken object store — that must still propagate.
+/// caller lacks Developer Mode or elevation (`ERROR_PRIVILEGE_NOT_HELD`), as
+/// opposed to a real failure — a full disk, a broken object store — that must
+/// still propagate.
+///
+/// Matches the raw code as well as the mapped kind: whether std decodes 1314
+/// to `PermissionDenied` or leaves it `Uncategorized` is an implementation
+/// detail, and getting it wrong means the degrade never fires and Windows
+/// hard-fails on any skill containing a symlink.
 ///
 /// Split out from [`degrade_symlink_failure`] so the classification is
 /// testable on every platform; the fallback behaviour it gates is
 /// Windows-only, so this is otherwise dead weight on every other target.
 #[cfg(any(windows, test))]
 fn is_permission_class_failure(e: &QuayError) -> bool {
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
     matches!(
         e,
-        QuayError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied
+        QuayError::Io { source, .. }
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+                || source.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
     )
 }
 
 /// `symlink_file`/`symlink_dir` require Developer Mode or elevation on
 /// Windows, which ordinary users have neither of — one symlink anywhere in a
 /// skill must not turn `update` / `add --force` into a permanent hard
-/// failure. A permission-class failure there falls back to the pre-fix
-/// behaviour (copy the dereferenced target) and warns; anything else — a
-/// full disk, a broken object store — is a real failure and still
+/// failure. A permission-class failure on a *file* link falls back to the
+/// pre-fix behaviour (copy the dereferenced target) and warns; anything else —
+/// a full disk, a broken object store — is a real failure and still
 /// propagates. Unix never takes this path differently: [`create_symlink_at`]
 /// on unix does not fail this way in practice, and if it ever does, the
 /// error still propagates exactly as it did before this function existed.
@@ -534,28 +550,58 @@ fn degrade_symlink_failure(
     dst: &Path,
     link_target: &Path,
     rel: &str,
-    skip: &BTreeSet<String>,
     e: QuayError,
 ) -> Result<()> {
     if !is_permission_class_failure(&e) {
         return Err(e);
+    }
+    let meta = match std::fs::metadata(src) {
+        Ok(meta) => meta,
+        // A dangling link resolves to nothing, so there is no content to lose
+        // by dropping it. Every other errno — a denied parent, ELOOP,
+        // ENAMETOOLONG, EIO — says nothing about whether the target has
+        // contents, and `dst` is the staging tree about to be renamed over the
+        // install, so swallowing it would destroy the entry while reporting
+        // success.
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation \
+                 required), and it dangles, so there are no contents to copy; dropping it",
+                link_target.display()
+            );
+            return Ok(());
+        }
+        Err(source) => {
+            return Err(QuayError::Io {
+                path: src.display().to_string(),
+                source,
+            })
+        }
+    };
+    if meta.is_dir() {
+        // No safe fallback exists for a directory link. `metadata` follows the
+        // link, so copying "its contents" here would splice the target's tree
+        // into the skill as though it belonged to it — precisely the behaviour
+        // this degrade replaces — and would re-enter `copy_missing_rec` ->
+        // `copy_symlink` -> here on a link cycle with no depth limit.
+        eprintln!(
+            "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation \
+             required); the directory link could not be preserved and was skipped",
+            link_target.display()
+        );
+        return Ok(());
     }
     eprintln!(
         "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation required); \
          copying its contents instead",
         link_target.display()
     );
-    match std::fs::metadata(src) {
-        // A dangling link has nothing to copy; skip it rather than error.
-        Err(_) => Ok(()),
-        Ok(meta) if meta.is_dir() => copy_missing_rec(src, dst, rel, skip),
-        Ok(_) => std::fs::copy(src, dst)
-            .map(|_| ())
-            .map_err(|source| QuayError::Io {
-                path: dst.display().to_string(),
-                source,
-            }),
-    }
+    std::fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|source| QuayError::Io {
+            path: dst.display().to_string(),
+            source,
+        })
 }
 
 #[cfg(not(windows))]
@@ -564,7 +610,6 @@ fn degrade_symlink_failure(
     _dst: &Path,
     _link_target: &Path,
     _rel: &str,
-    _skip: &BTreeSet<String>,
     e: QuayError,
 ) -> Result<()> {
     Err(e)
@@ -946,26 +991,49 @@ mod tests {
 
     /// The callback crosses a crate boundary. A path it names that was never
     /// offered must not be deleted, however it got there.
+    ///
+    /// The load-bearing case is a dotfile: `copy_missing_rec` walks it, so a
+    /// `skip` entry naming it *does* delete it, but `compute_extras` never
+    /// offers it — only the intersection stands between the callback and the
+    /// `.quay-mirror` marker that tells `linker.rs` a copy mirror is
+    /// quay-managed. (`SKILL.md` and `../sibling.txt` below are covered by
+    /// other mechanisms — the `!dst.exists()` check and the fact that `rel` is
+    /// built from `file_name()` — so they hold with or without the guard.)
     #[test]
     fn delete_only_ignores_paths_not_offered() {
         let (dir, files, regf) = installed_fixture();
         let cfg = make_cfg();
         let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join(".quay-mirror"), b"marker").unwrap();
         std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
         let sibling = dir.path().join(".agents/skills/sibling.txt");
         std::fs::write(&sibling, b"not mine to touch").unwrap();
 
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
-        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            assert_eq!(
+                extras,
+                ["notes.md"],
+                "only the non-dotfile extra is ever offered"
+            );
             Ok(ExtraFiles::DeleteOnly(vec![
+                ".quay-mirror".to_string(),   // walked but never offered
+                "notes.md".to_string(),       // genuinely offered
                 "SKILL.md".to_string(),       // in the new manifest, never offered
                 "../sibling.txt".to_string(), // outside the skill entirely
             ]))
         })
         .unwrap();
 
+        assert!(
+            skill_dir.join(".quay-mirror").exists(),
+            "a dotfile the user was never asked about must survive being named"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "the one offered path named must still be deleted"
+        );
         assert!(skill_dir.join("SKILL.md").exists());
-        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
         assert!(sibling.exists(), "a path never offered must survive");
     }
 
@@ -1028,12 +1096,28 @@ mod tests {
     /// (`degrade_symlink_failure`, `#[cfg(windows)]`) cannot be exercised
     /// here.
     #[test]
-    fn permission_denied_is_the_only_symlink_failure_that_degrades() {
+    fn only_permission_class_symlink_failures_degrade() {
         let permission = QuayError::Io {
             path: "link.txt".into(),
             source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
         };
         assert!(is_permission_class_failure(&permission));
+
+        // ERROR_PRIVILEGE_NOT_HELD, whether or not std maps it to a kind.
+        let raw_privilege = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::from_raw_os_error(1314),
+        };
+        assert!(
+            is_permission_class_failure(&raw_privilege),
+            "the degrade must fire on the raw Windows code even if std leaves it uncategorized"
+        );
+
+        let other_raw = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::from_raw_os_error(1315),
+        };
+        assert!(!is_permission_class_failure(&other_raw));
 
         let disk_full = QuayError::Io {
             path: "link.txt".into(),

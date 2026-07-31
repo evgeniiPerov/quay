@@ -40,9 +40,10 @@ notes — `dist` reads the section matching the version being tagged.
   contents were recursed into and copied as though they belonged to the
   skill. Both are now recreated as the symlink they were. On Windows, where
   recreating a symlink needs Developer Mode or elevation that an ordinary user
-  is unlikely to have, a permission-class failure falls back to the old
-  flattening behaviour with a warning naming the link, rather than failing the
-  whole update.
+  is unlikely to have, the update warns and carries on rather than failing:
+  a link to a file falls back to copying its contents, and a link to a
+  directory is skipped, since copying a directory's contents in is the very
+  thing this fixes.
 
 ## 0.14.1 — 2026-07-27
 
