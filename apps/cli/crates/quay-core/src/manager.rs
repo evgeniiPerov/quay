@@ -457,7 +457,7 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
             // recurse into the target as if it belonged to this skill), so
             // the link itself is recreated instead of dereferenced.
             if !dst.exists() {
-                copy_symlink(&src, &dst)?;
+                copy_symlink(&src, &dst, &rel, skip)?;
             }
         } else if file_type.is_dir() {
             // Recurse without creating `dst` first: a directory materializes
@@ -482,7 +482,11 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
 
 /// Recreate the symlink `src` at `dst`, preserving the link rather than
 /// dereferencing it.
-fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
+///
+/// `rel` and `skip` exist only for the Windows degrade path (see
+/// [`degrade_symlink_failure`]) — recreating a symlink never consults `skip`,
+/// since symlinks are outside the managed set entirely.
+fn copy_symlink(src: &Path, dst: &Path, rel: &str, skip: &BTreeSet<String>) -> Result<()> {
     let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
         path: src.display().to_string(),
         source,
@@ -493,7 +497,77 @@ fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
             source,
         })?;
     }
-    create_symlink_at(src, &link_target, dst)
+    match create_symlink_at(src, &link_target, dst) {
+        Ok(()) => Ok(()),
+        Err(e) => degrade_symlink_failure(src, dst, &link_target, rel, skip, e),
+    }
+}
+
+/// Whether a symlink-creation failure is the class Windows raises when the
+/// caller lacks Developer Mode or elevation (`ERROR_PRIVILEGE_NOT_HELD`,
+/// which Rust maps to `io::ErrorKind::PermissionDenied`), as opposed to a real
+/// failure — a full disk, a broken object store — that must still propagate.
+///
+/// Split out from [`degrade_symlink_failure`] so the classification is
+/// testable on every platform; the fallback behaviour it gates is
+/// Windows-only, so this is otherwise dead weight on every other target.
+#[cfg(any(windows, test))]
+fn is_permission_class_failure(e: &QuayError) -> bool {
+    matches!(
+        e,
+        QuayError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
+/// `symlink_file`/`symlink_dir` require Developer Mode or elevation on
+/// Windows, which ordinary users have neither of — one symlink anywhere in a
+/// skill must not turn `update` / `add --force` into a permanent hard
+/// failure. A permission-class failure there falls back to the pre-fix
+/// behaviour (copy the dereferenced target) and warns; anything else — a
+/// full disk, a broken object store — is a real failure and still
+/// propagates. Unix never takes this path differently: [`create_symlink_at`]
+/// on unix does not fail this way in practice, and if it ever does, the
+/// error still propagates exactly as it did before this function existed.
+#[cfg(windows)]
+fn degrade_symlink_failure(
+    src: &Path,
+    dst: &Path,
+    link_target: &Path,
+    rel: &str,
+    skip: &BTreeSet<String>,
+    e: QuayError,
+) -> Result<()> {
+    if !is_permission_class_failure(&e) {
+        return Err(e);
+    }
+    eprintln!(
+        "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation required); \
+         copying its contents instead",
+        link_target.display()
+    );
+    match std::fs::metadata(src) {
+        // A dangling link has nothing to copy; skip it rather than error.
+        Err(_) => Ok(()),
+        Ok(meta) if meta.is_dir() => copy_missing_rec(src, dst, rel, skip),
+        Ok(_) => std::fs::copy(src, dst)
+            .map(|_| ())
+            .map_err(|source| QuayError::Io {
+                path: dst.display().to_string(),
+                source,
+            }),
+    }
+}
+
+#[cfg(not(windows))]
+fn degrade_symlink_failure(
+    _src: &Path,
+    _dst: &Path,
+    _link_target: &Path,
+    _rel: &str,
+    _skip: &BTreeSet<String>,
+    e: QuayError,
+) -> Result<()> {
+    Err(e)
 }
 
 #[cfg(unix)]
@@ -946,6 +1020,32 @@ mod tests {
                 .is_symlink(),
             "the symlink must survive as a symlink, not be replaced by a regular file"
         );
+    }
+
+    /// Runs on every platform: the classification the Windows degrade path
+    /// gates on is plain `io::ErrorKind` matching, so it needs no Windows box
+    /// to verify. What actually happens with the classification
+    /// (`degrade_symlink_failure`, `#[cfg(windows)]`) cannot be exercised
+    /// here.
+    #[test]
+    fn permission_denied_is_the_only_symlink_failure_that_degrades() {
+        let permission = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
+        assert!(is_permission_class_failure(&permission));
+
+        let disk_full = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::new(std::io::ErrorKind::StorageFull, "no space"),
+        };
+        assert!(!is_permission_class_failure(&disk_full));
+
+        let other = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::other("broken object store"),
+        };
+        assert!(!is_permission_class_failure(&other));
     }
 
     #[test]

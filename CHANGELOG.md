@@ -30,6 +30,20 @@ notes — `dist` reads the section matching the version being tagged.
   They are outside the set quay manages, and one of them — `.quay-mirror` — is
   what marks a copy mirror as quay-managed.
 
+### Fixed
+
+- **A symlink inside an installed skill no longer gets flattened into a plain
+  copy on `update` / `add --force`.** Carrying an extra file forward decided
+  whether to recurse into it by asking if it was a directory, which follows
+  symlinks — so a symlink to a file was silently replaced by a byte-for-byte
+  copy of its target, and a symlink to a directory was worse: the target's
+  contents were recursed into and copied as though they belonged to the
+  skill. Both are now recreated as the symlink they were. On Windows, where
+  recreating a symlink needs Developer Mode or elevation that an ordinary user
+  is unlikely to have, a permission-class failure falls back to the old
+  flattening behaviour with a warning naming the link, rather than failing the
+  whole update.
+
 ## 0.14.1 — 2026-07-27
 
 ### Fixed
