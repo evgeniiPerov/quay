@@ -40,7 +40,7 @@ Inside a TTY, omitting `SKILL` and not passing `-i` triggers the picker automati
 
 - A skill that fails `quay validate` on the hub side will still install, but you'll see warnings.
 - Mirror dirs (`.claude/skills/`, `.cursor/rules/`, …) are populated automatically based on your profile's `[install].mirrors`.
-- `--force` deletes any local edits without confirmation. Use `quay outdated` first to see drift status.
+- `--force` overwrites every file the fetched version contains, without confirmation — local edits to `SKILL.md` are lost. Files it *doesn't* contain are a separate question; see below. Use `quay outdated` first to see drift status.
 
 ## `--force` and local files
 
