@@ -9,8 +9,31 @@ use crate::error::{QuayError, Result};
 use crate::fetcher::{RegistryFetcher, SkillFileFetcher};
 use crate::registry::{Registry, RegistryEntry};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// What to do with local files the new version does not contain.
+///
+/// Paths are skill-relative with POSIX separators, matching what
+/// [`crate::skill_files::collect_skill_files`] produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraFiles {
+    /// Carry every extra file forward — the historical behaviour.
+    Keep,
+    /// Drop every extra file.
+    Delete,
+    /// Drop exactly these, keep the rest. Paths not in the offered set are
+    /// ignored rather than trusted.
+    DeleteOnly(Vec<String>),
+}
+
+/// Decides what happens to extra files, called once per skill and only when the
+/// extra set is non-empty.
+///
+/// Returning `Err` aborts the install **before** the swap, leaving the existing
+/// copy untouched — that is how an interrupted prompt cancels an update rather
+/// than silently taking a default.
+pub type DecideExtras<'a> = &'a dyn Fn(&str, &[String]) -> Result<ExtraFiles>;
 
 /// Coordinates skill install / remove against the local filesystem.
 ///
@@ -193,7 +216,7 @@ where
             // over the directory rather than replacing it. `quay update` runs this
             // path on every skill, so preserve them: whether `update` should clobber
             // them is an open product question, not something to settle in a patch.
-            copy_missing_into(&dest_dir, staging.path())?;
+            copy_missing_into(&dest_dir, staging.path(), &BTreeSet::new())?;
         }
 
         // Move the old tree aside instead of deleting it, so a failed rename can
@@ -339,27 +362,46 @@ fn reject_unsafe_path(file_rel: &str) -> Result<()> {
     Ok(())
 }
 
-/// Recursively copy anything under `from` that `into` does not already have.
+/// Copy files present in `from` but missing from `into`, except those named in
+/// `skip`.
 ///
-/// Used to carry files the manifest doesn't list — local notes, files dropped
-/// upstream — across a replace, matching what writing over the directory in
-/// place used to do. Files present in `into` win: those are the freshly fetched
-/// ones.
-fn copy_missing_into(from: &Path, into: &Path) -> Result<()> {
+/// `into` is the staging dir that is about to be renamed over the install, so a
+/// file is deleted purely by *not* being copied — no `remove_file` runs, and the
+/// atomic swap keeps its crash-safety.
+fn copy_missing_into(from: &Path, into: &Path, skip: &BTreeSet<String>) -> Result<()> {
+    copy_missing_rec(from, into, "", skip)
+}
+
+/// `prefix` is the POSIX-joined path of `from` relative to the skill root, so
+/// `skip` keys match what `collect_skill_files` produced. Comparing an `OsStr`
+/// path here instead would silently stop matching on Windows.
+fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<String>) -> Result<()> {
     let entries = std::fs::read_dir(from).map_err(|source| QuayError::Io {
         path: from.display().to_string(),
         source,
     })?;
     for entry in entries.flatten() {
         let src = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let rel = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
         let dst = into.join(entry.file_name());
         if src.is_dir() {
-            std::fs::create_dir_all(&dst).map_err(|source| QuayError::Io {
-                path: dst.display().to_string(),
-                source,
-            })?;
-            copy_missing_into(&src, &dst)?;
-        } else if !dst.exists() {
+            // Recurse without creating `dst` first: a directory materializes
+            // only when a file actually lands in it, so skipping every child
+            // leaves no empty husk behind.
+            copy_missing_rec(&src, &dst, &rel, skip)?;
+        } else if !skip.contains(&rel) && !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
+                    path: parent.display().to_string(),
+                    source,
+                })?;
+            }
             std::fs::copy(&src, &dst).map_err(|source| QuayError::Io {
                 path: dst.display().to_string(),
                 source,
@@ -367,6 +409,28 @@ fn copy_missing_into(from: &Path, into: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Files in the existing install that the freshly fetched copy does not have.
+///
+/// Both sides go through `collect_skill_files`, which is the same set `push`,
+/// `diff` and mirror-adopt agree on: dotfiles, dot-dirs and symlinks are outside
+/// it, so they are never offered for deletion and are always carried forward.
+// Dead in a non-test build until `add_with_extras` calls it; the attribute
+// comes off then.
+#[cfg_attr(not(test), allow(dead_code))]
+fn compute_extras(dest_dir: &Path, staging: &Path) -> Result<Vec<String>> {
+    let fetched: BTreeSet<String> = crate::skill_files::collect_skill_files(staging)?
+        .into_iter()
+        .collect();
+    let mut extras: Vec<String> = crate::skill_files::collect_skill_files(dest_dir)?
+        .into_iter()
+        .filter(|rel| !fetched.contains(rel))
+        .collect();
+    // `collect_skill_files` hoists SKILL.md to the front; the prompt wants a
+    // plain sorted list.
+    extras.sort();
+    Ok(extras)
 }
 
 /// Print a one-time migration notice if legacy state files are present.
@@ -911,5 +975,114 @@ mod tests {
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
         let err = mgr.info("csv-parse", Some("does-not-exist")).unwrap_err();
         assert!(matches!(err, QuayError::RemoteUnknown(_)));
+    }
+
+    #[test]
+    fn compute_extras_lists_only_files_missing_from_staging() {
+        let dest = assert_fs::TempDir::new().unwrap();
+        let staging = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(dest.path().join("SKILL.md"), b"a").unwrap();
+        std::fs::create_dir_all(dest.path().join("refs")).unwrap();
+        std::fs::write(dest.path().join("refs/legacy.md"), b"b").unwrap();
+        std::fs::write(dest.path().join("notes.md"), b"c").unwrap();
+
+        std::fs::write(staging.path().join("SKILL.md"), b"a-new").unwrap();
+
+        let extras = compute_extras(dest.path(), staging.path()).unwrap();
+        assert_eq!(extras, vec!["notes.md", "refs/legacy.md"]);
+    }
+
+    #[test]
+    fn compute_extras_never_lists_dotfiles() {
+        let dest = assert_fs::TempDir::new().unwrap();
+        let staging = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(dest.path().join("SKILL.md"), b"a").unwrap();
+        std::fs::write(dest.path().join(".quay-mirror"), b"marker").unwrap();
+        std::fs::write(dest.path().join(".notes.md"), b"private").unwrap();
+        std::fs::create_dir_all(dest.path().join(".hidden")).unwrap();
+        std::fs::write(dest.path().join(".hidden/x.md"), b"x").unwrap();
+
+        std::fs::write(staging.path().join("SKILL.md"), b"a-new").unwrap();
+
+        let extras = compute_extras(dest.path(), staging.path()).unwrap();
+        assert!(
+            extras.is_empty(),
+            "dotfiles and dot-dirs are outside the managed set: {extras:?}"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_skips_listed_paths() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(from.path().join("keep.md"), b"keep").unwrap();
+        std::fs::write(from.path().join("drop.md"), b"drop").unwrap();
+
+        let skip = std::collections::BTreeSet::from(["drop.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(into.path().join("keep.md").exists());
+        assert!(
+            !into.path().join("drop.md").exists(),
+            "a skipped file must not be copied forward"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_leaves_no_empty_dir_when_every_child_is_skipped() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("refs")).unwrap();
+        std::fs::write(from.path().join("refs/a.md"), b"a").unwrap();
+        std::fs::write(from.path().join("refs/b.md"), b"b").unwrap();
+
+        let skip =
+            std::collections::BTreeSet::from(["refs/a.md".to_string(), "refs/b.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(
+            !into.path().join("refs").exists(),
+            "a directory whose every file was skipped must not be created"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_skips_by_nested_posix_key() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("refs/deep")).unwrap();
+        std::fs::write(from.path().join("refs/deep/x.md"), b"x").unwrap();
+        std::fs::write(from.path().join("refs/keep.md"), b"k").unwrap();
+
+        let skip = std::collections::BTreeSet::from(["refs/deep/x.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(
+            !into.path().join("refs/deep/x.md").exists(),
+            "nested skip key must match the POSIX-joined relative path"
+        );
+        assert!(into.path().join("refs/keep.md").exists());
+    }
+
+    #[test]
+    fn copy_missing_into_does_not_overwrite_an_existing_file() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(from.path().join("SKILL.md"), b"old").unwrap();
+        std::fs::write(into.path().join("SKILL.md"), b"new").unwrap();
+
+        copy_missing_into(from.path(), into.path(), &std::collections::BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            std::fs::read(into.path().join("SKILL.md")).unwrap(),
+            b"new",
+            "the freshly fetched copy always wins"
+        );
     }
 }
