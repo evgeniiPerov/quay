@@ -3,6 +3,31 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.15.0 — 2026-07-31
+
+### Added
+
+- **`update` and `add --force` no longer keep files the hub deleted.** Both
+  re-materialize a skill from a fresh fetch, and both used to carry forward
+  every local file the new version did not contain. That preserved the notes
+  you wrote — and also resurrected every file the hub had removed, so
+  `quay diff` reported it as local-only for the life of the install.
+
+  quay cannot tell the two apart on its own: the lockfile records a content
+  hash, not a file list, so nothing on disk says what the previous install put
+  there. So it asks. Files the new version lacks are listed, and you can keep
+  them, delete them, pick individually, or keep these and every remaining
+  skill's without being asked again.
+
+  Without a terminal — CI, a pipe, or `--json` — nothing is deleted. The files
+  are kept and a note says so, which means no existing script changes behaviour
+  on upgrade. `--keep-extra` and `--delete-extra` decide it outright and work
+  unattended.
+
+  Dotfiles, dot-directories and symlinks are never offered and never deleted.
+  They are outside the set quay manages, and one of them — `.quay-mirror` — is
+  what marks a copy mirror as quay-managed.
+
 ## 0.14.1 — 2026-07-27
 
 ### Fixed
