@@ -148,13 +148,22 @@ fn update_delete_extra_removes_them() {
         .env("XDG_CONFIG_HOME", config_home.path())
         .args(["--project", &p, "update", "foo", "--delete-extra"])
         .assert()
-        .success();
+        .success()
+        // Unattended, this note is the only record that anything was removed.
+        .stderr(predicates::str::contains("deleting 1 file "))
+        .stderr(predicates::str::contains("notes.md"))
+        .stderr(predicates::str::contains("--keep-extra"));
 
     assert!(
         !project.path().join(".agents/skills/foo/notes.md").exists(),
         "--delete-extra must remove the extra file"
     );
-    assert!(project.path().join(".agents/skills/foo/SKILL.md").exists());
+    let installed =
+        std::fs::read_to_string(project.path().join(".agents/skills/foo/SKILL.md")).unwrap();
+    assert!(
+        installed.contains("body 2.0.0"),
+        "the update must actually have landed v2: {installed}"
+    );
 }
 
 #[test]

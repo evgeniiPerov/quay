@@ -131,10 +131,9 @@ where
     /// Like [`add`] but with explicit overwrite control.
     ///
     /// Keeps every local file the new version does not contain — the historical
-    /// behaviour, and what non-interactive callers such as `quay-mcp` want. An
-    /// empty local directory is not recreated (it is only ever materialized
-    /// lazily, when a kept file lands in it), but no file is ever dropped. Use
-    /// [`add_with_extras`] to let the caller decide instead.
+    /// behaviour, and what non-interactive callers such as `quay-mcp` want.
+    /// Nothing local is dropped: a directory that was already empty is
+    /// recreated too. Use [`add_with_extras`] to let the caller decide instead.
     pub fn add_with_force(
         &self,
         skill_name: &str,
@@ -430,10 +429,30 @@ fn copy_missing_into(from: &Path, into: &Path, skip: &BTreeSet<String>) -> Resul
 /// `skip` keys match what `collect_skill_files` produced. Comparing an `OsStr`
 /// path here instead would silently stop matching on Windows.
 fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<String>) -> Result<()> {
-    let entries = std::fs::read_dir(from).map_err(|source| QuayError::Io {
-        path: from.display().to_string(),
-        source,
-    })?;
+    let mut entries = std::fs::read_dir(from)
+        .map_err(|source| QuayError::Io {
+            path: from.display().to_string(),
+            source,
+        })?
+        .peekable();
+    // A directory with no entries at all has no child to materialize it
+    // lazily below, so without this it would vanish on every update — deletion
+    // by omission, on the path that promises to keep everything. The test is
+    // "no entries at all" rather than "nothing was copied" precisely so the
+    // other case still holds: a directory whose every child was skipped is a
+    // husk and must not be recreated.
+    //
+    // Something already at `into` is the freshly fetched copy, which always
+    // wins — including when it is a file of the same name.
+    if entries.peek().is_none() {
+        if !into.exists() {
+            std::fs::create_dir_all(into).map_err(|source| QuayError::Io {
+                path: into.display().to_string(),
+                source,
+            })?;
+        }
+        return Ok(());
+    }
     for entry in entries {
         // Not `.flatten()`: this walk *is* the deletion mechanism, so an entry
         // dropped here is a file destroyed by omission. A transient EIO or a
@@ -468,9 +487,11 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
                 copy_symlink(&src, &dst, &rel)?;
             }
         } else if file_type.is_dir() {
-            // Recurse without creating `dst` first: a directory materializes
-            // only when a file actually lands in it, so skipping every child
-            // leaves no empty husk behind.
+            // Recurse without creating `dst` first: a directory with children
+            // materializes only when a file actually lands in it, so skipping
+            // every child leaves no empty husk behind. A childless directory is
+            // created by the recursive call itself (see the top of this
+            // function).
             copy_missing_rec(&src, &dst, &rel, skip)?;
         } else if !skip.contains(&rel) && !dst.exists() {
             if let Some(parent) = dst.parent() {
@@ -1061,6 +1082,9 @@ mod tests {
         assert!(skill_dir.join(".notes.md").exists());
     }
 
+    /// `notes.md` is load-bearing: with only the symlink present the extra set
+    /// is empty, `decide` is never called, and the `Delete` verdict below would
+    /// never run — leaving the symlink assertion to pass for the wrong reason.
     #[cfg(unix)]
     #[test]
     fn symlinks_are_never_offered_and_always_survive() {
@@ -1070,9 +1094,12 @@ mod tests {
         let target = dir.path().join("outside.txt");
         std::fs::write(&target, b"target").unwrap();
         std::os::unix::fs::symlink(&target, skill_dir.join("link.txt")).unwrap();
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
 
+        let called = RefCell::new(false);
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
         mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            *called.borrow_mut() = true;
             assert!(
                 !extras.iter().any(|e| e == "link.txt"),
                 "symlinks are outside the managed set: {extras:?}"
@@ -1082,11 +1109,59 @@ mod tests {
         .unwrap();
 
         assert!(
+            *called.borrow(),
+            "the decision callback must actually have run"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "the Delete verdict must really have been applied"
+        );
+        assert!(
             std::fs::symlink_metadata(skill_dir.join("link.txt"))
                 .unwrap()
                 .file_type()
                 .is_symlink(),
             "the symlink must survive as a symlink, not be replaced by a regular file"
+        );
+    }
+
+    /// `is_dir()` follows symlinks, so a directory link used to be recursed
+    /// into and the target's contents copied in as though they belonged to the
+    /// skill — foreign files imported into the install, and from there into
+    /// `quay push`.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_symlink_is_preserved_and_its_target_never_imported() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let outside = dir.path().join("outside-docs");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), b"not the skill's").unwrap();
+        std::os::unix::fs::symlink(&outside, skill_dir.join("docs")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        let link = skill_dir.join("docs");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the directory link must survive as a link, not become a real directory"
+        );
+        // Reading through the link still finds the target's file; what must not
+        // exist is a real copy of it inside the skill. Drop the link and the
+        // path has to go with it.
+        std::fs::remove_file(&link).unwrap();
+        assert!(
+            !skill_dir.join("docs/secret.md").exists(),
+            "the target's contents must not have been copied into the skill"
+        );
+        assert!(
+            outside.join("secret.md").exists(),
+            "the target is untouched"
         );
     }
 
@@ -1553,6 +1628,50 @@ mod tests {
         assert!(
             !into.path().join("refs").exists(),
             "a directory whose every file was skipped must not be created"
+        );
+    }
+
+    /// The counterpart to the husk test above. A directory with no entries at
+    /// all cannot be materialized by a child landing in it, so it has to be
+    /// recreated explicitly or it is deleted by omission on the path that
+    /// promises to keep everything.
+    #[test]
+    fn copy_missing_into_recreates_a_directory_that_was_already_empty() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("scratch")).unwrap();
+        std::fs::create_dir_all(from.path().join("refs/deep/empty")).unwrap();
+        std::fs::write(from.path().join("refs/deep/x.md"), b"x").unwrap();
+
+        copy_missing_into(from.path(), into.path(), &std::collections::BTreeSet::new()).unwrap();
+
+        assert!(
+            into.path().join("scratch").is_dir(),
+            "an already-empty directory must survive"
+        );
+        assert!(
+            into.path().join("refs/deep/empty").is_dir(),
+            "a nested already-empty directory must survive too"
+        );
+    }
+
+    /// The user-facing promise: `add --force` with no decision at all — the
+    /// `quay-mcp` and non-TTY path — deletes nothing, empty directories
+    /// included.
+    #[test]
+    fn force_add_keeps_an_already_empty_directory() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(skill_dir.join("scratch")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        assert!(
+            skill_dir.join("scratch").is_dir(),
+            "an empty local directory must not be dropped by an update"
         );
     }
 

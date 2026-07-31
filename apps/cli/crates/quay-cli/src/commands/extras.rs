@@ -70,7 +70,14 @@ impl Decider {
     pub fn decide(&self, skill: &str, extras: &[String]) -> Result<ExtraFiles> {
         match self.policy {
             ExtraPolicy::Keep => Ok(ExtraFiles::Keep),
-            ExtraPolicy::Delete => Ok(ExtraFiles::Delete),
+            ExtraPolicy::Delete => {
+                // Only the flag-driven path reports: the interactive Delete
+                // verdicts come from a prompt that just listed the files on
+                // screen. Unattended, this is the only record that anything
+                // was removed.
+                eprintln!("{}", deleted_text(skill, extras));
+                Ok(ExtraFiles::Delete)
+            }
             ExtraPolicy::Ask => {
                 // The sticky answer is itself a human decision, so unlike the
                 // plain non-interactive path it does not get a note.
@@ -169,6 +176,19 @@ fn note_text(skill: &str, extras: &[String]) -> String {
     )
 }
 
+/// The message shown when `--delete-extra` removes files with nobody watching.
+///
+/// Printed on stderr, like [`note_text`], so `--json` stdout stays parseable.
+fn deleted_text(skill: &str, extras: &[String]) -> String {
+    let n = extras.len();
+    let plural = if n == 1 { "file" } else { "files" };
+    format!(
+        "note: {skill} — deleting {n} {plural} not in the new version ({}). \
+         Pass --keep-extra to keep them.",
+        extras.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +248,23 @@ mod tests {
         assert!(msg.contains("notes.md"));
         assert!(msg.contains("refs/legacy.md"));
         assert!(msg.contains("--delete-extra"));
+    }
+
+    #[test]
+    fn deleted_note_lists_every_file_it_removes() {
+        let msg = deleted_text("csv-parse", &extras());
+        assert!(msg.contains("csv-parse"));
+        assert!(msg.contains("notes.md"));
+        assert!(msg.contains("refs/legacy.md"));
+        assert!(msg.contains("--keep-extra"));
+        assert!(msg.contains("deleting 2 files "), "got: {msg}");
+    }
+
+    #[test]
+    fn deleted_text_pluralizes_a_single_file() {
+        let msg = deleted_text("csv-parse", &["notes.md".to_string()]);
+        assert!(msg.contains("deleting 1 file "), "got: {msg}");
+        assert!(!msg.contains("1 files"), "got: {msg}");
     }
 
     #[test]

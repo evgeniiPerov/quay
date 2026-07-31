@@ -24,7 +24,8 @@ notes — `dist` reads the section matching the version being tagged.
   Without a terminal — CI, a pipe, or `--json` — nothing is deleted. The files
   are kept and a note says so, which means no existing script changes behaviour
   on upgrade. `--keep-extra` and `--delete-extra` decide it outright and work
-  unattended.
+  unattended; `--delete-extra` names on stderr every file it removed, so an
+  unattended run still leaves a record of it.
 
   Dotfiles, dot-directories and symlinks are never offered and never deleted.
   They are outside the set quay manages, and one of them — `.quay-mirror` — is

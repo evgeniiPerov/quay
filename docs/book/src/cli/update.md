@@ -70,7 +70,12 @@ note: csv-parse — kept 2 files not in the new version
 | Flag | Effect |
 |---|---|
 | `--keep-extra` | Keep them, no prompt, and no note either — this is the only way to suppress it. |
-| `--delete-extra` | Delete them, no prompt. Works without a terminal. |
+| `--delete-extra` | Delete them, no prompt. Works without a terminal, and names on stderr what it removed. |
+
+```text
+note: csv-parse — deleting 2 files not in the new version
+      (refs/legacy.md, notes.md). Pass --keep-extra to keep them.
+```
 
 Note that the bare unattended default (no flag, no terminal) also keeps everything —
 `--keep-extra` only changes whether the note is printed.
@@ -84,7 +89,8 @@ The "not in the new version" set is derived from the hub's `registry.json`
 registry has gone stale — edited by hand without a `quay rebuild-registry` —
 can therefore list a file as missing when it still exists upstream. An
 interactive prompt shows the filename, so a human can recognize and keep it;
-`--delete-extra` in an unattended run has no such backstop and will delete it.
+`--delete-extra` in an unattended run has no such backstop and will delete it —
+it does name every file it removed on stderr, so a CI log keeps the record.
 
 ## `--help`
 
