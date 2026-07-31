@@ -129,11 +129,33 @@ where
     }
 
     /// Like [`add`] but with explicit overwrite control.
+    ///
+    /// Keeps every local file the new version does not contain — the historical
+    /// behaviour, and what non-interactive callers such as `quay-mcp` want. Use
+    /// [`add_with_extras`] to let the caller decide instead.
     pub fn add_with_force(
         &self,
         skill_name: &str,
         pinned_remote: Option<&str>,
         force: bool,
+    ) -> Result<()> {
+        self.add_with_extras(skill_name, pinned_remote, force, &|_, _| {
+            Ok(ExtraFiles::Keep)
+        })
+    }
+
+    /// Like [`add_with_force`], but `decide` chooses what happens to local files
+    /// the fetched version does not contain.
+    ///
+    /// `decide` is called once, only when that set is non-empty, and only on the
+    /// `force` path — a non-force add errors on a pre-existing directory before
+    /// reaching it. Returning `Err` aborts before anything on disk changes.
+    pub fn add_with_extras(
+        &self,
+        skill_name: &str,
+        pinned_remote: Option<&str>,
+        force: bool,
+        decide: DecideExtras<'_>,
     ) -> Result<()> {
         let (_remote_name, _registry, entry) = self.resolve(skill_name, pinned_remote)?;
         let remote_cfg = &self.config.remotes[&_remote_name];
@@ -211,12 +233,31 @@ where
             if !force {
                 return Err(QuayError::AlreadyExists(dest_dir.display().to_string()));
             }
-            // Overwriting in place used to leave files that aren't in the manifest
-            // (local notes, files dropped upstream) untouched, because it wrote
-            // over the directory rather than replacing it. `quay update` runs this
-            // path on every skill, so preserve them: whether `update` should clobber
-            // them is an open product question, not something to settle in a patch.
-            copy_missing_into(&dest_dir, staging.path(), &BTreeSet::new())?;
+            // Files the old install has and the new version does not. Historically
+            // all of them were carried forward, which preserved hand-added notes
+            // and also resurrected every file the hub had deleted. `decide` is
+            // where that is settled — see
+            // docs/superpowers/specs/2026-07-31-update-extra-files-design.md.
+            let extras = compute_extras(&dest_dir, staging.path())?;
+            let skip: BTreeSet<String> = if extras.is_empty() {
+                BTreeSet::new()
+            } else {
+                match decide(skill_name, &extras)? {
+                    ExtraFiles::Keep => BTreeSet::new(),
+                    ExtraFiles::Delete => extras.iter().cloned().collect(),
+                    // Intersect rather than trust: `decide` lives in another
+                    // crate, and a path it names that was never offered would
+                    // otherwise delete a file the user was never asked about.
+                    ExtraFiles::DeleteOnly(chosen) => {
+                        let offered: BTreeSet<&str> = extras.iter().map(String::as_str).collect();
+                        chosen
+                            .into_iter()
+                            .filter(|p| offered.contains(p.as_str()))
+                            .collect()
+                    }
+                }
+            };
+            copy_missing_into(&dest_dir, staging.path(), &skip)?;
         }
 
         // Move the old tree aside instead of deleting it, so a failed rename can
@@ -307,11 +348,22 @@ where
 
     /// Update a skill to the latest available version.
     ///
-    /// Re-fetches and overwrites the local file(s). The old content is
-    /// captured in git history by the user's normal git workflow.
+    /// Re-fetches and overwrites the local file(s), keeping every local file the
+    /// new version does not contain. The old content is captured in git history
+    /// by the user's normal git workflow.
     pub fn update_one(&self, skill_name: &str) -> Result<bool> {
+        self.update_one_with_extras(skill_name, &|_, _| Ok(ExtraFiles::Keep))
+    }
+
+    /// Like [`update_one`], but `decide` chooses what happens to local files the
+    /// new version does not contain.
+    pub fn update_one_with_extras(
+        &self,
+        skill_name: &str,
+        decide: DecideExtras<'_>,
+    ) -> Result<bool> {
         // Force-overwrite is always fine on update.
-        self.add_with_force(skill_name, None, true)?;
+        self.add_with_extras(skill_name, None, true, decide)?;
         Ok(true)
     }
 }
@@ -416,9 +468,6 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
 /// Both sides go through `collect_skill_files`, which is the same set `push`,
 /// `diff` and mirror-adopt agree on: dotfiles, dot-dirs and symlinks are outside
 /// it, so they are never offered for deletion and are always carried forward.
-// Dead in a non-test build until `add_with_extras` calls it; the attribute
-// comes off then.
-#[cfg_attr(not(test), allow(dead_code))]
 fn compute_extras(dest_dir: &Path, staging: &Path) -> Result<Vec<String>> {
     let fetched: BTreeSet<String> = crate::skill_files::collect_skill_files(staging)?
         .into_iter()
@@ -697,6 +746,210 @@ mod tests {
             "nested unmanifested file must survive too"
         );
         assert!(skill_dir.join("SKILL.md").exists());
+    }
+
+    /// Installs `csv-parse` with a single SKILL.md, then returns
+    /// (tempdir, files, registry) ready for a second force-add.
+    fn installed_fixture() -> (assert_fs::TempDir, FakeFiles, FakeRegistry) {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let body = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\nbody\n".to_vec();
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([("skills/csv-parse/SKILL.md".into(), body)])),
+        };
+        let regf = FakeRegistry(make_registry("csv-parse", "1.0.0"));
+        {
+            let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+            mgr.add("csv-parse", None).unwrap();
+        }
+        (dir, files, regf)
+    }
+
+    #[test]
+    fn delete_removes_extras() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"my notes").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| Ok(ExtraFiles::Delete))
+            .unwrap();
+
+        assert!(
+            skill_dir.join("SKILL.md").exists(),
+            "manifest file must land"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "Delete must drop the extra file"
+        );
+    }
+
+    #[test]
+    fn delete_only_deletes_just_the_named() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        std::fs::write(skill_dir.join("legacy.md"), b"dropped upstream").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+            Ok(ExtraFiles::DeleteOnly(vec!["legacy.md".to_string()]))
+        })
+        .unwrap();
+
+        assert!(!skill_dir.join("legacy.md").exists());
+        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
+    }
+
+    /// The callback crosses a crate boundary. A path it names that was never
+    /// offered must not be deleted, however it got there.
+    #[test]
+    fn delete_only_ignores_paths_not_offered() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        let sibling = dir.path().join(".agents/skills/sibling.txt");
+        std::fs::write(&sibling, b"not mine to touch").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+            Ok(ExtraFiles::DeleteOnly(vec![
+                "SKILL.md".to_string(),       // in the new manifest, never offered
+                "../sibling.txt".to_string(), // outside the skill entirely
+            ]))
+        })
+        .unwrap();
+
+        assert!(skill_dir.join("SKILL.md").exists());
+        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
+        assert!(sibling.exists(), "a path never offered must survive");
+    }
+
+    #[test]
+    fn dotfiles_are_never_offered_and_always_survive() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join(".quay-mirror"), b"marker").unwrap();
+        std::fs::write(skill_dir.join(".notes.md"), b"private").unwrap();
+
+        let called = RefCell::new(false);
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+            *called.borrow_mut() = true;
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(
+            !*called.borrow(),
+            "with only dotfiles present the extra set is empty and the callback must not run"
+        );
+        assert!(skill_dir.join(".quay-mirror").exists());
+        assert!(skill_dir.join(".notes.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_never_offered_and_always_survive() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let target = dir.path().join("outside.txt");
+        std::fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, skill_dir.join("link.txt")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            assert!(
+                !extras.iter().any(|e| e == "link.txt"),
+                "symlinks are outside the managed set: {extras:?}"
+            );
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(skill_dir.join("link.txt")).is_ok(),
+            "the symlink must survive"
+        );
+    }
+
+    #[test]
+    fn nested_extra_is_deleted_and_leaves_no_empty_dir() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(skill_dir.join("refs/deep")).unwrap();
+        std::fs::write(skill_dir.join("refs/deep/x.md"), b"x").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            assert_eq!(extras, ["refs/deep/x.md"]);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(!skill_dir.join("refs/deep/x.md").exists());
+        assert!(
+            !skill_dir.join("refs").exists(),
+            "no husk left where every child was deleted"
+        );
+    }
+
+    #[test]
+    fn callback_error_aborts_before_the_swap() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        let before = std::fs::read(skill_dir.join("SKILL.md")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        let err = mgr
+            .add_with_extras("csv-parse", None, true, &|_, _| {
+                Err(QuayError::Io {
+                    path: "prompt".into(),
+                    source: std::io::Error::other("interrupted"),
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(err, QuayError::Io { .. }), "got {err:?}");
+
+        assert_eq!(
+            std::fs::read(skill_dir.join("SKILL.md")).unwrap(),
+            before,
+            "an aborted decision must leave the install byte-identical"
+        );
+        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
+        let names: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            1,
+            "no backup or staging left behind: {names:?}"
+        );
+    }
+
+    #[test]
+    fn update_one_with_extras_forwards_the_decision() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.update_one_with_extras("csv-parse", &|_, _| Ok(ExtraFiles::Delete))
+            .unwrap();
+
+        assert!(!skill_dir.join("notes.md").exists());
     }
 
     /// The rename is only atomic while staging and destination share a filesystem.
