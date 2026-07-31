@@ -42,6 +42,13 @@ Inside a TTY, omitting `SKILL` and not passing `-i` triggers the picker automati
 - Mirror dirs (`.claude/skills/`, `.cursor/rules/`, …) are populated automatically based on your profile's `[install].mirrors`.
 - `--force` deletes any local edits without confirmation. Use `quay outdated` first to see drift status.
 
+## `--force` and local files
+
+`--force` overwrites an existing install. Files it finds that the fetched version
+does not contain are handled exactly as on `quay update` — you are asked, and
+nothing is deleted unattended. `--keep-extra` and `--delete-extra` work here too.
+See [update](./update.md#local-files-the-new-version-doesnt-have).
+
 ## `--help`
 
 ```text
@@ -54,11 +61,14 @@ Arguments:
 
 Options:
       --project <PROJECT>          Project root (defaults to current directory)
-      --remote <REMOTE>
+      --remote <REMOTE>            
       --force                      Overwrite the skill if it already exists locally
       --user-config <USER_CONFIG>  Override user config path (defaults to ~/.config/quay/config.toml)
   -i, --interactive                Open an interactive checkbox list to pick skills to install. Mutually exclusive with the positional skill argument
       --profile <PROFILE>          Override the active profile for this invocation
       --json                       Output JSON instead of human-readable text
+      --no-diff                    Suppress the diff body on a collision (still prints the verdict line)
+      --keep-extra                 Keep local files the new version does not contain (the default when there is no terminal). Only meaningful with --force
+      --delete-extra               Delete local files the new version does not contain. Only meaningful with --force
   -h, --help                       Print help
 ```
