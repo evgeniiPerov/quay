@@ -51,6 +51,7 @@ Thumbs.db
 !.env.example
 
 docs/superpowers
+docs/handoff
 
 # Local-only push intent log; not synced.
 .quay/push-log.json
