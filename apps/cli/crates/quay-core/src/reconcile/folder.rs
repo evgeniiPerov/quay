@@ -282,7 +282,8 @@ fn read_harbor(
         // upstream.
         let bytes = harbor.bytes_at(rev, &path)?.ok_or_else(|| {
             QuayError::Reconcile(format!(
-                "harbor listed '{path}' at {rev} but its content could not be read                  (a partial-clone blob fetch may have failed — check access to the hub)"
+                "harbor listed '{path}' at {rev} but its content could not be read \
+                 (a partial-clone blob fetch may have failed — check access to the hub)"
             ))
         })?;
         out.insert(rel, normalize_crlf(bytes));
