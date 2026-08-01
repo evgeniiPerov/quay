@@ -293,7 +293,7 @@ pub fn run_interactive(
                         print_diff(&report.diff);
 
                         // Prompt user.
-                        let action = match prompt_resolve(report.absent_on_head) {
+                        let action = match prompt_resolve(report.absent_on_hub()) {
                             Ok(a) => a,
                             Err(e) => {
                                 eprintln!("warning: prompt failed for '{}': {}; skipping", name, e);
@@ -603,7 +603,7 @@ fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
 
     // Prompt or non-TTY error.
     let action = if std::io::stdin().is_terminal() {
-        prompt_resolve(report.absent_on_head)?
+        prompt_resolve(report.absent_on_hub())?
     } else {
         eprintln!(
             "{}: skill differs from harbor. Re-run with --force to overwrite, or interactively to reconcile.",
@@ -636,13 +636,11 @@ fn print_verdict_line(name: &str, verdict: &Verdict, semver: SemverRel) {
             commits_ahead, last_commit_date
         ),
         Verdict::LocalAheadOrDiverged { .. } => "LOCAL diverged from harbor".to_string(),
-        Verdict::ChangedUnknownDirection { local_edited } => {
-            if *local_edited {
-                "CHANGED — differs from harbor (direction unknown, local edits present)".to_string()
-            } else {
-                "CHANGED — differs from harbor (direction unknown)".to_string()
-            }
+        Verdict::ChangedUnknownDirection => {
+            "CHANGED — differs from harbor (direction unknown, local edits present)".to_string()
         }
+        // Nothing upstream to have diverged from, so no edit is implied.
+        Verdict::AbsentOnHub => "CHANGED — differs from harbor (direction unknown)".to_string(),
     };
     println!("{}: {}  [semver: {:?}]", name, verdict_str, semver);
 }
@@ -665,9 +663,9 @@ fn print_diff(diff: &Diff) {
 
 /// Prompt the user to choose a resolve action via `dialoguer::Select`.
 ///
-/// When `absent_on_head` is true, Replace is omitted (nothing on harbor HEAD).
-fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::error::Error>> {
-    if absent_on_head {
+/// When `absent_on_hub` is true, Replace is omitted (nothing on harbor HEAD).
+fn prompt_resolve(absent_on_hub: bool) -> Result<ResolveAction, Box<dyn std::error::Error>> {
+    if absent_on_hub {
         let items = ["Keep local", "Skip"];
         let idx = dialoguer::Select::new()
             .with_prompt("How should this collision be resolved?")

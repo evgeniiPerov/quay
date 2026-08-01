@@ -24,8 +24,14 @@ pub struct ReconcileReport {
     /// HEAD bytes for `action::apply` when the user picks Replace. Empty when
     /// the skill is absent on harbor HEAD (Replace must be disabled then).
     pub head_bytes: Vec<u8>,
-    /// True when the skill no longer exists on harbor HEAD.
-    pub absent_on_head: bool,
+}
+
+impl ReconcileReport {
+    /// True when the skill no longer exists on harbor HEAD, so there is nothing
+    /// upstream to take and Replace must not be offered.
+    pub fn absent_on_hub(&self) -> bool {
+        matches!(self.verdict, Verdict::AbsentOnHub)
+    }
 }
 
 /// Compute the full report for one colliding skill. `local_bytes` is the raw
@@ -41,14 +47,12 @@ pub fn reconcile(
 ) -> Result<ReconcileReport> {
     let bl = derive(local_sha, harbor, skill_path)?;
     let head_bytes_opt = bl.head_bytes;
-    let absent_on_head = head_bytes_opt.is_none();
+    let absent_on_hub = head_bytes_opt.is_none();
     let head_content_sha = bl.head_content_sha;
     let head_bytes = head_bytes_opt.unwrap_or_default();
 
-    let verdict = if absent_on_head {
-        Verdict::ChangedUnknownDirection {
-            local_edited: false,
-        }
+    let verdict = if absent_on_hub {
+        Verdict::AbsentOnHub
     } else {
         classify(local_sha, &head_content_sha, bl.base)
     };
@@ -59,7 +63,6 @@ pub fn reconcile(
         semver,
         diff,
         head_bytes,
-        absent_on_head,
     })
 }
 
@@ -75,13 +78,12 @@ pub fn reconcile(
 /// constructor is not part of the shipped public surface.
 #[doc(hidden)]
 // test-only constructor; ReconcileReport is #[non_exhaustive]
-pub fn report_for_test(verdict: verdict::Verdict, absent_on_head: bool) -> ReconcileReport {
+pub fn report_for_test(verdict: verdict::Verdict) -> ReconcileReport {
     ReconcileReport {
         verdict,
         semver: verdict::SemverRel::Unparseable,
         diff: diff::Diff::Text(String::new()),
         head_bytes: Vec::new(),
-        absent_on_head,
     }
 }
 
@@ -125,7 +127,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.verdict, Verdict::Identical);
-        assert!(!r.absent_on_head);
+        assert!(!r.absent_on_hub());
     }
 
     #[test]
@@ -149,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_on_head_gives_changed_unknown_direction() {
+    fn absent_at_head_is_its_own_verdict() {
         let h = FakeHarborHistory {
             chain: vec![Commit {
                 id: "c1".into(),
@@ -158,13 +160,8 @@ mod tests {
             blobs: HashMap::new(), // no blob for ("c1","p/SKILL.md") => absent at HEAD
         };
         let r = reconcile(b"anything", "deadbeef", &h, "p/SKILL.md", "1.0.0", "1.0.0").unwrap();
-        assert_eq!(
-            r.verdict,
-            Verdict::ChangedUnknownDirection {
-                local_edited: false
-            }
-        );
-        assert!(r.absent_on_head);
+        assert_eq!(r.verdict, Verdict::AbsentOnHub);
+        assert!(r.absent_on_hub());
         assert!(r.head_bytes.is_empty());
     }
 }

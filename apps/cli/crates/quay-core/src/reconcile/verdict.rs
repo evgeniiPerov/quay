@@ -42,16 +42,23 @@ pub enum Verdict {
     LocalAheadOrDiverged {
         base: CommitId,
     },
-    ChangedUnknownDirection {
-        local_edited: bool,
-    },
+    /// The two copies differ and no base commit explains which way.
+    ///
+    /// Whether that conclusion was reached by searching the whole history or by
+    /// running out of budget is not part of the verdict — see
+    /// [`crate::reconcile::folder::FolderReport::base_search_truncated`].
+    ChangedUnknownDirection,
+    /// Nothing exists under the skill's prefix on harbor HEAD — deleted or
+    /// renamed there. Never produced by [`classify`]; the orchestration modules
+    /// decide it from the harbor listing, which is the only thing that can see
+    /// it.
+    AbsentOnHub,
 }
 
 /// Pure classification. When `base` is `None`, the local file did not
 /// content-match any harbor commit, so this function returns
-/// `ChangedUnknownDirection { local_edited: true }`. The `local_edited: false`
-/// case (skill absent on harbor HEAD) is produced by a later orchestration
-/// module, never by this function.
+/// [`Verdict::ChangedUnknownDirection`]. [`Verdict::AbsentOnHub`] is produced by
+/// a later orchestration module, never by this function.
 pub fn classify(local_sha: &str, head_sha: &str, base: Option<BaseFacts>) -> Verdict {
     if local_sha == head_sha {
         return Verdict::Identical;
@@ -73,7 +80,7 @@ pub fn classify(local_sha: &str, head_sha: &str, base: Option<BaseFacts>) -> Ver
             base,
             position: BasePosition::HeadAncestorOfBase,
         }) => Verdict::LocalAheadOrDiverged { base },
-        None => Verdict::ChangedUnknownDirection { local_edited: true },
+        None => Verdict::ChangedUnknownDirection,
     }
 }
 
@@ -138,7 +145,7 @@ mod tests {
     fn unknown_when_no_base() {
         assert_eq!(
             classify("aaa", "bbb", None),
-            Verdict::ChangedUnknownDirection { local_edited: true }
+            Verdict::ChangedUnknownDirection
         );
     }
 
