@@ -3,6 +3,31 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.15.2 — 2026-07-31
+
+### Fixed
+
+- **`quay add` no longer tells you that you edited a skill when it simply
+  stopped looking.** To decide which side moved, quay walks the hub's history
+  looking for the commit your copy came from, and gives up after 200 commits.
+  Exhausting that budget was reported the same way as searching the whole
+  history and finding nothing: *differs from harbor (direction unknown, local
+  edits present)*. On a skill with a long history that sentence was a claim
+  about you, derived from a spent search. The folder-level `quay diff` has
+  always drawn this distinction; the single-file path now does too, and says
+  only what it knows.
+
+### Internal
+
+- The reconcile verdict is a closed set of five cases rather than four plus a
+  boolean carrying three meanings, and a per-file change now holds its own diff
+  instead of an `Option` that was only ever `None` for unchanged files. No
+  output changed — verified across six hub fixtures through both `quay diff`
+  and `quay diff --json`.
+- `quay add`'s Replace action carries the bytes it writes. It previously took
+  them as a separate argument, which made a zero-byte overwrite representable
+  if the two ever disagreed.
+
 ## 0.15.1 — 2026-07-31
 
 ### Fixed
