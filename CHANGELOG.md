@@ -3,6 +3,27 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.15.1 — 2026-07-31
+
+### Fixed
+
+- **A hub you cannot reach no longer reads as a hub that deleted your skill.**
+  `quay diff` and `quay add`'s collision check clone the hub blobless and fetch
+  file contents on demand. The existence probe treated every non-zero exit from
+  git as "this path does not exist at that revision" — but a genuinely absent
+  path and a failed fetch exit with the same code. So an expired token, a
+  network blip or an outage rendered as `no longer on the hub (deleted or
+  renamed there)`, and the reconcile baseline walk quietly skipped commits it
+  could not read, downgrading the verdict to "no commit matches your copy".
+
+  Existence is now decided from the repository's tree, which is always present
+  locally and needs no network, and only then is content fetched — where a
+  failure is reported as the failure it is.
+
+  Only blobless clones were affected, which is every `quay diff` against a real
+  hub. Nothing was written to disk incorrectly; the verdicts were wrong, not the
+  files.
+
 ## 0.15.0 — 2026-07-31
 
 ### Changed
