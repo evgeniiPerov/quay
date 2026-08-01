@@ -83,3 +83,97 @@ fn lists_every_file_under_a_skill_directory() {
         "a skill absent at this rev lists nothing"
     );
 }
+
+/// Build a one-commit harbor at `p`. `allow_filter` decides whether the served
+/// repo advertises `uploadpack.allowFilter`, which is what makes
+/// `--filter=blob:none` actually take effect.
+fn seed_harbor(p: &std::path::Path, allow_filter: bool) {
+    run(p, &["init", "--initial-branch=main"]);
+    run(p, &["config", "user.email", "t@t.t"]);
+    run(p, &["config", "user.name", "t"]);
+    if allow_filter {
+        run(p, &["config", "uploadpack.allowFilter", "true"]);
+    }
+    std::fs::create_dir_all(p.join("skills/x/references")).unwrap();
+    std::fs::write(p.join("skills/x/SKILL.md"), b"body").unwrap();
+    std::fs::write(p.join("skills/x/references/api.md"), b"api").unwrap();
+    run(p, &["add", "-A"]);
+    run(p, &["commit", "-m", "seed"]);
+}
+
+/// The path production always takes, and which nothing exercised before this
+/// test: a hub that supports filtering, so the clone is genuinely blobless and
+/// every `bytes_at` is a lazy fetch over the wire rather than a local read.
+///
+/// Prerequisite for trusting any change to how `read_harbor` batches its reads
+/// (#27) — batching a code path no test has ever run is not a refactor, it is a
+/// rewrite with no safety net.
+#[test]
+fn a_filtering_server_yields_a_genuinely_partial_clone() {
+    let src = tempdir().unwrap();
+    seed_harbor(src.path(), true);
+
+    let url = format!("file://{}", src.path().display());
+    let h = GitHarborHistory::clone_harbor(&url, None).unwrap();
+
+    assert!(
+        h.is_partial(),
+        "uploadpack.allowFilter is set, so the clone must be a promisor clone; \
+         if this fails, git ignored --filter and every partial-clone assertion \
+         below is meaningless"
+    );
+
+    // Blobs are absent until asked for. These reads are the lazy fetches, and
+    // they must return the same bytes a full clone would.
+    assert_eq!(
+        h.bytes_at("HEAD", "skills/x/SKILL.md").unwrap().unwrap(),
+        b"body"
+    );
+    assert_eq!(
+        h.bytes_at("HEAD", "skills/x/references/api.md")
+            .unwrap()
+            .unwrap(),
+        b"api"
+    );
+    // Tree reads are served from the clone; only blobs are deferred.
+    assert_eq!(
+        h.paths_at("HEAD", "skills/x").unwrap(),
+        vec![
+            "skills/x/SKILL.md".to_string(),
+            "skills/x/references/api.md".to_string(),
+        ]
+    );
+    assert!(h
+        .bytes_at("HEAD", "skills/none/SKILL.md")
+        .unwrap()
+        .is_none());
+}
+
+/// The fallback, which every other fixture in this file silently takes. A
+/// server without `uploadpack.allowFilter` does not reject the filter — it
+/// warns and returns a full clone — so this asserts the degradation is
+/// invisible to callers rather than that it errors.
+#[test]
+fn a_non_filtering_server_falls_back_to_a_full_clone() {
+    let src = tempdir().unwrap();
+    seed_harbor(src.path(), false);
+
+    let url = format!("file://{}", src.path().display());
+    let h = GitHarborHistory::clone_harbor(&url, None).unwrap();
+
+    assert!(
+        !h.is_partial(),
+        "without uploadpack.allowFilter git must hand back a full clone"
+    );
+    assert_eq!(
+        h.bytes_at("HEAD", "skills/x/SKILL.md").unwrap().unwrap(),
+        b"body"
+    );
+    assert_eq!(
+        h.paths_at("HEAD", "skills/x").unwrap(),
+        vec![
+            "skills/x/SKILL.md".to_string(),
+            "skills/x/references/api.md".to_string(),
+        ]
+    );
+}

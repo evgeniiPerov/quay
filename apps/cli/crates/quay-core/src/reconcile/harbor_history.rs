@@ -130,6 +130,42 @@ impl GitHarborHistory {
             _tmp: tmp,
         })
     }
+
+    /// True when the clone really is blobless — some object reachable from HEAD
+    /// is absent locally and would be fetched on demand.
+    ///
+    /// Two things that look like they answer this do not:
+    ///
+    /// - **The clone's exit status.** A server without `uploadpack.allowFilter`
+    ///   does not reject `--filter=blob:none`. It warns "filtering not
+    ///   recognized by server, ignoring" and hands back a **full** clone,
+    ///   successfully. So `clone_harbor`'s filtered branch is taken either way
+    ///   and its fallback is near-dead code.
+    /// - **`remote.origin.promisor`.** git writes `promisor=true` and
+    ///   `partialclonefilter=blob:none` into the clone config *even when it
+    ///   just told you it ignored the filter* (verified on git 2.55.0). The
+    ///   config records what was asked for, not what happened.
+    ///
+    /// Between them, that is how every fixture in this repo came to exercise
+    /// the full-clone path while production runs blobless against GitHub.
+    ///
+    /// So ask for the only unambiguous evidence: objects git knows about and
+    /// does not have. `rev-list --missing=print` prefixes those with `?`.
+    ///
+    /// Walks every object reachable from HEAD, so this is O(repo). It exists to
+    /// let tests prove which path they are on; it is not on any hot path.
+    pub fn is_partial(&self) -> bool {
+        git(
+            &self.repo,
+            &["rev-list", "--objects", "--missing=print", "HEAD"],
+        )
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.starts_with('?'))
+        })
+        .unwrap_or(false)
+    }
 }
 
 impl HarborHistory for GitHarborHistory {
