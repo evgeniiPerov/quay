@@ -124,12 +124,21 @@ fn files_added_and_removed_on_hub_get_their_own_kinds() {
     let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
 
     let change = |rel: &str| r.files.iter().find(|f| f.rel == rel).map(|f| &f.change);
-    assert!(matches!(
-        change("scripts/new.sh"),
-        Some(Change::OnlyOnHub(_))
-    ));
-    assert!(matches!(change("old.md"), Some(Change::OnlyLocal(_))));
-    assert!(matches!(change("SKILL.md"), Some(Change::Same)));
+    assert!(
+        matches!(change("scripts/new.sh"), Some(Change::OnlyOnHub(_))),
+        "{:?}",
+        change("scripts/new.sh")
+    );
+    assert!(
+        matches!(change("old.md"), Some(Change::OnlyLocal(_))),
+        "{:?}",
+        change("old.md")
+    );
+    assert!(
+        matches!(change("SKILL.md"), Some(Change::Same)),
+        "{:?}",
+        change("SKILL.md")
+    );
 }
 
 #[test]

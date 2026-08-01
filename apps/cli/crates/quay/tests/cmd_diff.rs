@@ -168,6 +168,91 @@ fn json_carries_the_verdict_and_per_file_kinds() {
 }
 
 #[test]
+fn a_skill_deleted_upstream_keeps_the_changed_unknown_tag_and_flags_absence() {
+    // The wire contract. `AbsentOnHub` shares the `changed_unknown_direction`
+    // tag with `ChangedUnknownDirection` so that consumers matching on `verdict`
+    // keep working; `absent_on_hub` is the only thing telling the two apart.
+    // Giving absence a tag of its own would break them silently, so the pair is
+    // asserted together.
+    let tmp = assert_fs::TempDir::new().unwrap();
+    // No hub files in the second commit: the skill directory is gone at HEAD
+    // while `registry.json` still publishes it.
+    let (proj, user_cfg, cfg_home) = fixture(tmp.path(), &[], &[("SKILL.md", SKILL_V1)]);
+
+    let out = diff(&proj, &user_cfg, &cfg_home, &["--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+
+    assert_eq!(v["verdict"], "changed_unknown_direction");
+    assert_eq!(v["absent_on_hub"], true);
+}
+
+#[test]
+fn every_per_file_change_kind_gets_its_own_marker() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let (proj, user_cfg, cfg_home) = fixture(
+        tmp.path(),
+        &[
+            ("SKILL.md", SKILL_V1),
+            ("references/api.md", "GET /v2\n"),
+            ("scripts/new.sh", "echo hi\n"),
+        ],
+        &[
+            ("SKILL.md", SKILL_V1),
+            ("references/api.md", "GET /v1\n"),
+            ("old.md", "stale\n"),
+        ],
+    );
+
+    let out = diff(&proj, &user_cfg, &cfg_home, &["--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+
+    let files = v["files"].as_array().unwrap();
+    let change = |path: &str| {
+        files
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("{path} is not listed in {files:?}"))["change"]
+            .clone()
+    };
+    assert_eq!(change("SKILL.md"), "same");
+    assert_eq!(change("references/api.md"), "modified");
+    assert_eq!(change("scripts/new.sh"), "only_on_hub");
+    assert_eq!(change("old.md"), "only_local");
+
+    // The human renderer's markers are the same four facts, one character wide.
+    let text = diff(&proj, &user_cfg, &cfg_home, &[])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(
+        text.contains("M references/api.md"),
+        "modified is M:\n{text}"
+    );
+    assert!(
+        text.contains("+ scripts/new.sh"),
+        "only-on-hub is +:\n{text}"
+    );
+    assert!(text.contains("- old.md"), "only-local is -:\n{text}");
+    assert!(
+        !text.contains("SKILL.md"),
+        "unchanged files carry no diff and are not listed:\n{text}"
+    );
+}
+
+#[test]
 fn an_unknown_remote_is_named_in_the_error() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let (proj, user_cfg, cfg_home) = fixture(

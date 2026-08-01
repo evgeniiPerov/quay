@@ -170,8 +170,8 @@ impl GitHarborHistory {
     /// Walks every object reachable from HEAD, so this is O(repo). It exists to
     /// let tests prove which path they are on; it is not on any hot path.
     ///
-    /// Upgrade path: same as [`crate::reconcile::report_for_test`] — if
-    /// `quay-core` is ever published, move this behind
+    /// Upgrade path: `#[doc(hidden)]` hides this from the docs but not from the
+    /// linker. If `quay-core` is ever published, move it behind
     /// `#[cfg(any(test, feature = "test-util"))]` so a test-only predicate is
     /// not part of the shipped surface.
     #[doc(hidden)]

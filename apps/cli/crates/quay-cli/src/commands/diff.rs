@@ -155,13 +155,16 @@ fn print_human(skill: &str, remote: &str, report: &FolderReport) {
         Verdict::HubNewer { .. } => {
             println!("\nTake the hub copy with: quay add {skill} --force");
         }
-        // `AbsentOnHub` is deliberately not here: there is no hub copy to take.
         Verdict::LocalAheadOrDiverged { .. } | Verdict::ChangedUnknownDirection => {
             println!(
                 "\nYour copy may hold local changes. `quay add {skill} --force` takes the hub's version; files outside the hub's manifest are kept."
             );
         }
-        _ => {}
+        // No advice, for opposite reasons: `Identical` already returned above
+        // and has nothing to say, and `AbsentOnHub` has no hub copy to take —
+        // every suggestion here names one. Spelled out rather than caught by a
+        // wildcard so a new variant is a compile error, not silence.
+        Verdict::Identical | Verdict::AbsentOnHub => {}
     }
 }
 

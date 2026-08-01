@@ -24,6 +24,18 @@ pub struct ReconcileReport {
     /// HEAD bytes for `action::apply` when the user picks Replace. Empty when
     /// the skill is absent on harbor HEAD (Replace must be disabled then).
     pub head_bytes: Vec<u8>,
+    /// True when the base-commit search hit [`baseline::WALK_CAP`] without
+    /// matching.
+    ///
+    /// Without this, exhausting the walk is indistinguishable from genuinely
+    /// finding no base: both land on [`Verdict::ChangedUnknownDirection`], and a
+    /// caller phrasing that as "local edits present" would tell a user who never
+    /// touched the skill that they edited it. A truncated search is not a
+    /// conclusion, and callers must not present it as one.
+    ///
+    /// The folder-level twin is
+    /// [`crate::reconcile::folder::FolderReport::base_search_truncated`].
+    pub base_search_truncated: bool,
 }
 
 impl ReconcileReport {
@@ -51,10 +63,17 @@ pub fn reconcile(
     let head_content_sha = bl.head_content_sha;
     let head_bytes = head_bytes_opt.unwrap_or_default();
 
-    let verdict = if absent_on_hub {
-        Verdict::AbsentOnHub
+    // A truncated search also lands on `ChangedUnknownDirection`, because "we
+    // did not look far enough" is not a direction either. The two are told apart
+    // by `base_search_truncated`, so that a caller never phrases an exhausted
+    // budget as "local edits present".
+    let (verdict, base_search_truncated) = if absent_on_hub {
+        (Verdict::AbsentOnHub, false)
     } else {
-        classify(local_sha, &head_content_sha, bl.base)
+        (
+            classify(local_sha, &head_content_sha, bl.base),
+            bl.truncated,
+        )
     };
     let diff = render(&head_bytes, local_bytes); // render(old, new): hub HEAD is old, local is new
     let semver = semver_hint(hub_version, local_version);
@@ -63,28 +82,8 @@ pub fn reconcile(
         semver,
         diff,
         head_bytes,
+        base_search_truncated,
     })
-}
-
-/// Test-only constructor for [`ReconcileReport`].
-///
-/// Because `ReconcileReport` is `#[non_exhaustive]`, external crates (such as
-/// `quay-cli`'s test suite) cannot construct it with a struct literal. This
-/// function provides the minimal cross-crate escape hatch needed for unit tests
-/// without weakening the `#[non_exhaustive]` guarantee for production code.
-///
-/// Upgrade path: if `quay-core` is ever published to crates.io, move this
-/// behind `#[cfg(any(test, feature = "test-util"))]` so the test-only
-/// constructor is not part of the shipped public surface.
-#[doc(hidden)]
-// test-only constructor; ReconcileReport is #[non_exhaustive]
-pub fn report_for_test(verdict: verdict::Verdict) -> ReconcileReport {
-    ReconcileReport {
-        verdict,
-        semver: verdict::SemverRel::Unparseable,
-        diff: diff::Diff::Text(String::new()),
-        head_bytes: Vec::new(),
-    }
 }
 
 #[cfg(test)]

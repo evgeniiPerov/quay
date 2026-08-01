@@ -26,9 +26,16 @@ use std::path::Path;
 /// The rendered diff rides on the variant rather than sitting beside it in an
 /// `Option`: every difference has one and an unchanged file has none, and that
 /// is a property of the kind, not an invariant callers have to be told about.
+///
+/// Not `#[non_exhaustive]`, for the same reason as
+/// [`crate::reconcile::verdict::Verdict`]: `quay-cli` renders one marker
+/// character and one JSON tag per variant, and a wildcard there would let a new
+/// kind ship as a blank marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
+    /// Byte-identical on both sides after LF normalization.
     Same,
+    /// Present on both sides with differing content.
     Modified(Diff),
     /// Present on harbor, absent locally.
     OnlyOnHub(Diff),
