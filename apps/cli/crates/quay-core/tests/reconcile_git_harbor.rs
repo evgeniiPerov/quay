@@ -185,7 +185,7 @@ fn a_filtering_server_yields_a_genuinely_partial_clone() {
 /// On a blobless clone every unfetched blob is one network round-trip away, so
 /// a token expiry or a hub outage makes `bytes_at` fail. If that failure is
 /// reported as `Ok(None)`, `baseline::derive` records the empty-sha sentinel,
-/// `reconcile` sets `absent_on_head`, and the user is told their skill is "no
+/// `reconcile` produces `Verdict::AbsentOnHub`, and the user is told their skill is "no
 /// longer on the hub (deleted or renamed there)" — a data-loss-shaped lie about
 /// what is really a transient connectivity problem.
 ///

@@ -27,6 +27,12 @@ pub struct Baseline {
     /// `Some` when a base commit was found; `None` when local was edited / not
     /// from this harbor / cap exceeded.
     pub base: Option<BaseFacts>,
+    /// True when the walk hit [`WALK_CAP`] without matching, so `base: None`
+    /// means "did not look far enough" rather than "looked at everything and
+    /// found nothing". The two are indistinguishable in `base` alone, and a
+    /// caller phrasing the first as "you edited this" states a fact it does not
+    /// have.
+    pub truncated: bool,
 }
 
 /// `skill_path` is the repo-relative path to the skill's `SKILL.md`.
@@ -44,6 +50,7 @@ pub fn derive(local_sha: &str, harbor: &dyn HarborHistory, skill_path: &str) -> 
             head_content_sha,
             head_bytes,
             base: None,
+            truncated: false,
         }); // Identical short-circuit
     }
 
@@ -73,6 +80,7 @@ pub fn derive(local_sha: &str, harbor: &dyn HarborHistory, skill_path: &str) -> 
                     base: commit.id.clone(),
                     position,
                 }),
+                truncated: false,
             });
         }
     }
@@ -80,6 +88,7 @@ pub fn derive(local_sha: &str, harbor: &dyn HarborHistory, skill_path: &str) -> 
         head_content_sha,
         head_bytes,
         base: None,
+        truncated: commits.len() > WALK_CAP,
     })
 }
 
@@ -137,6 +146,10 @@ mod tests {
         let h = harbor(&[("c1", "d1", "v1"), ("c2", "d2", "v2")]);
         let b = derive(&sha("LOCALLY EDITED"), &h, "skills/x/SKILL.md").unwrap();
         assert!(b.base.is_none());
+        assert!(
+            !b.truncated,
+            "the whole history was searched, so 'no base' is a conclusion here"
+        );
     }
 
     // --- purpose-built fakes for corner-case tests ---
@@ -217,6 +230,10 @@ mod tests {
         assert_ne!(sha("body201"), local_sha_val);
         let b = derive(&local_sha_val, &h, "skills/x/SKILL.md").unwrap();
         assert!(b.base.is_none(), "cap exceeded: expected no base");
+        assert!(
+            b.truncated,
+            "the walk hit its cap, so 'no base found' is not a conclusion"
+        );
     }
 
     /// Fake where HEAD has no blob for the path (absent on HEAD) but an older

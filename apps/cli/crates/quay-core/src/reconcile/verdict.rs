@@ -31,6 +31,15 @@ pub enum SemverRel {
     Unparseable,
 }
 
+/// Which way a local copy and harbor HEAD stand to each other.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike the two report structs that
+/// carry it. `quay-cli` is a separate crate, so marking it would force every
+/// match there to grow a wildcard arm — including
+/// `commands::diff::print_human`'s advice match, whose whole point is that a new
+/// variant must be a compile error rather than silently getting no advice. The
+/// exhaustiveness is worth more than the freedom to add a variant without a
+/// breaking change; the enum is not part of a published API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Identical,
@@ -42,16 +51,27 @@ pub enum Verdict {
     LocalAheadOrDiverged {
         base: CommitId,
     },
-    ChangedUnknownDirection {
-        local_edited: bool,
-    },
+    /// The two copies differ and no base commit explains which way.
+    ///
+    /// Whether that conclusion was reached by searching the whole history or by
+    /// running out of budget is not part of the verdict — see
+    /// [`crate::reconcile::folder::FolderReport::base_search_truncated`].
+    ChangedUnknownDirection,
+    /// Nothing exists for the skill on harbor HEAD — deleted or renamed there.
+    ///
+    /// Never produced by [`classify`], which only ever sees hashes. Each
+    /// orchestration module decides it by its own mechanism, and they differ:
+    /// [`crate::reconcile::folder::folder_report`] compares a whole directory,
+    /// so it asks `paths_at` for the listing under the skill prefix, while
+    /// [`crate::reconcile::reconcile`] compares one file, so it takes
+    /// `baseline::derive`'s `head_bytes` being `None` — a single-blob lookup.
+    AbsentOnHub,
 }
 
 /// Pure classification. When `base` is `None`, the local file did not
 /// content-match any harbor commit, so this function returns
-/// `ChangedUnknownDirection { local_edited: true }`. The `local_edited: false`
-/// case (skill absent on harbor HEAD) is produced by a later orchestration
-/// module, never by this function.
+/// [`Verdict::ChangedUnknownDirection`]. [`Verdict::AbsentOnHub`] is produced by
+/// a later orchestration module, never by this function.
 pub fn classify(local_sha: &str, head_sha: &str, base: Option<BaseFacts>) -> Verdict {
     if local_sha == head_sha {
         return Verdict::Identical;
@@ -73,7 +93,7 @@ pub fn classify(local_sha: &str, head_sha: &str, base: Option<BaseFacts>) -> Ver
             base,
             position: BasePosition::HeadAncestorOfBase,
         }) => Verdict::LocalAheadOrDiverged { base },
-        None => Verdict::ChangedUnknownDirection { local_edited: true },
+        None => Verdict::ChangedUnknownDirection,
     }
 }
 
@@ -138,7 +158,7 @@ mod tests {
     fn unknown_when_no_base() {
         assert_eq!(
             classify("aaa", "bbb", None),
-            Verdict::ChangedUnknownDirection { local_edited: true }
+            Verdict::ChangedUnknownDirection
         );
     }
 

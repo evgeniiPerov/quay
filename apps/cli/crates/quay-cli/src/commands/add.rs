@@ -11,7 +11,8 @@ use quay_core::{
         diff::Diff,
         harbor_history::GitHarborHistory,
         reconcile,
-        verdict::{SemverRel, Verdict},
+        verdict::Verdict,
+        ReconcileReport,
     },
     scanner::scan_local,
     CloneFetcher, Config, MirrorAction, QuayError, RegistryFetcher, SkillFileFetcher, SkillManager,
@@ -289,11 +290,11 @@ pub fn run_interactive(
                         }
 
                         // Print verdict + diff.
-                        print_verdict_line(name, &report.verdict, report.semver);
+                        print_verdict_line(name, &report);
                         print_diff(&report.diff);
 
                         // Prompt user.
-                        let action = match prompt_resolve(report.absent_on_head) {
+                        let action = match prompt_resolve(&report) {
                             Ok(a) => a,
                             Err(e) => {
                                 eprintln!("warning: prompt failed for '{}': {}; skipping", name, e);
@@ -305,8 +306,10 @@ pub fn run_interactive(
                         // Replace → UpdateForce: the post-plan executor calls run_with with
                         //   do_force=true which overwrites the local file from remote.
                         // Keep / Skip → SkillAction::Skip: local file is left untouched.
+                        // The bytes on `Replace` are dropped here: this path
+                        // re-fetches from the remote through `run_with`.
                         match action {
-                            ResolveAction::Replace => SkillAction::UpdateForce,
+                            ResolveAction::Replace(_) => SkillAction::UpdateForce,
                             ResolveAction::Keep | ResolveAction::Skip => SkillAction::Skip,
                         }
                     })
@@ -594,7 +597,7 @@ fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
     }
 
     // Print verdict line.
-    print_verdict_line(skill, &report.verdict, report.semver);
+    print_verdict_line(skill, &report);
 
     // Optionally print diff.
     if !no_diff {
@@ -603,7 +606,7 @@ fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
 
     // Prompt or non-TTY error.
     let action = if std::io::stdin().is_terminal() {
-        prompt_resolve(report.absent_on_head)?
+        prompt_resolve(&report)?
     } else {
         eprintln!(
             "{}: skill differs from harbor. Re-run with --force to overwrite, or interactively to reconcile.",
@@ -612,10 +615,10 @@ fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
         return Err(QuayError::AlreadyExists(local.canonical_path().display().to_string()).into());
     };
 
-    reconcile_apply(action, local.canonical_path(), &report.head_bytes)?;
+    reconcile_apply(&action, local.canonical_path())?;
 
     match action {
-        ResolveAction::Replace => println!("{}: replaced with harbor copy.", skill),
+        ResolveAction::Replace(_) => println!("{}: replaced with harbor copy.", skill),
         ResolveAction::Keep => println!("{}: kept local copy.", skill),
         ResolveAction::Skip => println!("{}: skipped.", skill),
     }
@@ -624,8 +627,14 @@ fn handle_collision<R: RegistryFetcher, F: SkillFileFetcher>(
 }
 
 /// Print a human-readable verdict line for a colliding skill.
-fn print_verdict_line(name: &str, verdict: &Verdict, semver: SemverRel) {
-    let verdict_str = match verdict {
+///
+/// Takes the whole report, not a bare `(verdict, semver)` pair: whether the
+/// base-commit search was truncated changes what this may claim, and that fact
+/// lives on the report rather than in the verdict. A signature accepting a
+/// verdict alone would happily print "local edits present" for a search that
+/// never finished.
+fn print_verdict_line(name: &str, report: &ReconcileReport) {
+    let verdict_str = match &report.verdict {
         Verdict::Identical => "identical".to_string(),
         Verdict::HubNewer {
             commits_ahead,
@@ -636,15 +645,19 @@ fn print_verdict_line(name: &str, verdict: &Verdict, semver: SemverRel) {
             commits_ahead, last_commit_date
         ),
         Verdict::LocalAheadOrDiverged { .. } => "LOCAL diverged from harbor".to_string(),
-        Verdict::ChangedUnknownDirection { local_edited } => {
-            if *local_edited {
-                "CHANGED — differs from harbor (direction unknown, local edits present)".to_string()
-            } else {
-                "CHANGED — differs from harbor (direction unknown)".to_string()
-            }
+        // The walk was cut short rather than exhausted, so "no base found" is
+        // not evidence of an edit — claiming one blames the user for work they
+        // may never have done.
+        Verdict::ChangedUnknownDirection if report.base_search_truncated => {
+            "CHANGED — differs from harbor (direction unknown)".to_string()
         }
+        Verdict::ChangedUnknownDirection => {
+            "CHANGED — differs from harbor (direction unknown, local edits present)".to_string()
+        }
+        // Nothing upstream to have diverged from, so no edit is implied.
+        Verdict::AbsentOnHub => "CHANGED — differs from harbor (direction unknown)".to_string(),
     };
-    println!("{}: {}  [semver: {:?}]", name, verdict_str, semver);
+    println!("{}: {}  [semver: {:?}]", name, verdict_str, report.semver);
 }
 
 /// Print the diff body.
@@ -665,9 +678,11 @@ fn print_diff(diff: &Diff) {
 
 /// Prompt the user to choose a resolve action via `dialoguer::Select`.
 ///
-/// When `absent_on_head` is true, Replace is omitted (nothing on harbor HEAD).
-fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::error::Error>> {
-    if absent_on_head {
+/// Takes the report rather than a caller-derived `absent_on_hub` bool so the
+/// menu and the bytes `Replace` carries come from the same place: when the skill
+/// is absent on harbor HEAD there are no bytes, and Replace is not offered.
+fn prompt_resolve(report: &ReconcileReport) -> Result<ResolveAction, Box<dyn std::error::Error>> {
+    if report.absent_on_hub() {
         let items = ["Keep local", "Skip"];
         let idx = dialoguer::Select::new()
             .with_prompt("How should this collision be resolved?")
@@ -687,7 +702,7 @@ fn prompt_resolve(absent_on_head: bool) -> Result<ResolveAction, Box<dyn std::er
             .default(0)
             .interact()?;
         Ok(match idx {
-            0 => ResolveAction::Replace,
+            0 => ResolveAction::Replace(report.head_bytes.clone()),
             1 => ResolveAction::Keep,
             _ => ResolveAction::Skip,
         })

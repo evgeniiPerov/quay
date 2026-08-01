@@ -3,7 +3,7 @@
 //! single-file path already has fake-based unit tests, and the interesting
 //! failures here are precisely the ones a fake would paper over.
 
-use quay_core::reconcile::folder::{folder_report, ChangeKind};
+use quay_core::reconcile::folder::{folder_report, Change};
 use quay_core::reconcile::harbor_history::GitHarborHistory;
 use quay_core::reconcile::verdict::Verdict;
 use std::path::Path;
@@ -76,7 +76,11 @@ fn a_sibling_file_edited_on_hub_is_reported_even_though_skill_md_matches() {
     let changed: Vec<_> = r.changed().collect();
     assert_eq!(changed.len(), 1, "only api.md moved");
     assert_eq!(changed[0].rel, "references/api.md");
-    assert_eq!(changed[0].kind, ChangeKind::Modified);
+    assert!(
+        matches!(changed[0].change, Change::Modified(_)),
+        "{:?}",
+        changed[0].change
+    );
 }
 
 #[test]
@@ -87,7 +91,7 @@ fn diff_is_pull_oriented_so_plus_is_what_the_hub_would_give_you() {
 
     let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
 
-    let Some(Diff::Text(t)) = r.changed().next().and_then(|f| f.diff.clone()) else {
+    let Some(Diff::Text(t)) = r.changed().next().and_then(|f| f.change.diff()) else {
         panic!("expected a text diff");
     };
     assert!(
@@ -119,29 +123,36 @@ fn files_added_and_removed_on_hub_get_their_own_kinds() {
 
     let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
 
-    let kind = |rel: &str| r.files.iter().find(|f| f.rel == rel).map(|f| f.kind);
-    assert_eq!(kind("scripts/new.sh"), Some(ChangeKind::OnlyOnHub));
-    assert_eq!(kind("old.md"), Some(ChangeKind::OnlyLocal));
-    assert_eq!(kind("SKILL.md"), Some(ChangeKind::Same));
+    let change = |rel: &str| r.files.iter().find(|f| f.rel == rel).map(|f| &f.change);
+    assert!(
+        matches!(change("scripts/new.sh"), Some(Change::OnlyOnHub(_))),
+        "{:?}",
+        change("scripts/new.sh")
+    );
+    assert!(
+        matches!(change("old.md"), Some(Change::OnlyLocal(_))),
+        "{:?}",
+        change("old.md")
+    );
+    assert!(
+        matches!(change("SKILL.md"), Some(Change::Same)),
+        "{:?}",
+        change("SKILL.md")
+    );
 }
 
 #[test]
 fn a_skill_deleted_upstream_is_absent_not_merely_changed() {
     // An empty tree hashes to a real value, so this cannot come from comparing
-    // hashes — and `local_edited: true` would blame the user for an upstream
-    // delete.
+    // hashes — and `ChangedUnknownDirection` would leave the caller free to
+    // blame the user for an upstream delete.
     let (_src, h) = harbor(&[&[("SKILL.md", b"body")]]);
     let loc = local(&[("SKILL.md", b"body")]);
 
     let r = folder_report(loc.path(), &h, "skills/gone", "1.0.0", "1.0.0").unwrap();
 
-    assert!(r.absent_on_head);
-    assert_eq!(
-        r.verdict,
-        Verdict::ChangedUnknownDirection {
-            local_edited: false
-        }
-    );
+    assert_eq!(r.verdict, Verdict::AbsentOnHub);
+    assert!(r.absent_on_hub());
 }
 
 #[test]
@@ -186,9 +197,9 @@ fn binary_byte_counts_are_attributed_to_the_right_side() {
     let f = r.changed().find(|f| f.rel == "logo.png").expect("listed");
 
     assert_eq!(
-        f.diff,
+        f.change.diff(),
         // folder_report renders render(local, hub): old = local, new = hub.
-        Some(Diff::Binary {
+        Some(&Diff::Binary {
             old_bytes: 2,
             new_bytes: 4
         }),
@@ -224,8 +235,9 @@ fn a_hub_symlink_is_not_permanent_unresolvable_drift() {
 #[test]
 fn exhausting_the_history_walk_does_not_claim_the_user_edited_the_skill() {
     // Past WALK_CAP a matching commit exists but is never reached. Saying "no
-    // commit matches your copy" is then a false statement of fact, and
-    // `local_edited: true` blames the user for an edit they never made.
+    // commit matches your copy" is then a false statement of fact, and blames
+    // the user for an edit they never made. The verdict cannot carry that
+    // distinction — `base_search_truncated` is what forbids the claim.
     let src = tempdir().unwrap();
     let p = src.path();
     run(p, &["init", "--initial-branch=main"]);
@@ -247,16 +259,16 @@ fn exhausting_the_history_walk_does_not_claim_the_user_edited_the_skill() {
         r.base_search_truncated,
         "the walk hit its cap, so 'no base found' is not a conclusion"
     );
-    assert_ne!(
+    assert_eq!(
         r.verdict,
-        Verdict::ChangedUnknownDirection { local_edited: true },
-        "a truncated search must not be reported as a local edit"
+        Verdict::ChangedUnknownDirection,
+        "the direction is unknown either way; only the flag says why"
     );
 }
 
 #[test]
 fn a_hub_directory_holding_only_dotfiles_is_not_deleted_upstream() {
-    // `absent_on_head` drives the headline "no longer on the hub". Deriving it
+    // `AbsentOnHub` drives the headline "no longer on the hub". Deriving it
     // from the post-filter map means a hub carrying only a `.gitkeep` reports a
     // live skill as deleted.
     let (_src, h) = harbor(&[&[(".gitkeep", b"")]]);
@@ -265,7 +277,7 @@ fn a_hub_directory_holding_only_dotfiles_is_not_deleted_upstream() {
     let r = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0").unwrap();
 
     assert!(
-        !r.absent_on_head,
+        !r.absent_on_hub(),
         "the directory exists on the hub; it just holds nothing installable"
     );
 }
@@ -279,7 +291,11 @@ fn local_edit_with_an_untouched_hub_is_not_blamed_on_the_hub() {
 
     assert_eq!(
         r.verdict,
-        Verdict::ChangedUnknownDirection { local_edited: true },
+        Verdict::ChangedUnknownDirection,
         "no harbor commit matches the local bytes"
+    );
+    assert!(
+        !r.base_search_truncated,
+        "the whole history was searched, so 'no base' is a conclusion here"
     );
 }

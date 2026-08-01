@@ -24,8 +24,26 @@ pub struct ReconcileReport {
     /// HEAD bytes for `action::apply` when the user picks Replace. Empty when
     /// the skill is absent on harbor HEAD (Replace must be disabled then).
     pub head_bytes: Vec<u8>,
-    /// True when the skill no longer exists on harbor HEAD.
-    pub absent_on_head: bool,
+    /// True when the base-commit search hit [`baseline::WALK_CAP`] without
+    /// matching.
+    ///
+    /// Without this, exhausting the walk is indistinguishable from genuinely
+    /// finding no base: both land on [`Verdict::ChangedUnknownDirection`], and a
+    /// caller phrasing that as "local edits present" would tell a user who never
+    /// touched the skill that they edited it. A truncated search is not a
+    /// conclusion, and callers must not present it as one.
+    ///
+    /// The folder-level twin is
+    /// [`crate::reconcile::folder::FolderReport::base_search_truncated`].
+    pub base_search_truncated: bool,
+}
+
+impl ReconcileReport {
+    /// True when the skill no longer exists on harbor HEAD, so there is nothing
+    /// upstream to take and Replace must not be offered.
+    pub fn absent_on_hub(&self) -> bool {
+        matches!(self.verdict, Verdict::AbsentOnHub)
+    }
 }
 
 /// Compute the full report for one colliding skill. `local_bytes` is the raw
@@ -41,16 +59,21 @@ pub fn reconcile(
 ) -> Result<ReconcileReport> {
     let bl = derive(local_sha, harbor, skill_path)?;
     let head_bytes_opt = bl.head_bytes;
-    let absent_on_head = head_bytes_opt.is_none();
+    let absent_on_hub = head_bytes_opt.is_none();
     let head_content_sha = bl.head_content_sha;
     let head_bytes = head_bytes_opt.unwrap_or_default();
 
-    let verdict = if absent_on_head {
-        Verdict::ChangedUnknownDirection {
-            local_edited: false,
-        }
+    // A truncated search also lands on `ChangedUnknownDirection`, because "we
+    // did not look far enough" is not a direction either. The two are told apart
+    // by `base_search_truncated`, so that a caller never phrases an exhausted
+    // budget as "local edits present".
+    let (verdict, base_search_truncated) = if absent_on_hub {
+        (Verdict::AbsentOnHub, false)
     } else {
-        classify(local_sha, &head_content_sha, bl.base)
+        (
+            classify(local_sha, &head_content_sha, bl.base),
+            bl.truncated,
+        )
     };
     let diff = render(&head_bytes, local_bytes); // render(old, new): hub HEAD is old, local is new
     let semver = semver_hint(hub_version, local_version);
@@ -59,30 +82,8 @@ pub fn reconcile(
         semver,
         diff,
         head_bytes,
-        absent_on_head,
+        base_search_truncated,
     })
-}
-
-/// Test-only constructor for [`ReconcileReport`].
-///
-/// Because `ReconcileReport` is `#[non_exhaustive]`, external crates (such as
-/// `quay-cli`'s test suite) cannot construct it with a struct literal. This
-/// function provides the minimal cross-crate escape hatch needed for unit tests
-/// without weakening the `#[non_exhaustive]` guarantee for production code.
-///
-/// Upgrade path: if `quay-core` is ever published to crates.io, move this
-/// behind `#[cfg(any(test, feature = "test-util"))]` so the test-only
-/// constructor is not part of the shipped public surface.
-#[doc(hidden)]
-// test-only constructor; ReconcileReport is #[non_exhaustive]
-pub fn report_for_test(verdict: verdict::Verdict, absent_on_head: bool) -> ReconcileReport {
-    ReconcileReport {
-        verdict,
-        semver: verdict::SemverRel::Unparseable,
-        diff: diff::Diff::Text(String::new()),
-        head_bytes: Vec::new(),
-        absent_on_head,
-    }
 }
 
 #[cfg(test)]
@@ -125,7 +126,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.verdict, Verdict::Identical);
-        assert!(!r.absent_on_head);
+        assert!(!r.absent_on_hub());
     }
 
     #[test]
@@ -149,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_on_head_gives_changed_unknown_direction() {
+    fn absent_at_head_is_its_own_verdict() {
         let h = FakeHarborHistory {
             chain: vec![Commit {
                 id: "c1".into(),
@@ -158,13 +159,8 @@ mod tests {
             blobs: HashMap::new(), // no blob for ("c1","p/SKILL.md") => absent at HEAD
         };
         let r = reconcile(b"anything", "deadbeef", &h, "p/SKILL.md", "1.0.0", "1.0.0").unwrap();
-        assert_eq!(
-            r.verdict,
-            Verdict::ChangedUnknownDirection {
-                local_edited: false
-            }
-        );
-        assert!(r.absent_on_head);
+        assert_eq!(r.verdict, Verdict::AbsentOnHub);
+        assert!(r.absent_on_hub());
         assert!(r.head_bytes.is_empty());
     }
 }

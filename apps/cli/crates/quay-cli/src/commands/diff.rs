@@ -9,7 +9,7 @@ use quay_core::{
     push_log::PushLog,
     reconcile::{
         diff::Diff,
-        folder::{folder_report, ChangeKind, FileChange, FolderReport},
+        folder::{folder_report, Change, FileChange, FolderReport},
         harbor_history::GitHarborHistory,
         verdict::{SemverRel, Verdict},
     },
@@ -131,17 +131,20 @@ fn print_human(skill: &str, remote: &str, report: &FolderReport) {
         return;
     }
 
-    for f in report.files.iter().filter(|f| f.kind != ChangeKind::Same) {
-        println!("\n{} {}", mark(f.kind), f.rel);
-        match &f.diff {
-            Some(Diff::Text(t)) => print!("{}", indent(t)),
+    for f in &report.files {
+        // Unchanged files carry no diff and are not listed.
+        let Some(diff) = f.change.diff() else {
+            continue;
+        };
+        println!("\n{} {}", mark(&f.change), f.rel);
+        match diff {
+            Diff::Text(t) => print!("{}", indent(t)),
             // Pull-oriented call site: `folder_report` renders
             // render(local, hub), so old = local and new = hub.
-            Some(Diff::Binary {
+            Diff::Binary {
                 old_bytes: local_bytes,
                 new_bytes: hub_bytes,
-            }) => println!("    (binary: {local_bytes} bytes local, {hub_bytes} on hub)"),
-            None => {}
+            } => println!("    (binary: {local_bytes} bytes local, {hub_bytes} on hub)"),
         }
     }
 
@@ -152,14 +155,16 @@ fn print_human(skill: &str, remote: &str, report: &FolderReport) {
         Verdict::HubNewer { .. } => {
             println!("\nTake the hub copy with: quay add {skill} --force");
         }
-        Verdict::LocalAheadOrDiverged { .. } | Verdict::ChangedUnknownDirection { .. }
-            if !report.absent_on_head =>
-        {
+        Verdict::LocalAheadOrDiverged { .. } | Verdict::ChangedUnknownDirection => {
             println!(
                 "\nYour copy may hold local changes. `quay add {skill} --force` takes the hub's version; files outside the hub's manifest are kept."
             );
         }
-        _ => {}
+        // No advice, for opposite reasons: `Identical` already returned above
+        // and has nothing to say, and `AbsentOnHub` has no hub copy to take —
+        // every suggestion here names one. Spelled out rather than caught by a
+        // wildcard so a new variant is a compile error, not silence.
+        Verdict::Identical | Verdict::AbsentOnHub => {}
     }
 }
 
@@ -177,13 +182,11 @@ fn headline(report: &FolderReport) -> String {
             ..
         } => format!("hub is ahead by {commits_ahead} commit(s), last {last_commit_date}"),
         Verdict::LocalAheadOrDiverged { .. } => "your copy is ahead of the hub".into(),
-        Verdict::ChangedUnknownDirection { .. } if report.absent_on_head => {
-            "no longer on the hub (deleted or renamed there)".into()
-        }
-        Verdict::ChangedUnknownDirection { .. } if report.base_search_truncated => format!(
+        Verdict::AbsentOnHub => "no longer on the hub (deleted or renamed there)".into(),
+        Verdict::ChangedUnknownDirection if report.base_search_truncated => format!(
             "differs from the hub; no match in the last {WALK_CAP_DISPLAY} commits touching it, so the search was cut short rather than exhausted"
         ),
-        Verdict::ChangedUnknownDirection { .. } => {
+        Verdict::ChangedUnknownDirection => {
             "differs from the hub; no commit matches your copy, so the direction is unknown".into()
         }
     }
@@ -203,12 +206,12 @@ fn semver_note(rel: SemverRel) -> Option<&'static str> {
     }
 }
 
-fn mark(kind: ChangeKind) -> &'static str {
-    match kind {
-        ChangeKind::Same => " ",
-        ChangeKind::Modified => "M",
-        ChangeKind::OnlyOnHub => "+",
-        ChangeKind::OnlyLocal => "-",
+fn mark(change: &Change) -> &'static str {
+    match change {
+        Change::Same => " ",
+        Change::Modified(_) => "M",
+        Change::OnlyOnHub(_) => "+",
+        Change::OnlyLocal(_) => "-",
     }
 }
 
@@ -260,7 +263,7 @@ fn as_json<'a>(skill: &'a str, remote: &'a str, report: &'a FolderReport) -> Dif
         skill,
         remote,
         verdict: verdict_tag(&report.verdict),
-        absent_on_hub: report.absent_on_head,
+        absent_on_hub: report.absent_on_hub(),
         base_search_truncated: report.base_search_truncated,
         local_hash_lf: &report.local_hash,
         hub_hash_lf: &report.head_hash,
@@ -271,18 +274,19 @@ fn as_json<'a>(skill: &'a str, remote: &'a str, report: &'a FolderReport) -> Dif
 fn file_json(f: &FileChange) -> FileJson<'_> {
     FileJson {
         path: &f.rel,
-        change: match f.kind {
-            ChangeKind::Same => "same",
-            ChangeKind::Modified => "modified",
-            ChangeKind::OnlyOnHub => "only_on_hub",
-            ChangeKind::OnlyLocal => "only_local",
+        change: match f.change {
+            Change::Same => "same",
+            Change::Modified(_) => "modified",
+            Change::OnlyOnHub(_) => "only_on_hub",
+            Change::OnlyLocal(_) => "only_local",
         },
-        diff: match &f.diff {
+        diff: match f.change.diff() {
             Some(Diff::Text(t)) => Some(t.as_str()),
-            _ => None,
+            // Binary bodies go in `binary`, unchanged files have no body.
+            Some(Diff::Binary { .. }) | None => None,
         },
         // folder_report renders render(local, hub): old = local, new = hub.
-        binary: match &f.diff {
+        binary: match f.change.diff() {
             Some(Diff::Binary {
                 old_bytes,
                 new_bytes,
@@ -290,7 +294,7 @@ fn file_json(f: &FileChange) -> FileJson<'_> {
                 local_bytes: *old_bytes,
                 hub_bytes: *new_bytes,
             }),
-            _ => None,
+            Some(Diff::Text(_)) | None => None,
         },
     }
 }
@@ -300,6 +304,10 @@ fn verdict_tag(v: &Verdict) -> &'static str {
         Verdict::Identical => "identical",
         Verdict::HubNewer { .. } => "hub_newer",
         Verdict::LocalAheadOrDiverged { .. } => "local_ahead_or_diverged",
-        Verdict::ChangedUnknownDirection { .. } => "changed_unknown_direction",
+        // `AbsentOnHub` shares this tag on purpose: it used to be a
+        // `ChangedUnknownDirection` carrying a flag, and the `absent_on_hub`
+        // field beside it already tells the two apart. Giving it a tag of its
+        // own would break every consumer matching on `verdict`.
+        Verdict::ChangedUnknownDirection | Verdict::AbsentOnHub => "changed_unknown_direction",
     }
 }

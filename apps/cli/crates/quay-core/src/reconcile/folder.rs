@@ -22,14 +22,36 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// How one file differs between the local install and harbor HEAD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChangeKind {
+///
+/// The rendered diff rides on the variant rather than sitting beside it in an
+/// `Option`: every difference has one and an unchanged file has none, and that
+/// is a property of the kind, not an invariant callers have to be told about.
+///
+/// Not `#[non_exhaustive]`, for the same reason as
+/// [`crate::reconcile::verdict::Verdict`]: `quay-cli` renders one marker
+/// character and one JSON tag per variant, and a wildcard there would let a new
+/// kind ship as a blank marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// Byte-identical on both sides after LF normalization.
     Same,
-    Modified,
+    /// Present on both sides with differing content.
+    Modified(Diff),
     /// Present on harbor, absent locally.
-    OnlyOnHub,
+    OnlyOnHub(Diff),
     /// Present locally, absent on harbor.
-    OnlyLocal,
+    OnlyLocal(Diff),
+}
+
+impl Change {
+    /// The rendered diff, or `None` for [`Change::Same`] — the only variant
+    /// without one.
+    pub fn diff(&self) -> Option<&Diff> {
+        match self {
+            Change::Same => None,
+            Change::Modified(d) | Change::OnlyOnHub(d) | Change::OnlyLocal(d) => Some(d),
+        }
+    }
 }
 
 /// One file's entry in a [`FolderReport`].
@@ -37,9 +59,7 @@ pub enum ChangeKind {
 pub struct FileChange {
     /// Path relative to the skill directory, POSIX separators.
     pub rel: String,
-    pub kind: ChangeKind,
-    /// `None` when `kind` is [`ChangeKind::Same`].
-    pub diff: Option<Diff>,
+    pub change: Change,
 }
 
 /// Result of comparing a whole skill directory against harbor HEAD.
@@ -51,16 +71,13 @@ pub struct FolderReport {
     pub semver: SemverRel,
     /// Every file on either side, sorted, unchanged ones included.
     pub files: Vec<FileChange>,
-    /// True when nothing exists under the skill's prefix on harbor HEAD —
-    /// deleted or renamed upstream.
-    pub absent_on_head: bool,
     /// True when the base-commit search hit [`WALK_CAP`] without matching.
     ///
     /// Without this, exhausting the walk is indistinguishable from genuinely
-    /// finding no base, and `classify` turns "no base" into
-    /// `ChangedUnknownDirection { local_edited: true }` — telling a user who
-    /// never touched the skill that they edited it. A truncated search is not a
-    /// conclusion, and callers must not present it as one.
+    /// finding no base: both land on [`Verdict::ChangedUnknownDirection`], and a
+    /// caller phrasing that as "no commit matches your copy" would tell a user
+    /// who never touched the skill that they edited it. A truncated search is
+    /// not a conclusion, and callers must not present it as one.
     pub base_search_truncated: bool,
     /// Content hash of the local copy, in the LF-normalized space this report
     /// compares in — equal to `head_hash` iff the two copies match. Not the
@@ -73,7 +90,15 @@ pub struct FolderReport {
 impl FolderReport {
     /// Only the files that actually differ.
     pub fn changed(&self) -> impl Iterator<Item = &FileChange> {
-        self.files.iter().filter(|f| f.kind != ChangeKind::Same)
+        self.files
+            .iter()
+            .filter(|f| !matches!(f.change, Change::Same))
+    }
+
+    /// True when nothing exists under the skill's prefix on harbor HEAD —
+    /// deleted or renamed upstream.
+    pub fn absent_on_hub(&self) -> bool {
+        matches!(self.verdict, Verdict::AbsentOnHub)
     }
 }
 
@@ -105,7 +130,7 @@ pub fn folder_report(
     // an empty tree hashes to a perfectly ordinary value, so hashes cannot show
     // it; and `read_harbor` filters dotfiles, so a hub directory holding only a
     // `.gitkeep` yields an empty map while the skill is very much still there.
-    let absent_on_head = harbor
+    let absent_on_hub = harbor
         .paths_at("HEAD", skill_prefix.trim_end_matches('/'))?
         .is_empty();
 
@@ -118,55 +143,43 @@ pub fn folder_report(
     let files = rels
         .into_iter()
         .map(|rel| {
-            let (kind, diff) = match (head.get(rel), local.get(rel)) {
-                (Some(h), Some(l)) if h == l => (ChangeKind::Same, None),
+            let change = match (head.get(rel), local.get(rel)) {
+                (Some(h), Some(l)) if h == l => Change::Same,
                 // `render(old, new)`. This is a *pull* report: local is what you
                 // have, hub is what you would get, so `+` must be the hub's
                 // content. That is the opposite of the push-oriented argument
                 // order `reconcile::reconcile` uses, where `+` is what you would
                 // send.
-                (Some(h), Some(l)) => (ChangeKind::Modified, Some(render(l, h))),
-                (Some(h), None) => (ChangeKind::OnlyOnHub, Some(render(b"", h))),
-                (None, Some(l)) => (ChangeKind::OnlyLocal, Some(render(l, b""))),
+                (Some(h), Some(l)) => Change::Modified(render(l, h)),
+                (Some(h), None) => Change::OnlyOnHub(render(b"", h)),
+                (None, Some(l)) => Change::OnlyLocal(render(l, b"")),
                 (None, None) => unreachable!("rel came from one of the two maps"),
             };
             FileChange {
                 rel: rel.clone(),
-                kind,
-                diff,
+                change,
             }
         })
         .collect();
 
-    let (verdict, base_search_truncated) = if absent_on_head {
-        (
-            Verdict::ChangedUnknownDirection {
-                local_edited: false,
-            },
-            false,
-        )
+    let (verdict, base_search_truncated) = if absent_on_hub {
+        (Verdict::AbsentOnHub, false)
     } else {
+        // A truncated search also lands on `ChangedUnknownDirection`, because
+        // "we did not look far enough" is not a direction either. The two are
+        // told apart by `base_search_truncated`, so that a caller never phrases
+        // an exhausted budget as "no commit matches your copy".
         let search = derive_base(&local_hash, &head_hash, harbor, skill_prefix)?;
-        let verdict = match classify(&local_hash, &head_hash, search.base) {
-            // `classify` reads "no base" as "the user edited it". That inference
-            // only holds if the whole history was searched. Past the cap we
-            // simply did not look far enough, so claiming a local edit would be
-            // a statement of fact we have not established.
-            Verdict::ChangedUnknownDirection { .. } if search.truncated => {
-                Verdict::ChangedUnknownDirection {
-                    local_edited: false,
-                }
-            }
-            v => v,
-        };
-        (verdict, search.truncated)
+        (
+            classify(&local_hash, &head_hash, search.base),
+            search.truncated,
+        )
     };
 
     Ok(FolderReport {
         verdict,
         semver: semver_hint(hub_version, local_version),
         files,
-        absent_on_head,
         base_search_truncated,
         local_hash,
         head_hash,
@@ -177,9 +190,9 @@ pub fn folder_report(
 ///
 /// The base must be derived in the SAME hash space `classify` compares in.
 /// Deriving it from `SKILL.md` history and then classifying folder hashes
-/// returns a false `ChangedUnknownDirection { local_edited: true }` for every
-/// skill whose `SKILL.md` did not move: the lookup finds nothing, and the code
-/// concludes the user edited something.
+/// returns a false [`Verdict::ChangedUnknownDirection`] for every skill whose
+/// `SKILL.md` did not move: the lookup finds nothing, and a knowable direction
+/// is reported as unknown.
 fn derive_base(
     local_hash: &str,
     head_hash: &str,
