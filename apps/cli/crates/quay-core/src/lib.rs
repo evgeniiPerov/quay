@@ -58,7 +58,7 @@ pub use lock::{
     SourceType,
 };
 pub use lock_hash::folder_hash;
-pub use manager::{sha256_hex, SkillManager};
+pub use manager::{sha256_hex, DecideExtras, ExtraFiles, SkillManager};
 pub use manifest::{parse_skill, QuayMeta, SkillManifest};
 pub use outdated::{outdated_for_local, OutdatedEntry};
 pub use profile_draft::{ProfileDraft, RemoteDraft};

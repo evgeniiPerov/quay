@@ -1,5 +1,7 @@
 //! `quay update` — pull latest version of installed skills from the remote registry.
 
+use crate::commands::extras::{Decider, ExtraPolicy};
+use crate::commands::interactive::is_tty;
 use quay_core::{
     outdated_for_local, CloneFetcher, Config, OutdatedEntry, QuayError, RegistryFetcher,
     SkillFileFetcher, SkillManager,
@@ -17,6 +19,7 @@ pub fn run_interactive(
     project: &Path,
     user_config: Option<&Path>,
     json: bool,
+    policy: ExtraPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
@@ -56,11 +59,11 @@ pub fn run_interactive(
     }
 
     let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
+    let decider = Decider::new(policy, is_tty() && !json);
     let mut ok = 0usize;
-    let mut fail = 0usize;
     for idx in &picks {
         let e = &candidates[*idx];
-        match mgr.update_one(&e.name) {
+        match mgr.update_one_with_extras(&e.name, &|s, x| decider.decide(s, x)) {
             Ok(_) => {
                 if !json {
                     println!("\u{2713} {} → {}", e.name, e.available);
@@ -69,19 +72,25 @@ pub fn run_interactive(
             }
             Err(err) => {
                 eprintln!("\u{2717} {}: {}", e.name, err);
-                fail += 1;
             }
+        }
+        // This loop counts failures and keeps going, so without this an
+        // interrupted prompt on one skill would re-prompt the next.
+        if decider.interrupted() {
+            eprintln!("aborted");
+            break;
         }
     }
 
     if !json {
-        println!("updated {} of {} selected", ok, ok + fail);
+        println!("updated {} of {} selected", ok, picks.len());
     }
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     skill: Option<&str>,
     dry_run: bool,
@@ -89,13 +98,17 @@ pub fn run(
     project: &Path,
     user_config: Option<&Path>,
     json: bool,
+    policy: ExtraPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_config = project.join(".quay/config.toml");
     let cfg = Config::load_resolved(user_config, Some(&project_config), profile)?;
     let config_dir = user_config.and_then(|p| p.parent());
 
     let f = CloneFetcher::new();
-    run_with(&cfg, &f, &f, skill, dry_run, project, config_dir, json)?;
+    let decider = Decider::new(policy, is_tty() && !json);
+    run_with(
+        &cfg, &f, &f, skill, dry_run, project, config_dir, json, &decider,
+    )?;
 
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
@@ -112,6 +125,7 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     project: &Path,
     config_dir: Option<&Path>,
     json: bool,
+    decider: &Decider,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let candidates: Vec<OutdatedEntry> = outdated_for_local(project, config_dir, cfg, reg_fetcher)?
         .into_iter()
@@ -140,7 +154,7 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
     let mut updated: Vec<&OutdatedEntry> = Vec::new();
     for cand in &candidates {
-        match mgr.update_one(&cand.name) {
+        match mgr.update_one_with_extras(&cand.name, &|s, e| decider.decide(s, e)) {
             Ok(_) => updated.push(cand),
             Err(QuayError::RemoteUnknown(remote)) => {
                 if !json {

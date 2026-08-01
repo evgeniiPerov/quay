@@ -3,6 +3,49 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.15.0 — 2026-07-31
+
+### Changed
+
+- **`update` and `add --force` now notice local files the hub deleted, and
+  ask what to do with them.** Both re-materialize a skill from a fresh fetch,
+  and both used to silently carry forward every local file the new version
+  did not contain, forever. That preserved the notes you wrote — and also
+  resurrected every file the hub had removed, so `quay diff` reported it as
+  local-only for the life of the install. The default is still to keep
+  everything; nothing is deleted without a flag or an explicit answer.
+
+  quay cannot tell the two apart on its own: the lockfile records a content
+  hash, not a file list, so nothing on disk says what the previous install put
+  there. So it asks. Files the new version lacks are listed, and you can keep
+  them, delete them, pick individually, or keep these and every remaining
+  skill's without being asked again.
+
+  Without a terminal — CI, a pipe, or `--json` — nothing is deleted. The files
+  are kept and a note says so, which means no existing script changes behaviour
+  on upgrade. `--keep-extra` and `--delete-extra` decide it outright and work
+  unattended; `--delete-extra` names on stderr every file it removed, so an
+  unattended run still leaves a record of it.
+
+  Dotfiles, dot-directories and symlinks are never offered and never deleted.
+  They are outside the set quay manages, and one of them — `.quay-mirror` — is
+  what marks a copy mirror as quay-managed.
+
+### Fixed
+
+- **A symlink inside an installed skill no longer gets flattened into a plain
+  copy on `update` / `add --force`.** Carrying an extra file forward decided
+  whether to recurse into it by asking if it was a directory, which follows
+  symlinks — so a symlink to a file was silently replaced by a byte-for-byte
+  copy of its target, and a symlink to a directory was worse: the target's
+  contents were recursed into and copied as though they belonged to the
+  skill. Both are now recreated as the symlink they were. On Windows, where
+  recreating a symlink needs Developer Mode or elevation that an ordinary user
+  is unlikely to have, the update warns and carries on rather than failing:
+  a link to a file falls back to copying its contents, and a link to a
+  directory is skipped, since copying a directory's contents in is the very
+  thing this fixes.
+
 ## 0.14.1 — 2026-07-27
 
 ### Fixed

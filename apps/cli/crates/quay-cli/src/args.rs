@@ -51,6 +51,14 @@ pub enum Command {
         /// Suppress the diff body on a collision (still prints the verdict line).
         #[arg(long)]
         no_diff: bool,
+        /// Keep local files the new version does not contain (the default when
+        /// there is no terminal). Only meaningful with --force.
+        #[arg(long, conflicts_with = "delete_extra")]
+        keep_extra: bool,
+        /// Delete local files the new version does not contain. Only meaningful
+        /// with --force.
+        #[arg(long)]
+        delete_extra: bool,
     },
     /// List installed skills
     List,
@@ -111,6 +119,13 @@ pub enum Command {
         /// Explicit bypass for the TTY auto-trigger.
         #[arg(long, conflicts_with = "interactive")]
         all: bool,
+        /// Keep local files the new version does not contain (the default when
+        /// there is no terminal).
+        #[arg(long, conflicts_with = "delete_extra")]
+        keep_extra: bool,
+        /// Delete local files the new version does not contain.
+        #[arg(long)]
+        delete_extra: bool,
     },
     /// Discover local skills under `.agents/skills/` and report their sync status.
     Scan {

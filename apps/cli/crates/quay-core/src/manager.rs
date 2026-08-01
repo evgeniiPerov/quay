@@ -9,8 +9,31 @@ use crate::error::{QuayError, Result};
 use crate::fetcher::{RegistryFetcher, SkillFileFetcher};
 use crate::registry::{Registry, RegistryEntry};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// What to do with local files the new version does not contain.
+///
+/// Paths are skill-relative with POSIX separators, matching what
+/// [`crate::skill_files::collect_skill_files`] produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraFiles {
+    /// Carry every extra file forward — the historical behaviour.
+    Keep,
+    /// Drop every extra file.
+    Delete,
+    /// Drop exactly these, keep the rest. Paths not in the offered set are
+    /// ignored rather than trusted.
+    DeleteOnly(Vec<String>),
+}
+
+/// Decides what happens to extra files, called once per skill and only when the
+/// extra set is non-empty.
+///
+/// Returning `Err` aborts the install **before** the swap, leaving the existing
+/// copy untouched — that is how an interrupted prompt cancels an update rather
+/// than silently taking a default.
+pub type DecideExtras<'a> = &'a dyn Fn(&str, &[String]) -> Result<ExtraFiles>;
 
 /// Coordinates skill install / remove against the local filesystem.
 ///
@@ -106,11 +129,34 @@ where
     }
 
     /// Like [`add`] but with explicit overwrite control.
+    ///
+    /// Keeps every local file the new version does not contain — the historical
+    /// behaviour, and what non-interactive callers such as `quay-mcp` want.
+    /// Nothing local is dropped: a directory that was already empty is
+    /// recreated too. Use [`add_with_extras`] to let the caller decide instead.
     pub fn add_with_force(
         &self,
         skill_name: &str,
         pinned_remote: Option<&str>,
         force: bool,
+    ) -> Result<()> {
+        self.add_with_extras(skill_name, pinned_remote, force, &|_, _| {
+            Ok(ExtraFiles::Keep)
+        })
+    }
+
+    /// Like [`add_with_force`], but `decide` chooses what happens to local files
+    /// the fetched version does not contain.
+    ///
+    /// `decide` is called once, only when that set is non-empty, and only on the
+    /// `force` path — a non-force add errors on a pre-existing directory before
+    /// reaching it. Returning `Err` aborts before anything on disk changes.
+    pub fn add_with_extras(
+        &self,
+        skill_name: &str,
+        pinned_remote: Option<&str>,
+        force: bool,
+        decide: DecideExtras<'_>,
     ) -> Result<()> {
         let (_remote_name, _registry, entry) = self.resolve(skill_name, pinned_remote)?;
         let remote_cfg = &self.config.remotes[&_remote_name];
@@ -188,12 +234,31 @@ where
             if !force {
                 return Err(QuayError::AlreadyExists(dest_dir.display().to_string()));
             }
-            // Overwriting in place used to leave files that aren't in the manifest
-            // (local notes, files dropped upstream) untouched, because it wrote
-            // over the directory rather than replacing it. `quay update` runs this
-            // path on every skill, so preserve them: whether `update` should clobber
-            // them is an open product question, not something to settle in a patch.
-            copy_missing_into(&dest_dir, staging.path())?;
+            // Files the old install has and the new version does not. Historically
+            // all of them were carried forward, which preserved hand-added notes
+            // and also resurrected every file the hub had deleted. `decide` is
+            // where that is settled — see
+            // docs/superpowers/specs/2026-07-31-update-extra-files-design.md.
+            let extras = compute_extras(&dest_dir, staging.path())?;
+            let skip: BTreeSet<String> = if extras.is_empty() {
+                BTreeSet::new()
+            } else {
+                match decide(skill_name, &extras)? {
+                    ExtraFiles::Keep => BTreeSet::new(),
+                    ExtraFiles::Delete => extras.iter().cloned().collect(),
+                    // Intersect rather than trust: `decide` lives in another
+                    // crate, and a path it names that was never offered would
+                    // otherwise delete a file the user was never asked about.
+                    ExtraFiles::DeleteOnly(chosen) => {
+                        let offered: BTreeSet<&str> = extras.iter().map(String::as_str).collect();
+                        chosen
+                            .into_iter()
+                            .filter(|p| offered.contains(p.as_str()))
+                            .collect()
+                    }
+                }
+            };
+            copy_missing_into(&dest_dir, staging.path(), &skip)?;
         }
 
         // Move the old tree aside instead of deleting it, so a failed rename can
@@ -284,11 +349,22 @@ where
 
     /// Update a skill to the latest available version.
     ///
-    /// Re-fetches and overwrites the local file(s). The old content is
-    /// captured in git history by the user's normal git workflow.
+    /// Re-fetches and overwrites the local file(s), keeping every local file the
+    /// new version does not contain. The old content is captured in git history
+    /// by the user's normal git workflow.
     pub fn update_one(&self, skill_name: &str) -> Result<bool> {
+        self.update_one_with_extras(skill_name, &|_, _| Ok(ExtraFiles::Keep))
+    }
+
+    /// Like [`update_one`], but `decide` chooses what happens to local files the
+    /// new version does not contain.
+    pub fn update_one_with_extras(
+        &self,
+        skill_name: &str,
+        decide: DecideExtras<'_>,
+    ) -> Result<bool> {
         // Force-overwrite is always fine on update.
-        self.add_with_force(skill_name, None, true)?;
+        self.add_with_extras(skill_name, None, true, decide)?;
         Ok(true)
     }
 }
@@ -339,27 +415,91 @@ fn reject_unsafe_path(file_rel: &str) -> Result<()> {
     Ok(())
 }
 
-/// Recursively copy anything under `from` that `into` does not already have.
+/// Copy files present in `from` but missing from `into`, except those named in
+/// `skip`.
 ///
-/// Used to carry files the manifest doesn't list — local notes, files dropped
-/// upstream — across a replace, matching what writing over the directory in
-/// place used to do. Files present in `into` win: those are the freshly fetched
-/// ones.
-fn copy_missing_into(from: &Path, into: &Path) -> Result<()> {
-    let entries = std::fs::read_dir(from).map_err(|source| QuayError::Io {
-        path: from.display().to_string(),
-        source,
-    })?;
-    for entry in entries.flatten() {
-        let src = entry.path();
-        let dst = into.join(entry.file_name());
-        if src.is_dir() {
-            std::fs::create_dir_all(&dst).map_err(|source| QuayError::Io {
-                path: dst.display().to_string(),
+/// `into` is the staging dir that is about to be renamed over the install, so a
+/// file is deleted purely by *not* being copied — no `remove_file` runs, and the
+/// atomic swap keeps its crash-safety.
+fn copy_missing_into(from: &Path, into: &Path, skip: &BTreeSet<String>) -> Result<()> {
+    copy_missing_rec(from, into, "", skip)
+}
+
+/// `prefix` is the POSIX-joined path of `from` relative to the skill root, so
+/// `skip` keys match what `collect_skill_files` produced. Comparing an `OsStr`
+/// path here instead would silently stop matching on Windows.
+fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<String>) -> Result<()> {
+    let mut entries = std::fs::read_dir(from)
+        .map_err(|source| QuayError::Io {
+            path: from.display().to_string(),
+            source,
+        })?
+        .peekable();
+    // A directory with no entries at all has no child to materialize it
+    // lazily below, so without this it would vanish on every update — deletion
+    // by omission, on the path that promises to keep everything. The test is
+    // "no entries at all" rather than "nothing was copied" precisely so the
+    // other case still holds: a directory whose every child was skipped is a
+    // husk and must not be recreated.
+    //
+    // Something already at `into` is the freshly fetched copy, which always
+    // wins — including when it is a file of the same name.
+    if entries.peek().is_none() {
+        if !into.exists() {
+            std::fs::create_dir_all(into).map_err(|source| QuayError::Io {
+                path: into.display().to_string(),
                 source,
             })?;
-            copy_missing_into(&src, &dst)?;
-        } else if !dst.exists() {
+        }
+        return Ok(());
+    }
+    for entry in entries {
+        // Not `.flatten()`: this walk *is* the deletion mechanism, so an entry
+        // dropped here is a file destroyed by omission. A transient EIO or a
+        // permission change mid-walk must fail the install, not silently take
+        // a file with it.
+        let entry = entry.map_err(|source| QuayError::Io {
+            path: from.display().to_string(),
+            source,
+        })?;
+        let src = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let rel = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let dst = into.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|source| QuayError::Io {
+            path: src.display().to_string(),
+            source,
+        })?;
+        if file_type.is_symlink() {
+            // Symlinks are outside `collect_skill_files`'s managed set, so
+            // `compute_extras` never lists one and `skip` never names one —
+            // it is always carried forward. `std::fs::copy` follows a symlink
+            // and would silently replace it with a plain copy of its target's
+            // bytes (or, for a symlink to a directory, `is_dir()` below would
+            // recurse into the target as if it belonged to this skill), so
+            // the link itself is recreated instead of dereferenced.
+            if !dst.exists() {
+                copy_symlink(&src, &dst, &rel)?;
+            }
+        } else if file_type.is_dir() {
+            // Recurse without creating `dst` first: a directory with children
+            // materializes only when a file actually lands in it, so skipping
+            // every child leaves no empty husk behind. A childless directory is
+            // created by the recursive call itself (see the top of this
+            // function).
+            copy_missing_rec(&src, &dst, &rel, skip)?;
+        } else if !skip.contains(&rel) && !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
+                    path: parent.display().to_string(),
+                    source,
+                })?;
+            }
             std::fs::copy(&src, &dst).map_err(|source| QuayError::Io {
                 path: dst.display().to_string(),
                 source,
@@ -367,6 +507,185 @@ fn copy_missing_into(from: &Path, into: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Recreate the symlink `src` at `dst`, preserving the link rather than
+/// dereferencing it.
+///
+/// `rel` exists only to name the link in the Windows degrade path's warnings
+/// (see [`degrade_symlink_failure`]); recreating a symlink never consults
+/// `skip`, since symlinks are outside the managed set entirely.
+fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
+    let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
+        path: src.display().to_string(),
+        source,
+    })?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| QuayError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    match create_symlink_at(src, &link_target, dst) {
+        Ok(()) => Ok(()),
+        Err(e) => degrade_symlink_failure(src, dst, &link_target, rel, e),
+    }
+}
+
+/// Whether a symlink-creation failure is the class Windows raises when the
+/// caller lacks Developer Mode or elevation (`ERROR_PRIVILEGE_NOT_HELD`), as
+/// opposed to a real failure — a full disk, a broken object store — that must
+/// still propagate.
+///
+/// Matches the raw code as well as the mapped kind: whether std decodes 1314
+/// to `PermissionDenied` or leaves it `Uncategorized` is an implementation
+/// detail, and getting it wrong means the degrade never fires and Windows
+/// hard-fails on any skill containing a symlink.
+///
+/// Split out from [`degrade_symlink_failure`] so the classification is
+/// testable on every platform; the fallback behaviour it gates is
+/// Windows-only, so this is otherwise dead weight on every other target.
+#[cfg(any(windows, test))]
+fn is_permission_class_failure(e: &QuayError) -> bool {
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+    matches!(
+        e,
+        QuayError::Io { source, .. }
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+                || source.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+    )
+}
+
+/// `symlink_file`/`symlink_dir` require Developer Mode or elevation on
+/// Windows, which ordinary users have neither of — one symlink anywhere in a
+/// skill must not turn `update` / `add --force` into a permanent hard
+/// failure. A permission-class failure on a *file* link falls back to the
+/// pre-fix behaviour (copy the dereferenced target) and warns; anything else —
+/// a full disk, a broken object store — is a real failure and still
+/// propagates. Unix never takes this path differently: [`create_symlink_at`]
+/// on unix does not fail this way in practice, and if it ever does, the
+/// error still propagates exactly as it did before this function existed.
+#[cfg(windows)]
+fn degrade_symlink_failure(
+    src: &Path,
+    dst: &Path,
+    link_target: &Path,
+    rel: &str,
+    e: QuayError,
+) -> Result<()> {
+    if !is_permission_class_failure(&e) {
+        return Err(e);
+    }
+    let meta = match std::fs::metadata(src) {
+        Ok(meta) => meta,
+        // A dangling link resolves to nothing, so there is no content to lose
+        // by dropping it. Every other errno — a denied parent, ELOOP,
+        // ENAMETOOLONG, EIO — says nothing about whether the target has
+        // contents, and `dst` is the staging tree about to be renamed over the
+        // install, so swallowing it would destroy the entry while reporting
+        // success.
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation \
+                 required), and it dangles, so there are no contents to copy; dropping it",
+                link_target.display()
+            );
+            return Ok(());
+        }
+        Err(source) => {
+            return Err(QuayError::Io {
+                path: src.display().to_string(),
+                source,
+            })
+        }
+    };
+    if meta.is_dir() {
+        // No safe fallback exists for a directory link. `metadata` follows the
+        // link, so copying "its contents" here would splice the target's tree
+        // into the skill as though it belonged to it — precisely the behaviour
+        // this degrade replaces — and would re-enter `copy_missing_rec` ->
+        // `copy_symlink` -> here on a link cycle with no depth limit.
+        eprintln!(
+            "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation \
+             required); the directory link could not be preserved and was skipped",
+            link_target.display()
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "warning: could not recreate symlink {rel} -> {} (Developer Mode or elevation required); \
+         copying its contents instead",
+        link_target.display()
+    );
+    std::fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|source| QuayError::Io {
+            path: dst.display().to_string(),
+            source,
+        })
+}
+
+#[cfg(not(windows))]
+fn degrade_symlink_failure(
+    _src: &Path,
+    _dst: &Path,
+    _link_target: &Path,
+    _rel: &str,
+    e: QuayError,
+) -> Result<()> {
+    Err(e)
+}
+
+#[cfg(unix)]
+fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(link_target, dst).map_err(|source| QuayError::Io {
+        path: dst.display().to_string(),
+        source,
+    })
+}
+
+#[cfg(windows)]
+fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+    // Windows distinguishes a file link from a directory link. `src`'s own
+    // metadata (which follows the link) tells us which; a dangling link falls
+    // back to a file link.
+    let target_is_dir = std::fs::metadata(src).map(|m| m.is_dir()).unwrap_or(false);
+    if target_is_dir {
+        std::os::windows::fs::symlink_dir(link_target, dst)
+    } else {
+        std::os::windows::fs::symlink_file(link_target, dst)
+    }
+    .map_err(|source| QuayError::Io {
+        path: dst.display().to_string(),
+        source,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
+    Err(QuayError::Io {
+        path: dst.display().to_string(),
+        source: std::io::Error::other("symlinks are not supported on this platform"),
+    })
+}
+
+/// Files in the existing install that the freshly fetched copy does not have.
+///
+/// Both sides go through `collect_skill_files`, which is the same set `push`,
+/// `diff` and mirror-adopt agree on: dotfiles, dot-dirs and symlinks are outside
+/// it, so they are never offered for deletion and are always carried forward.
+fn compute_extras(dest_dir: &Path, staging: &Path) -> Result<Vec<String>> {
+    let fetched: BTreeSet<String> = crate::skill_files::collect_skill_files(staging)?
+        .into_iter()
+        .collect();
+    let mut extras: Vec<String> = crate::skill_files::collect_skill_files(dest_dir)?
+        .into_iter()
+        .filter(|rel| !fetched.contains(rel))
+        .collect();
+    // `collect_skill_files` hoists SKILL.md to the front; the prompt wants a
+    // plain sorted list.
+    extras.sort();
+    Ok(extras)
 }
 
 /// Print a one-time migration notice if legacy state files are present.
@@ -633,6 +952,332 @@ mod tests {
             "nested unmanifested file must survive too"
         );
         assert!(skill_dir.join("SKILL.md").exists());
+    }
+
+    /// Installs `csv-parse` with a single SKILL.md, then returns
+    /// (tempdir, files, registry) ready for a second force-add.
+    fn installed_fixture() -> (assert_fs::TempDir, FakeFiles, FakeRegistry) {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let cfg = make_cfg();
+        let body = b"---\nname: csv-parse\ndescription: x.\nversion: 1.0.0\n---\nbody\n".to_vec();
+        let files = FakeFiles {
+            files: RefCell::new(HashMap::from([("skills/csv-parse/SKILL.md".into(), body)])),
+        };
+        let regf = FakeRegistry(make_registry("csv-parse", "1.0.0"));
+        {
+            let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+            mgr.add("csv-parse", None).unwrap();
+        }
+        (dir, files, regf)
+    }
+
+    #[test]
+    fn delete_removes_extras() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"my notes").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| Ok(ExtraFiles::Delete))
+            .unwrap();
+
+        assert!(
+            skill_dir.join("SKILL.md").exists(),
+            "manifest file must land"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "Delete must drop the extra file"
+        );
+    }
+
+    #[test]
+    fn delete_only_deletes_just_the_named() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        std::fs::write(skill_dir.join("legacy.md"), b"dropped upstream").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+            Ok(ExtraFiles::DeleteOnly(vec!["legacy.md".to_string()]))
+        })
+        .unwrap();
+
+        assert!(!skill_dir.join("legacy.md").exists());
+        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
+    }
+
+    /// The callback crosses a crate boundary. A path it names that was never
+    /// offered must not be deleted, however it got there.
+    ///
+    /// The load-bearing case is a dotfile: `copy_missing_rec` walks it, so a
+    /// `skip` entry naming it *does* delete it, but `compute_extras` never
+    /// offers it — only the intersection stands between the callback and the
+    /// `.quay-mirror` marker that tells `linker.rs` a copy mirror is
+    /// quay-managed. (`SKILL.md` and `../sibling.txt` below are covered by
+    /// other mechanisms — the `!dst.exists()` check and the fact that `rel` is
+    /// built from `file_name()` — so they hold with or without the guard.)
+    #[test]
+    fn delete_only_ignores_paths_not_offered() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join(".quay-mirror"), b"marker").unwrap();
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        let sibling = dir.path().join(".agents/skills/sibling.txt");
+        std::fs::write(&sibling, b"not mine to touch").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            assert_eq!(
+                extras,
+                ["notes.md"],
+                "only the non-dotfile extra is ever offered"
+            );
+            Ok(ExtraFiles::DeleteOnly(vec![
+                ".quay-mirror".to_string(),   // walked but never offered
+                "notes.md".to_string(),       // genuinely offered
+                "SKILL.md".to_string(),       // in the new manifest, never offered
+                "../sibling.txt".to_string(), // outside the skill entirely
+            ]))
+        })
+        .unwrap();
+
+        assert!(
+            skill_dir.join(".quay-mirror").exists(),
+            "a dotfile the user was never asked about must survive being named"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "the one offered path named must still be deleted"
+        );
+        assert!(skill_dir.join("SKILL.md").exists());
+        assert!(sibling.exists(), "a path never offered must survive");
+    }
+
+    #[test]
+    fn dotfiles_are_never_offered_and_always_survive() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join(".quay-mirror"), b"marker").unwrap();
+        std::fs::write(skill_dir.join(".notes.md"), b"private").unwrap();
+
+        let called = RefCell::new(false);
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, _| {
+            *called.borrow_mut() = true;
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(
+            !*called.borrow(),
+            "with only dotfiles present the extra set is empty and the callback must not run"
+        );
+        assert!(skill_dir.join(".quay-mirror").exists());
+        assert!(skill_dir.join(".notes.md").exists());
+    }
+
+    /// `notes.md` is load-bearing: with only the symlink present the extra set
+    /// is empty, `decide` is never called, and the `Delete` verdict below would
+    /// never run — leaving the symlink assertion to pass for the wrong reason.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_never_offered_and_always_survive() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let target = dir.path().join("outside.txt");
+        std::fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, skill_dir.join("link.txt")).unwrap();
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+
+        let called = RefCell::new(false);
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            *called.borrow_mut() = true;
+            assert!(
+                !extras.iter().any(|e| e == "link.txt"),
+                "symlinks are outside the managed set: {extras:?}"
+            );
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(
+            *called.borrow(),
+            "the decision callback must actually have run"
+        );
+        assert!(
+            !skill_dir.join("notes.md").exists(),
+            "the Delete verdict must really have been applied"
+        );
+        assert!(
+            std::fs::symlink_metadata(skill_dir.join("link.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink must survive as a symlink, not be replaced by a regular file"
+        );
+    }
+
+    /// `is_dir()` follows symlinks, so a directory link used to be recursed
+    /// into and the target's contents copied in as though they belonged to the
+    /// skill — foreign files imported into the install, and from there into
+    /// `quay push`.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_symlink_is_preserved_and_its_target_never_imported() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let outside = dir.path().join("outside-docs");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), b"not the skill's").unwrap();
+        std::os::unix::fs::symlink(&outside, skill_dir.join("docs")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        let link = skill_dir.join("docs");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the directory link must survive as a link, not become a real directory"
+        );
+        // Reading through the link still finds the target's file; what must not
+        // exist is a real copy of it inside the skill. Drop the link and the
+        // path has to go with it.
+        std::fs::remove_file(&link).unwrap();
+        assert!(
+            !skill_dir.join("docs/secret.md").exists(),
+            "the target's contents must not have been copied into the skill"
+        );
+        assert!(
+            outside.join("secret.md").exists(),
+            "the target is untouched"
+        );
+    }
+
+    /// Runs on every platform: the classification the Windows degrade path
+    /// gates on is plain `io::ErrorKind` matching, so it needs no Windows box
+    /// to verify. What actually happens with the classification
+    /// (`degrade_symlink_failure`, `#[cfg(windows)]`) cannot be exercised
+    /// here.
+    #[test]
+    fn only_permission_class_symlink_failures_degrade() {
+        let permission = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
+        assert!(is_permission_class_failure(&permission));
+
+        // ERROR_PRIVILEGE_NOT_HELD, whether or not std maps it to a kind.
+        let raw_privilege = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::from_raw_os_error(1314),
+        };
+        assert!(
+            is_permission_class_failure(&raw_privilege),
+            "the degrade must fire on the raw Windows code even if std leaves it uncategorized"
+        );
+
+        let other_raw = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::from_raw_os_error(1315),
+        };
+        assert!(!is_permission_class_failure(&other_raw));
+
+        let disk_full = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::new(std::io::ErrorKind::StorageFull, "no space"),
+        };
+        assert!(!is_permission_class_failure(&disk_full));
+
+        let other = QuayError::Io {
+            path: "link.txt".into(),
+            source: std::io::Error::other("broken object store"),
+        };
+        assert!(!is_permission_class_failure(&other));
+    }
+
+    #[test]
+    fn nested_extra_is_deleted_and_leaves_no_empty_dir() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(skill_dir.join("refs/deep")).unwrap();
+        std::fs::write(skill_dir.join("refs/deep/x.md"), b"x").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            assert_eq!(extras, ["refs/deep/x.md"]);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert!(!skill_dir.join("refs/deep/x.md").exists());
+        assert!(
+            !skill_dir.join("refs").exists(),
+            "no husk left where every child was deleted"
+        );
+    }
+
+    #[test]
+    fn callback_error_aborts_before_the_swap() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        let before = std::fs::read(skill_dir.join("SKILL.md")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        let err = mgr
+            .add_with_extras("csv-parse", None, true, &|_, _| {
+                Err(QuayError::Io {
+                    path: "prompt".into(),
+                    source: std::io::Error::other("interrupted"),
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(err, QuayError::Io { .. }), "got {err:?}");
+
+        assert_eq!(
+            std::fs::read(skill_dir.join("SKILL.md")).unwrap(),
+            before,
+            "an aborted decision must leave the install byte-identical"
+        );
+        assert_eq!(std::fs::read(skill_dir.join("notes.md")).unwrap(), b"mine");
+        let names: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            1,
+            "no backup or staging left behind: {names:?}"
+        );
+    }
+
+    #[test]
+    fn update_one_with_extras_forwards_the_decision() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.update_one_with_extras("csv-parse", &|_, _| Ok(ExtraFiles::Delete))
+            .unwrap();
+
+        assert!(!skill_dir.join("notes.md").exists());
     }
 
     /// The rename is only atomic while staging and destination share a filesystem.
@@ -911,5 +1556,158 @@ mod tests {
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
         let err = mgr.info("csv-parse", Some("does-not-exist")).unwrap_err();
         assert!(matches!(err, QuayError::RemoteUnknown(_)));
+    }
+
+    #[test]
+    fn compute_extras_lists_only_files_missing_from_staging() {
+        let dest = assert_fs::TempDir::new().unwrap();
+        let staging = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(dest.path().join("SKILL.md"), b"a").unwrap();
+        std::fs::create_dir_all(dest.path().join("refs")).unwrap();
+        std::fs::write(dest.path().join("refs/legacy.md"), b"b").unwrap();
+        std::fs::write(dest.path().join("notes.md"), b"c").unwrap();
+
+        std::fs::write(staging.path().join("SKILL.md"), b"a-new").unwrap();
+
+        let extras = compute_extras(dest.path(), staging.path()).unwrap();
+        assert_eq!(extras, vec!["notes.md", "refs/legacy.md"]);
+    }
+
+    #[test]
+    fn compute_extras_never_lists_dotfiles() {
+        let dest = assert_fs::TempDir::new().unwrap();
+        let staging = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(dest.path().join("SKILL.md"), b"a").unwrap();
+        std::fs::write(dest.path().join(".quay-mirror"), b"marker").unwrap();
+        std::fs::write(dest.path().join(".notes.md"), b"private").unwrap();
+        std::fs::create_dir_all(dest.path().join(".hidden")).unwrap();
+        std::fs::write(dest.path().join(".hidden/x.md"), b"x").unwrap();
+
+        std::fs::write(staging.path().join("SKILL.md"), b"a-new").unwrap();
+
+        let extras = compute_extras(dest.path(), staging.path()).unwrap();
+        assert!(
+            extras.is_empty(),
+            "dotfiles and dot-dirs are outside the managed set: {extras:?}"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_skips_listed_paths() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(from.path().join("keep.md"), b"keep").unwrap();
+        std::fs::write(from.path().join("drop.md"), b"drop").unwrap();
+
+        let skip = std::collections::BTreeSet::from(["drop.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(into.path().join("keep.md").exists());
+        assert!(
+            !into.path().join("drop.md").exists(),
+            "a skipped file must not be copied forward"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_leaves_no_empty_dir_when_every_child_is_skipped() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("refs")).unwrap();
+        std::fs::write(from.path().join("refs/a.md"), b"a").unwrap();
+        std::fs::write(from.path().join("refs/b.md"), b"b").unwrap();
+
+        let skip =
+            std::collections::BTreeSet::from(["refs/a.md".to_string(), "refs/b.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(
+            !into.path().join("refs").exists(),
+            "a directory whose every file was skipped must not be created"
+        );
+    }
+
+    /// The counterpart to the husk test above. A directory with no entries at
+    /// all cannot be materialized by a child landing in it, so it has to be
+    /// recreated explicitly or it is deleted by omission on the path that
+    /// promises to keep everything.
+    #[test]
+    fn copy_missing_into_recreates_a_directory_that_was_already_empty() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("scratch")).unwrap();
+        std::fs::create_dir_all(from.path().join("refs/deep/empty")).unwrap();
+        std::fs::write(from.path().join("refs/deep/x.md"), b"x").unwrap();
+
+        copy_missing_into(from.path(), into.path(), &std::collections::BTreeSet::new()).unwrap();
+
+        assert!(
+            into.path().join("scratch").is_dir(),
+            "an already-empty directory must survive"
+        );
+        assert!(
+            into.path().join("refs/deep/empty").is_dir(),
+            "a nested already-empty directory must survive too"
+        );
+    }
+
+    /// The user-facing promise: `add --force` with no decision at all — the
+    /// `quay-mcp` and non-TTY path — deletes nothing, empty directories
+    /// included.
+    #[test]
+    fn force_add_keeps_an_already_empty_directory() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::create_dir_all(skill_dir.join("scratch")).unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        assert!(
+            skill_dir.join("scratch").is_dir(),
+            "an empty local directory must not be dropped by an update"
+        );
+    }
+
+    #[test]
+    fn copy_missing_into_skips_by_nested_posix_key() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(from.path().join("refs/deep")).unwrap();
+        std::fs::write(from.path().join("refs/deep/x.md"), b"x").unwrap();
+        std::fs::write(from.path().join("refs/keep.md"), b"k").unwrap();
+
+        let skip = std::collections::BTreeSet::from(["refs/deep/x.md".to_string()]);
+        copy_missing_into(from.path(), into.path(), &skip).unwrap();
+
+        assert!(
+            !into.path().join("refs/deep/x.md").exists(),
+            "nested skip key must match the POSIX-joined relative path"
+        );
+        assert!(into.path().join("refs/keep.md").exists());
+    }
+
+    #[test]
+    fn copy_missing_into_does_not_overwrite_an_existing_file() {
+        let from = assert_fs::TempDir::new().unwrap();
+        let into = assert_fs::TempDir::new().unwrap();
+
+        std::fs::write(from.path().join("SKILL.md"), b"old").unwrap();
+        std::fs::write(into.path().join("SKILL.md"), b"new").unwrap();
+
+        copy_missing_into(from.path(), into.path(), &std::collections::BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            std::fs::read(into.path().join("SKILL.md")).unwrap(),
+            b"new",
+            "the freshly fetched copy always wins"
+        );
     }
 }

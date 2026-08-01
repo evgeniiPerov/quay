@@ -1,6 +1,7 @@
 pub mod add;
 pub mod agents;
 pub mod diff;
+pub mod extras;
 pub mod info;
 pub mod init;
 pub mod interactive;
