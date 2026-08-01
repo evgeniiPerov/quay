@@ -62,17 +62,6 @@ Requires `git` on `PATH`. `gh` / `glab` / `az` is optional — used to auto-open
 
 Supported hub providers: **GitHub.com**, **GitHub Enterprise**, **GitLab** (cloud + self-hosted, nested subgroups), **Bitbucket Cloud**, **Azure DevOps Services**. Auto-detected from URL; override with `quay remote add --provider <kind>`.
 
-## Status
-
-| Plan | Scope | State |
-|---|---|---|
-| 1–5 | foundation, read-only CLI, search, create/validate/push, profiles, mirroring | ✅ |
-| 7a | provider abstraction (GitHub / GHE / GitLab / Bitbucket / Azure DevOps) + live `remote test` | ✅ |
-| 7b | packaged releases (cargo-dist, GitHub Releases, Homebrew tap, PowerShell installer) | ✅ |
-| 8 | scan-first flow, format-tolerant push, mixed-format skills | ✅ |
-| 9 | per-remote `push_mode` (`pr` default, `direct` opt-in via pure git, no provider CLI) | ✅ |
-| 10 | filesystem-first model: drop lockfile + sync + create; multi-mirror scanner; `scan` mirrors+drift columns | ✅ **v0.2.0** |
-
 ## Quickstart
 
 ### Author + share a skill (you)
