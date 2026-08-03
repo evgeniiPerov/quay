@@ -105,10 +105,12 @@ impl FolderReport {
 /// Cap on the history walk when deriving the base commit.
 ///
 /// Deliberately tighter than `baseline::WALK_CAP` (200): that walk reads one
-/// blob per commit for a single `SKILL.md`, while this one reads a whole tree —
-/// an `ls-tree` plus one blob per file — for every candidate commit, and walks
-/// commits touching the entire directory rather than one file. Exceeding it
-/// sets [`FolderReport::base_search_truncated`] rather than silently reporting
+/// blob per commit for a single `SKILL.md`, while this one reads — and on a
+/// blobless clone fetches — every file in the skill for every candidate commit,
+/// and walks commits touching the entire directory rather than one file. Both
+/// cost a fixed number of git invocations per commit; the asymmetry is in bytes
+/// and in how many commits qualify. Exceeding the cap sets
+/// [`FolderReport::base_search_truncated`] rather than silently reporting
 /// "no base found".
 const WALK_CAP: usize = 50;
 
@@ -124,15 +126,15 @@ pub fn folder_report(
     local_version: &str,
 ) -> Result<FolderReport> {
     let local = read_local(local_dir)?;
-    let head = read_harbor(harbor, "HEAD", skill_prefix)?;
+    let head_tree = harbor.tree_at("HEAD", skill_prefix)?;
 
-    // Absence comes from the listing, not from `head` being empty. Two reasons:
-    // an empty tree hashes to a perfectly ordinary value, so hashes cannot show
-    // it; and `read_harbor` filters dotfiles, so a hub directory holding only a
-    // `.gitkeep` yields an empty map while the skill is very much still there.
-    let absent_on_hub = harbor
-        .paths_at("HEAD", skill_prefix.trim_end_matches('/'))?
-        .is_empty();
+    // Absence comes from the unfiltered tree, not from `head` being empty. Two
+    // reasons: an empty tree hashes to a perfectly ordinary value, so hashes
+    // cannot show it; and `installable` filters dotfiles, so a hub directory
+    // holding only a `.gitkeep` yields an empty map while the skill is very much
+    // still there.
+    let absent_on_hub = head_tree.is_empty();
+    let head = installable(head_tree);
 
     let local_hash = content_hash_of(&local);
     let head_hash = content_hash_of(&head);
@@ -209,7 +211,7 @@ fn derive_base(
     let head_sha = harbor.head_sha()?;
     let commits = harbor.commits_touching(skill_prefix)?;
     for commit in commits.iter().take(WALK_CAP) {
-        if content_hash_of(&read_harbor(harbor, &commit.id, skill_prefix)?) != local_hash {
+        if content_hash_of(&installable(harbor.tree_at(&commit.id, skill_prefix)?)) != local_hash {
             continue;
         }
         let position = if harbor.is_ancestor(&commit.id, &head_sha)? {
@@ -260,46 +262,19 @@ fn read_local(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     Ok(out)
 }
 
-/// Skill directory at `rev` on the harbor, keyed relative to the skill dir.
+/// A harbor tree reduced to the files an install would actually receive, in the
+/// LF-normalized space this module compares in.
 ///
-/// Dotfiles are dropped here to match [`read_local`]: a hub may carry a
-/// `.gitkeep` that no install ever receives, and counting it would report a
-/// difference no `quay add` could resolve. The other half of that parity —
-/// symlinks and gitlinks — is enforced by `paths_at`, which lists regular file
-/// blobs only.
-fn read_harbor(
-    harbor: &dyn HarborHistory,
-    rev: &str,
-    prefix: &str,
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    let prefix = prefix.trim_end_matches('/');
-    let mut out = BTreeMap::new();
-    for path in harbor.paths_at(rev, prefix)? {
-        // `paths_at` promises paths under `prefix`; guessing on a mismatch would
-        // key the map by a repo-relative path, which then hashes as a different
-        // file and shows up as both added upstream and deleted locally.
-        let rel = path
-            .strip_prefix(prefix)
-            .ok_or_else(|| {
-                QuayError::Reconcile(format!("harbor listed '{path}', not under '{prefix}'"))
-            })?
-            .trim_start_matches('/')
-            .to_string();
-        if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
-            continue;
-        }
-        // The listing just promised this path exists at this rev, so `None` is a
-        // broken invariant rather than an absence — most likely a partial
-        // clone's lazy blob fetch failing. Skipping it would report the file as
-        // local-only, or, if every fetch fails, report a live skill as deleted
-        // upstream.
-        let bytes = harbor.bytes_at(rev, &path)?.ok_or_else(|| {
-            QuayError::Reconcile(format!(
-                "harbor listed '{path}' at {rev} but its content could not be read \
-                 (a partial-clone blob fetch may have failed — check access to the hub)"
-            ))
-        })?;
-        out.insert(rel, normalize_crlf(bytes));
-    }
-    Ok(out)
+/// Dotfiles are dropped to match [`read_local`]: a hub may carry a `.gitkeep`
+/// that no install ever receives, and counting it would report a difference no
+/// `quay add` could resolve. The other half of that parity — symlinks and
+/// gitlinks — is enforced by `tree_at`, which lists regular file blobs only.
+///
+/// Callers that ask whether the skill exists at all must look at the tree
+/// *before* this runs; see `folder_report`.
+fn installable(tree: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    tree.into_iter()
+        .filter(|(rel, _)| !rel.split('/').any(|c| c.starts_with('.')))
+        .map(|(rel, bytes)| (rel, normalize_crlf(bytes)))
+        .collect()
 }

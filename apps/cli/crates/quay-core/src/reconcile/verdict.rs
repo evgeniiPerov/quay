@@ -62,7 +62,9 @@ pub enum Verdict {
     /// Never produced by [`classify`], which only ever sees hashes. Each
     /// orchestration module decides it by its own mechanism, and they differ:
     /// [`crate::reconcile::folder::folder_report`] compares a whole directory,
-    /// so it asks `paths_at` for the listing under the skill prefix, while
+    /// so it asks `tree_at` for the unfiltered tree under the skill prefix and
+    /// treats an empty tree as absence — before dotfiles are filtered out, or a
+    /// hub carrying only a `.gitkeep` would report as deleted. While
     /// [`crate::reconcile::reconcile`] compares one file, so it takes
     /// `baseline::derive`'s `head_bytes` being `None` — a single-blob lookup.
     AbsentOnHub,
