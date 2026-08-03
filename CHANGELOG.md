@@ -3,6 +3,46 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.15.3 — 2026-08-03
+
+### Performance
+
+- **`quay diff` no longer spends a network round-trip per file.** Comparing a
+  skill directory read one git process per file, plus another to establish that
+  the file existed — and because quay clones the hub without file contents and
+  fetches them on demand, each of those reads was its own request over the wire.
+  A twenty-file skill checked against fifty candidate commits meant thousands of
+  processes and as many requests, and against a large hub the command could take
+  minutes.
+
+  A revision is now read in one pass: a single listing names every file and
+  every object in it, and a single batch read returns their contents. Batching
+  the reads was not enough on its own — git's batch reader still fetches missing
+  objects one at a time — so quay asks for the whole revision's objects in one
+  request first. A clone that already holds them skips that step without opening
+  a connection, so nothing is slower than it was.
+
+### Fixed
+
+- **A failed read now names the skill it could not read.** When the hub becomes
+  unreachable mid-comparison, the failure used to surface as raw git output with
+  no indication of which skill or which revision produced it — and `quay diff`
+  can hit it fifty times per skill. It now says both, and points at hub access.
+
+### Internal
+
+- Listing and reading a harbor directory are one operation rather than two. The
+  rule for turning a repository path into a skill-relative one had been written
+  out in three places; no caller applies it any more.
+- The batch-response decoder is a pure function with its own tests, and it
+  checks each record against the object that was asked for. Pairing content with
+  paths is positional, so a single misaligned record would file one file's bytes
+  under another file's name and render a confident diff between two files that
+  are identical.
+- The folder-level test suite now pins the server capability that decides
+  whether a clone is really content-free, so those tests exercise the path
+  production takes instead of depending on the developer's git configuration.
+
 ## 0.15.2 — 2026-07-31
 
 ### Fixed
