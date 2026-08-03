@@ -97,7 +97,7 @@ mod tests {
     use super::*;
     use crate::reconcile::harbor_history::fake::FakeHarborHistory;
     use crate::reconcile::harbor_history::Commit;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     fn sha(s: &str) -> String {
         content_sha256(s.as_bytes())
@@ -174,9 +174,9 @@ mod tests {
                 Ok(None)
             }
         }
-        fn paths_at(&self, _rev: &str, _prefix: &str) -> Result<Vec<String>> {
-            // Single-file baseline derivation never lists a directory.
-            Ok(Vec::new())
+        fn tree_at(&self, _rev: &str, _prefix: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+            // Single-file baseline derivation never reads a directory.
+            Ok(BTreeMap::new())
         }
         fn commits_touching(&self, _skill_path: &str) -> Result<Vec<Commit>> {
             Ok(vec![Commit {

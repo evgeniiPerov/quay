@@ -23,12 +23,19 @@ fn run(dir: &Path, args: &[&str]) {
 /// A harbor whose `skills/x` directory takes each state in `commits` in turn,
 /// one commit per state. Each state is a list of (path relative to the skill
 /// dir, contents).
+///
+/// The served repo advertises `uploadpack.allowFilter`, so every test in this
+/// file runs against a genuinely blobless clone — the path production always
+/// takes against GitHub. Written explicitly rather than left to the default:
+/// `upload-pack` reads global config too, so omitting it would make which path
+/// these tests exercise depend on the developer's `~/.gitconfig`.
 fn harbor(commits: &[&[(&str, &[u8])]]) -> (TempDir, GitHarborHistory) {
     let src = tempdir().unwrap();
     let p = src.path();
     run(p, &["init", "--initial-branch=main"]);
     run(p, &["config", "user.email", "t@t.t"]);
     run(p, &["config", "user.name", "t"]);
+    run(p, &["config", "uploadpack.allowFilter", "true"]);
     for (i, state) in commits.iter().enumerate() {
         let dir = p.join("skills/x");
         let _ = std::fs::remove_dir_all(&dir);
@@ -279,6 +286,27 @@ fn a_hub_directory_holding_only_dotfiles_is_not_deleted_upstream() {
     assert!(
         !r.absent_on_hub(),
         "the directory exists on the hub; it just holds nothing installable"
+    );
+}
+
+#[test]
+fn an_unreachable_hub_is_an_error_not_a_deleted_skill() {
+    // The whole composition, not just `tree_at`: the folder report must fail
+    // rather than reach `Verdict::AbsentOnHub`, which the CLI renders as "no
+    // longer on the hub (deleted or renamed there)". Trees survive in the local
+    // clone, so the listing still succeeds and only the blob reads fail — which
+    // is precisely how a token expiry looks, and why absence has to be a fact
+    // about the tree rather than about a read.
+    let (src, h) = harbor(&[&[("SKILL.md", b"body")]]);
+    let loc = local(&[("SKILL.md", b"body")]);
+    src.close().unwrap(); // hub gone before any blob was fetched
+
+    let err = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0")
+        .expect_err("an unreachable hub is a failure to report");
+
+    assert!(
+        err.to_string().contains("skills/x"),
+        "the error names the skill it could not read: {err}"
     );
 }
 
