@@ -472,6 +472,11 @@ impl HarborHistory for GitHarborHistory {
             // and shows up as both added upstream and deleted locally.
             let rel = path
                 .strip_prefix(prefix)
+                // `strip_prefix` matches bytes, not path components, so without
+                // this the backstop fails on the very case it names: `skills/x`
+                // against `skills/x-tra/f.md` strips cleanly and keys the map by
+                // `-tra/f.md` instead of erroring.
+                .filter(|rest| rest.is_empty() || rest.starts_with('/'))
                 .ok_or_else(|| {
                     QuayError::Reconcile(format!("harbor listed '{path}', not under '{prefix}'"))
                 })?

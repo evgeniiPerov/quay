@@ -299,6 +299,10 @@ fn an_unreachable_hub_is_an_error_not_a_deleted_skill() {
     // about the tree rather than about a read.
     let (src, h) = harbor(&[&[("SKILL.md", b"body")]]);
     let loc = local(&[("SKILL.md", b"body")]);
+    assert!(
+        h.is_partial(),
+        "the blob must still be unfetched, or removing the hub proves nothing"
+    );
     src.close().unwrap(); // hub gone before any blob was fetched
 
     let err = folder_report(loc.path(), &h, "skills/x", "1.0.0", "1.0.0")
