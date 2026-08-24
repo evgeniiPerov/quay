@@ -187,6 +187,10 @@ project = ".goose/skills"
 global = "${XDG_CONFIG_HOME:-~/.config}/goose/skills"
 detect = ["${XDG_CONFIG_HOME:-~/.config}/goose"]
 
+[agents."grok"]
+display_name = "Grok Build"
+project = ".grok/skills"
+
 [agents."hermes-agent"]
 display_name = "Hermes Agent"
 project = ".hermes/skills"
@@ -223,6 +227,11 @@ project = ".kilocode/skills"
 global = "~/.kilocode/skills"
 detect = ["~/.kilocode"]
 
+[agents."kimchi"]
+display_name = "Kimchi"
+project = ".kimchi/skills"
+global = "~/.config/kimchi/harness/skills"
+
 [agents."kimi-code-cli"]
 display_name = "Kimi Code CLI"
 project = ".agents/skills"
@@ -258,6 +267,11 @@ display_name = "MCPJam"
 project = ".mcpjam/skills"
 global = "~/.mcpjam/skills"
 detect = ["~/.mcpjam"]
+
+[agents."minimax-code"]
+display_name = "MiniMax Code"
+project = ".minimax/skills"
+global = "~/.minimax/skills"
 
 [agents."mistral-vibe"]
 display_name = "Mistral Vibe"
@@ -300,6 +314,11 @@ display_name = "Pi"
 project = ".pi/skills"
 global = "~/.pi/agent/skills"
 detect = ["~/.pi/agent"]
+
+[agents."posit-assistant"]
+display_name = "Posit Assistant"
+project = ".posit/assistant/skills"
+global = "~/.posit/assistant/skills"
 
 [agents."qoder"]
 display_name = "Qoder"
