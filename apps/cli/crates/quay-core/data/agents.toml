@@ -148,7 +148,7 @@ detect = ["~/.dexto"]
 
 [agents."droid"]
 display_name = "Droid"
-project = ".factory/skills"
+project = ".agents/skills"
 global = "~/.factory/skills"
 detect = ["~/.factory"]
 
@@ -169,6 +169,12 @@ project = ".forge/skills"
 global = "~/.forge/skills"
 detect = ["~/.forge"]
 
+[agents."fx"]
+display_name = "fx"
+project = ".fx/skills"
+global = "~/.fx/skills"
+detect = ["~/.fx"]
+
 [agents."gemini-cli"]
 display_name = "Gemini CLI"
 project = ".agents/skills"
@@ -186,6 +192,10 @@ display_name = "Goose"
 project = ".goose/skills"
 global = "${XDG_CONFIG_HOME:-~/.config}/goose/skills"
 detect = ["${XDG_CONFIG_HOME:-~/.config}/goose"]
+
+[agents."grok"]
+display_name = "Grok Build"
+project = ".grok/skills"
 
 [agents."hermes-agent"]
 display_name = "Hermes Agent"
@@ -219,9 +229,14 @@ detect = ["~/.iflow"]
 
 [agents."kilo"]
 display_name = "Kilo Code"
-project = ".kilocode/skills"
-global = "~/.kilocode/skills"
-detect = ["~/.kilocode"]
+project = ".agents/skills"
+global = "~/.kilo/skills"
+detect = ["~/.kilo","~/.kilocode"]
+
+[agents."kimchi"]
+display_name = "Kimchi"
+project = ".kimchi/skills"
+global = "~/.config/kimchi/harness/skills"
 
 [agents."kimi-code-cli"]
 display_name = "Kimi Code CLI"
@@ -258,6 +273,11 @@ display_name = "MCPJam"
 project = ".mcpjam/skills"
 global = "~/.mcpjam/skills"
 detect = ["~/.mcpjam"]
+
+[agents."minimax-code"]
+display_name = "MiniMax Code"
+project = ".minimax/skills"
+global = "~/.minimax/skills"
 
 [agents."mistral-vibe"]
 display_name = "Mistral Vibe"
@@ -301,6 +321,11 @@ project = ".pi/skills"
 global = "~/.pi/agent/skills"
 detect = ["~/.pi/agent"]
 
+[agents."posit-assistant"]
+display_name = "Posit Assistant"
+project = ".posit/assistant/skills"
+global = "~/.posit/assistant/skills"
+
 [agents."qoder"]
 display_name = "Qoder"
 project = ".qoder/skills"
@@ -342,6 +367,11 @@ display_name = "Roo Code"
 project = ".roo/skills"
 global = "~/.roo/skills"
 detect = ["~/.roo"]
+
+[agents."sarvam-code"]
+display_name = "Sarvam Code"
+project = ".agents/skills"
+global = "~/.agents/skills"
 
 [agents."tabnine-cli"]
 display_name = "Tabnine CLI"
