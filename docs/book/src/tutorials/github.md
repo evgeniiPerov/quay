@@ -48,7 +48,7 @@ quay remote test work    # connectivity probe
 
 - If `main` is protected (required reviews, status checks), `push_mode = "direct"` will fail at `git push origin main`. Use `push_mode = "pr"` (the default) or pass `--push-mode pr`.
 - The PR is opened **against the default branch**, not necessarily `main`. quay reads the remote's `HEAD` ref after clone.
-- The PR branch is named `quay/<skill-name>-<short-sha>`. Pruned automatically on merge if your repo has "Automatically delete head branches" enabled.
+- The PR branch is named `quay/<skill-name>-<version>`. Pruned automatically on merge if your repo has "Automatically delete head branches" enabled.
 
 ## Enterprise
 

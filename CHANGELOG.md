@@ -3,6 +3,42 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## Unreleased
+
+### Fixed
+
+- **Cancelling a prompt now fails the run.** Ctrl-C during an `update` or
+  `add -i` prompt stopped the loop but exited 0, so a wrapping script saw
+  success with skills left untouched. It now exits non-zero with
+  `interrupted`, instead of a made-up `io error at prompt`.
+- **Copy mirrors follow an update.** A copy-strategy mirror kept the old
+  version — and any file `--delete-extra` had just removed — with a warning.
+  Mirrors now record what quay wrote into them, so one nobody edited is
+  refreshed automatically; one you edited is still left alone.
+  `quay link check` reports an out-of-date copy. Mirrors created by older
+  versions refresh once with `quay link --force`.
+- **An update never touches a directory named `.<skill>.replaced`.** The old
+  install is parked in a fresh, uniquely named directory instead of a fixed
+  name that was cleared first.
+- **Files with non-UTF-8 names are never offered for deletion.** Two such names
+  could map to the same entry, and deleting it removed both.
+
+### Added
+
+- `quay update --json` reports `deleted_extras` per skill.
+- `quay diff --json` reports `commits_ahead` and `last_commit_date` for
+  `hub_newer`.
+
+### Changed
+
+- `quay-core`: `FolderReport::head_hash` → `hub_hash`,
+  `ReconcileReport::head_bytes` → `hub_bytes`, matching the CLI's naming.
+
+### Docs
+
+- Eight recipe pages written; corrected `add`, `remote`, `profile`, `update`
+  and the GitHub tutorial where they disagreed with the CLI.
+
 ## 0.15.3 — 2026-08-03
 
 ### Performance

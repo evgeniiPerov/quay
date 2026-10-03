@@ -39,7 +39,9 @@ quay update -i                       # explicit picker
 ## Caveats
 
 - "Outdated" uses semver comparison on the frontmatter `version` field. Skills without frontmatter (SlashCommand / Freestyle) never show as outdated by version — they're compared by SHA-on-fly instead.
-- Local edits are detected and surfaced: an outdated skill with local modifications is reported as `installed-modified`. `update` refuses to overwrite it without `--force` (which lives on `quay add`, not `update` — use `quay add <name> --force` to nuke).
+- `update` overwrites the installed copy with the hub's. Edits you made to files the hub also ships are replaced; check [`quay diff`](diff.md) `<skill>` first if you may have local changes. Files the hub doesn't ship are handled as below.
+- Copy-strategy mirrors are refreshed after each update, so they never keep the old version or a file the update deleted. A mirror you edited by hand is left alone with a warning — `quay link --force` overwrites it.
+- Cancelling a prompt (Ctrl-C) stops the run and exits non-zero, so a wrapping script does not mistake a partial update for success.
 - `--dry-run` does not query CLI tools (`gh` / `glab`); pure diff against hub clone.
 
 ## Local files the new version doesn't have
@@ -91,6 +93,16 @@ can therefore list a file as missing when it still exists upstream. An
 interactive prompt shows the filename, so a human can recognize and keep it;
 `--delete-extra` in an unattended run has no such backstop and will delete it —
 it does name every file it removed on stderr, so a CI log keeps the record.
+
+With `--json`, each updated skill also carries `deleted_extras` — the files the
+update removed, `[]` when it kept everything:
+
+```json
+[{ "name": "csv-parse", "available": "2.0.0", "deleted_extras": ["refs/legacy.md"], "...": "..." }]
+```
+
+Files whose names are not valid UTF-8 are never offered and never deleted, like
+dotfiles: quay cannot name them exactly, so it does not manage them.
 
 ## `--help`
 
