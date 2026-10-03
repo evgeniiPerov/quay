@@ -58,10 +58,10 @@ pub fn reconcile(
     local_version: &str,
 ) -> Result<ReconcileReport> {
     let bl = derive(local_sha, harbor, skill_path)?;
-    let head_bytes_opt = bl.head_bytes;
-    let absent_on_hub = head_bytes_opt.is_none();
+    let hub_bytes_opt = bl.head_bytes;
+    let absent_on_hub = hub_bytes_opt.is_none();
     let head_content_sha = bl.head_content_sha;
-    let head_bytes = head_bytes_opt.unwrap_or_default();
+    let hub_bytes = hub_bytes_opt.unwrap_or_default();
 
     // A truncated search also lands on `ChangedUnknownDirection`, because "we
     // did not look far enough" is not a direction either. The two are told apart
@@ -75,13 +75,13 @@ pub fn reconcile(
             bl.truncated,
         )
     };
-    let diff = render(&head_bytes, local_bytes); // render(old, new): hub HEAD is old, local is new
+    let diff = render(&hub_bytes, local_bytes); // render(old, new): hub HEAD is old, local is new
     let semver = semver_hint(hub_version, local_version);
     Ok(ReconcileReport {
         verdict,
         semver,
         diff,
-        hub_bytes: head_bytes,
+        hub_bytes,
         base_search_truncated,
     })
 }

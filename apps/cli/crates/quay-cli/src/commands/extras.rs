@@ -6,8 +6,7 @@
 //! `ExtraFiles` verdict core asks for.
 
 use quay_core::{ExtraFiles, QuayError, Result};
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::cell::Cell;
 
 /// Where the verdict comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,8 +41,6 @@ pub struct Decider {
     policy: ExtraPolicy,
     interactive: bool,
     sticky_keep: Cell<bool>,
-    /// Skill → files a verdict deleted, for `--json` to report.
-    deleted: RefCell<BTreeMap<String, Vec<String>>>,
 }
 
 impl Decider {
@@ -52,19 +49,7 @@ impl Decider {
             policy,
             interactive,
             sticky_keep: Cell::new(false),
-            deleted: RefCell::new(BTreeMap::new()),
         }
-    }
-
-    /// The files the last verdict for `skill` deleted; empty when it kept them
-    /// or was never asked. Read only after the install succeeded — a verdict
-    /// whose install then failed deleted nothing.
-    pub fn deleted_for(&self, skill: &str) -> Vec<String> {
-        self.deleted
-            .borrow()
-            .get(skill)
-            .cloned()
-            .unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -74,17 +59,6 @@ impl Decider {
 
     /// The `DecideExtras` callback body. Pass as `&|s, e| decider.decide(s, e)`.
     pub fn decide(&self, skill: &str, extras: &[String]) -> Result<ExtraFiles> {
-        let verdict = self.verdict(skill, extras)?;
-        let deleted = match &verdict {
-            ExtraFiles::Keep => Vec::new(),
-            ExtraFiles::Delete => extras.to_vec(),
-            ExtraFiles::DeleteOnly(chosen) => chosen.clone(),
-        };
-        self.deleted.borrow_mut().insert(skill.to_string(), deleted);
-        Ok(verdict)
-    }
-
-    fn verdict(&self, skill: &str, extras: &[String]) -> Result<ExtraFiles> {
         match self.policy {
             ExtraPolicy::Keep => Ok(ExtraFiles::Keep),
             ExtraPolicy::Delete => {
@@ -191,8 +165,17 @@ fn paths_to_delete(offered: &[String], picked: &[usize]) -> Vec<String> {
 /// Whether `e` is a user cancellation. Multi-skill loops report per-skill errors
 /// and keep going, so without this an interrupt on the first skill would
 /// re-prompt the second and cascade — and the run would then exit 0.
+///
+/// Prompts that don't go through [`Decider`] surface Ctrl-C as dialoguer's own
+/// `Interrupted` I/O error, so that counts too.
 pub fn is_interrupt(e: &(dyn std::error::Error + 'static)) -> bool {
-    matches!(e.downcast_ref::<QuayError>(), Some(QuayError::Interrupted))
+    if matches!(e.downcast_ref::<QuayError>(), Some(QuayError::Interrupted)) {
+        return true;
+    }
+    matches!(
+        e.downcast_ref::<dialoguer::Error>(),
+        Some(dialoguer::Error::IO(io)) if io.kind() == std::io::ErrorKind::Interrupted
+    )
 }
 
 /// The message shown when extras were kept without a human deciding.
@@ -343,16 +326,18 @@ mod tests {
         );
     }
 
+    /// Prompts outside `Decider` (the collision prompt in `add`) surface
+    /// Ctrl-C as dialoguer's own error, boxed. Missing it is how a cancelled
+    /// `add -i` skipped the skill and carried on to exit 0.
     #[test]
-    fn deleted_for_reports_what_the_verdict_removed() {
-        let del = Decider::new(ExtraPolicy::Delete, false);
-        del.decide("csv-parse", &extras()).unwrap();
-        assert_eq!(del.deleted_for("csv-parse"), extras());
-        assert!(del.deleted_for("never-asked").is_empty());
+    fn a_boxed_dialoguer_interrupt_is_an_interrupt() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Interrupted, "ctrl-c");
+        let boxed: Box<dyn std::error::Error> = Box::new(dialoguer::Error::IO(io_err));
+        assert!(is_interrupt(boxed.as_ref()));
 
-        let keep = Decider::new(ExtraPolicy::Keep, false);
-        keep.decide("csv-parse", &extras()).unwrap();
-        assert!(keep.deleted_for("csv-parse").is_empty());
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed");
+        let boxed: Box<dyn std::error::Error> = Box::new(dialoguer::Error::IO(eof));
+        assert!(!is_interrupt(boxed.as_ref()));
     }
 
     #[test]

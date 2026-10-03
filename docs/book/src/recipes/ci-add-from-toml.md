@@ -6,8 +6,9 @@ non-interactive step, so the job can run `quay add` like a developer would.
 
 ## The profile file
 
-Same shape as a `[profiles.<name>]` section, minus the header — the profile name
-comes from the command line, not the file:
+A top-level `email` plus `[remotes.<name>]` tables — not the on-disk
+`[profiles.<name>.user]` shape. The profile name comes from the command line.
+Unknown keys are ignored, so a pasted `[user]` table silently loses the email:
 
 ```toml
 # ci/quay-profile.toml

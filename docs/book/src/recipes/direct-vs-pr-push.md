@@ -39,8 +39,11 @@ Teams that integrate on `develop` can send direct pushes there:
 ```sh
 quay remote edit team --push-mode direct --direct-branch develop
 quay push csv-parse --direct-branch staging   # just this once
-quay push csv-parse --direct-branch ""        # just this once, the default branch
 ```
+
+There is no push-time way back to the default branch: `--direct-branch ""` is
+the same as leaving the flag off, so the remote's `direct_branch` still wins.
+Clear it on the remote instead — `quay remote edit team --direct-branch ""`.
 
 If the branch doesn't exist on the hub yet, quay creates it from the default
 branch. `--direct-branch` is ignored when the push mode resolves to `pr`.
@@ -59,4 +62,5 @@ short commit SHA. `--json` reports either as one object with a `mode` field. Bot
   installable from `develop` — not from the default branch until someone merges.
 - **`remote edit` edits the project config only.** A remote that lives in a
   profile is changed with `quay profile edit`.
-- **`rebuild-registry` and `remove --remote`** honor the same `push_mode`.
+- **`rebuild-registry`** honors the same `push_mode` (and takes `--push-mode`).
+  `remove --remote` / `--everywhere` does not: it always pushes directly.

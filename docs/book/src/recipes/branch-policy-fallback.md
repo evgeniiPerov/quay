@@ -10,7 +10,7 @@ different review semantics, and switching between them is your call.
 The hub's rejection, wrapped with a hint:
 
 ```text
-direct push to 'main' failed: <git's error>; if the branch is protected, set this remote's push_mode = pr
+error: config validation: direct push to 'main' failed: git command failed at git push origin main: <git's error>; if the branch is protected, set this remote's push_mode = pr
 ```
 
 Nothing reached the hub. The local skill is untouched.
@@ -48,10 +48,13 @@ consumers see the skill as soon as it's pushed — not when `develop` merges to
 
 ## Other commands that push
 
-`quay rebuild-registry` and `quay remove --remote` / `--everywhere` also write
-to the hub in the remote's `push_mode`, and fail the same way.
-`rebuild-registry` takes `--push-mode pr` for a one-off; `remove` has no such
-flag, so change the remote.
+`quay rebuild-registry` writes to the hub in the remote's `push_mode` and fails
+similarly against a protected branch; its hint says to pass `--push-mode pr`,
+which works as a one-off.
+
+`quay remove --remote` / `--everywhere` always pushes directly, whatever
+`push_mode` says, so against a protected branch it fails with no PR fallback.
+Remove the skill by PR by hand there.
 
 ## Gotchas
 

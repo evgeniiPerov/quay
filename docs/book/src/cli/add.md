@@ -15,7 +15,6 @@ quay add [OPTIONS] [SKILL]
 ```sh
 quay add hello                      # install one
 quay add -i                         # pick several from a checkbox list
-quay add -i                         # interactive checkbox picker
 quay add hello --remote work        # explicit remote
 quay add hello --force              # overwrite local edits
 ```

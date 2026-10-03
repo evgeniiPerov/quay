@@ -151,6 +151,7 @@ pub fn run_interactive(
     let pick_names: Vec<&str> = picks.iter().map(|&i| entries[i].0.as_str()).collect();
 
     // If force is already set, skip collision dialog.
+    let aborted = std::cell::Cell::new(false);
     let plan: Vec<(String, SkillAction)> = if force {
         pick_names
             .iter()
@@ -205,6 +206,11 @@ pub fn run_interactive(
                     );
                     let mut harbor_cache = HarborCache::new();
                     build_plan_with_prompt(&pick_names, &locals, |name, _is_modified| {
+                        // After a Ctrl-C, ask nothing more; the plan is
+                        // discarded below.
+                        if aborted.get() {
+                            return SkillAction::Skip;
+                        }
                         // Resolve which remote + registry entry owns this skill.
                         let (resolved_remote, _registry, entry) = match mgr
                             .resolve(name, Some(remote_name.as_str()))
@@ -296,6 +302,10 @@ pub fn run_interactive(
                         // Prompt user.
                         let action = match prompt_resolve(&report) {
                             Ok(a) => a,
+                            Err(e) if is_interrupt(e.as_ref()) => {
+                                aborted.set(true);
+                                return SkillAction::Skip;
+                            }
                             Err(e) => {
                                 eprintln!("warning: prompt failed for '{}': {}; skipping", name, e);
                                 return SkillAction::Skip;
@@ -317,6 +327,11 @@ pub fn run_interactive(
             }
         }
     };
+    // A cancelled collision prompt cancels the whole run: nothing installed
+    // yet, and the wrapping script must not see success.
+    if aborted.get() {
+        return Err(QuayError::Interrupted.into());
+    }
 
     // Execute plan.
     let f = CloneFetcher::new();
@@ -739,18 +754,16 @@ pub(crate) fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &
                 }
             }
         }
+        // Warnings go to stderr even under --json: stdout stays parseable, and
+        // a mirror left stale is exactly what a script needs to hear about.
         Err(QuayError::MirrorConflict { path, reason }) => {
-            if !json {
-                eprintln!(
-                    "warning: mirror not applied at {}: {}. Run `quay link --force` to resolve.",
-                    path, reason
-                );
-            }
+            eprintln!(
+                "warning: mirror not applied at {}: {}. Run `quay link --force` to resolve.",
+                path, reason
+            );
         }
         Err(e) => {
-            if !json {
-                eprintln!("warning: mirror apply failed: {}", e);
-            }
+            eprintln!("warning: mirror apply failed: {}", e);
         }
     }
 }

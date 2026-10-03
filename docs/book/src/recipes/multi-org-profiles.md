@@ -45,15 +45,19 @@ profile = "work"
 
 ```sh
 quay profile current     # the name that resolves here
-quay profile show        # its email, remotes and push modes
+quay profile show work   # that profile's email, remotes and push modes
 quay profile list        # all of them, active one marked
 ```
 
 Run `current` from inside the repo — it accounts for the project pin and
-`QUAY_PROFILE`, which `profile list` does not.
+`QUAY_PROFILE`, which `profile list` and a bare `profile show` do not. Pass
+`show` the name `current` printed; with no name it shows `active_profile`.
 
 ## Gotchas
 
+- **`quay remote add|edit|remove` currently drop the pin.** They rewrite
+  `.quay/config.toml` without the top-level `profile = "…"` line — re-add it
+  after changing remotes, and check `git diff` before committing.
 - **A pinned profile must exist.** If `.quay/config.toml` pins `work` and your
   user config has no profile by that name, quay errors instead of falling back.
   That's deliberate; create the profile.

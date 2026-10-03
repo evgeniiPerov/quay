@@ -216,6 +216,10 @@ fn a_skill_deleted_upstream_keeps_the_changed_unknown_tag_and_flags_absence() {
 
     assert_eq!(v["verdict"], "changed_unknown_direction");
     assert_eq!(v["absent_on_hub"], true);
+    // Only `hub_newer` carries how far ahead; other verdicts omit the fields
+    // rather than emit nulls.
+    assert!(v.get("commits_ahead").is_none(), "{v}");
+    assert!(v.get("last_commit_date").is_none(), "{v}");
 }
 
 #[test]

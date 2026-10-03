@@ -326,7 +326,7 @@ fn update_json_keep_records_no_deletions() {
 }
 
 /// After `--delete-extra`, a copy mirror that still held the extra kept it, so
-/// `quay diff` went on reporting a file the release notes said was gone.
+/// the agent reading that mirror kept a file the update had deleted.
 #[test]
 fn update_carries_the_new_version_and_the_deletion_into_a_copy_mirror() {
     let (project, _work, _bare, config_home) = project_ready_to_update_with(COPY_MIRROR);
@@ -420,4 +420,30 @@ fn a_file_the_hub_deleted_is_offered_and_removed_with_delete_extra() {
         "the hub's deletion must reach the install"
     );
     assert_v2_landed(&project);
+}
+
+/// A mirror the user edited is left alone — and under `--json` that must still
+/// be said, on stderr, or a script believes the mirror followed the update.
+#[test]
+fn update_json_still_warns_about_a_mirror_it_left_alone() {
+    let (project, _work, _bare, config_home) = project_ready_to_update_with(COPY_MIRROR);
+    let p = project.path().to_str().unwrap().to_string();
+    let mirror = project.path().join(".cursor/rules/foo");
+    std::fs::write(mirror.join("SKILL.md"), b"edited in the mirror").unwrap();
+
+    let out = quay()
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .args(["--project", &p, "update", "foo", "--keep-extra", "--json"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("mirror not applied"))
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice::<serde_json::Value>(&out).expect("stdout stays valid JSON");
+    assert_eq!(
+        std::fs::read(mirror.join("SKILL.md")).unwrap(),
+        b"edited in the mirror"
+    );
 }

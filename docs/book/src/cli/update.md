@@ -40,7 +40,8 @@ quay update -i                       # explicit picker
 
 - "Outdated" uses semver comparison on the frontmatter `version` field. Skills without frontmatter (SlashCommand / Freestyle) never show as outdated by version — they're compared by SHA-on-fly instead.
 - `update` overwrites the installed copy with the hub's. Edits you made to files the hub also ships are replaced; check [`quay diff`](diff.md) `<skill>` first if you may have local changes. Files the hub doesn't ship are handled as below.
-- Copy-strategy mirrors are refreshed after each update, so they never keep the old version or a file the update deleted. A mirror you edited by hand is left alone with a warning — `quay link --force` overwrites it.
+- Copy-strategy mirrors are refreshed after each update, so they don't keep the old version or a file the update deleted. A mirror you changed by hand — any file, dotfiles included — is left alone with a warning (on stderr, under `--json` too); `quay link --force` overwrites it. A copy mirror made before 0.16 is picked up automatically the first time quay sees it matching canonical; one that already differs needs a single `quay link --force`.
+- If a skill fails partway through a multi-skill run, the skills already updated are still reported (and in `--json`, with their `deleted_extras`) before the error.
 - Cancelling a prompt (Ctrl-C) stops the run and exits non-zero, so a wrapping script does not mistake a partial update for success.
 - `--dry-run` does not query CLI tools (`gh` / `glab`); pure diff against hub clone.
 
@@ -95,7 +96,8 @@ interactive prompt shows the filename, so a human can recognize and keep it;
 it does name every file it removed on stderr, so a CI log keeps the record.
 
 With `--json`, each updated skill also carries `deleted_extras` — the files the
-update removed, `[]` when it kept everything:
+update removed, `[]` when it kept everything. (Picker runs — `-i`, or a bare
+`quay update` in a terminal — print no JSON; pass a skill name or `--all`.)
 
 ```json
 [{ "name": "csv-parse", "available": "2.0.0", "deleted_extras": ["refs/legacy.md"], "...": "..." }]

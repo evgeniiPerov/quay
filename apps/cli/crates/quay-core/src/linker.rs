@@ -79,10 +79,10 @@ pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
     }
     let marker = target.join(MIRROR_MARKER);
     let managed = marker.exists();
-    let target_hash = crate::skill_files::pushable_content_hash(target)?;
-    let identical = target_hash == crate::skill_files::pushable_content_hash(canonical)?;
+    let identical = crate::skill_files::pushable_content_hash(target)?
+        == crate::skill_files::pushable_content_hash(canonical)?;
     Ok(
-        if !identical && managed && marker_records(&marker, &target_hash) {
+        if !identical && managed && marker_records(&marker, &tree_hash(target)?) {
             MirrorState::Stale
         } else if !identical {
             MirrorState::Diverged {
@@ -103,13 +103,66 @@ pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
 }
 
 /// Marks a directory as a quay-managed copy mirror. Its content is the
-/// `pushable_content_hash` of the copy as quay wrote it, so a later difference
-/// from canonical can be told apart: mirror unchanged since then means canonical
+/// [`tree_hash`] of the copy as quay wrote it, so a later difference from
+/// canonical can be told apart: mirror unchanged since then means canonical
 /// moved ([`MirrorState::Stale`]); mirror changed means the user edited it.
-///
-/// ponytail: the hash covers the pushable set only, like every other mirror
-/// comparison here — a dotfile hand-added to a managed copy is not protected.
 const MIRROR_MARKER: &str = ".quay-mirror";
+
+/// Hash of everything under `dir` except a top-level [`MIRROR_MARKER`]:
+/// every entry's path and kind, file bytes, symlink targets. Unlike
+/// `pushable_content_hash` nothing is skipped — refreshing a mirror deletes it
+/// wholesale, so a dotfile or symlink the user added must count as an edit.
+fn tree_hash(dir: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    fn walk(dir: &Path, rel: &[u8], top: bool, h: &mut Sha256) -> Result<()> {
+        let io = |path: &Path| {
+            let path = path.display().to_string();
+            move |source| QuayError::Io { path, source }
+        };
+        let mut entries = std::fs::read_dir(dir)
+            .map_err(io(dir))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(io(dir))?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if top && name == MIRROR_MARKER {
+                continue;
+            }
+            let mut path = rel.to_vec();
+            path.push(b'/');
+            path.extend_from_slice(name.as_encoded_bytes());
+            let p = entry.path();
+            let ft = entry.file_type().map_err(io(&p))?;
+            // Length-prefixed fields, so no two different trees can feed the
+            // hasher the same byte stream.
+            let mut field = |tag: u8, bytes: &[u8]| {
+                h.update([tag]);
+                h.update((bytes.len() as u64).to_le_bytes());
+                h.update(bytes);
+            };
+            field(b'p', &path);
+            if ft.is_symlink() {
+                field(
+                    b'l',
+                    std::fs::read_link(&p)
+                        .map_err(io(&p))?
+                        .as_os_str()
+                        .as_encoded_bytes(),
+                );
+            } else if ft.is_dir() {
+                field(b'd', &[]);
+                walk(&p, &path, false, h)?;
+            } else {
+                field(b'f', &std::fs::read(&p).map_err(io(&p))?);
+            }
+        }
+        Ok(())
+    }
+    let mut h = Sha256::new();
+    walk(dir, b"", true, &mut h)?;
+    Ok(hex::encode(h.finalize()))
+}
 
 /// Whether the marker records exactly `hash`. An empty or unreadable marker
 /// (written before markers carried a hash) records nothing, so it never
@@ -197,6 +250,26 @@ fn dirs_fully_identical(a: &Path, b: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Start tracking a copy mirror whose marker records no hash (written before
+/// 0.16), so its next update refreshes it instead of warning. Only when the
+/// whole tree equals canonical's: then nothing in it can be the user's, and the
+/// hash written is exactly what a fresh copy would have recorded.
+fn adopt_legacy_marker(target: &Path, canonical: &Path) -> Result<()> {
+    let marker = target.join(MIRROR_MARKER);
+    let is_copy = std::fs::symlink_metadata(target).is_ok_and(|m| m.is_dir());
+    if !is_copy || !marker.exists() {
+        return Ok(());
+    }
+    let hash = tree_hash(target)?;
+    if marker_records(&marker, &hash) || hash != tree_hash(canonical)? {
+        return Ok(());
+    }
+    std::fs::write(&marker, hash).map_err(|source| QuayError::Io {
+        path: marker.display().to_string(),
+        source,
+    })
+}
+
 /// Drift reason for a [`MirrorState::Stale`] copy, shared with `quay link check`.
 pub const STALE_REASON: &str = "copy mirror out of date with canonical; run `quay link`";
 
@@ -229,7 +302,10 @@ pub fn apply_one(
                 strategy,
             })
         }
-        MirrorState::Correct => Ok(MirrorAction::NoOp),
+        MirrorState::Correct => {
+            adopt_legacy_marker(&target, canonical_skill_dir)?;
+            Ok(MirrorAction::NoOp)
+        }
         MirrorState::Stale => {
             replace_mirror(canonical_skill_dir, &target, strategy)?;
             Ok(MirrorAction::Replaced {
@@ -559,8 +635,8 @@ fn create_junction(canonical: &Path, target: &Path) -> Result<()> {
 }
 
 fn create_copy(canonical: &Path, target: &Path) -> Result<()> {
-    copy_dir_recursive(canonical, target)?;
-    let hash = crate::skill_files::pushable_content_hash(target)?;
+    copy_dir_recursive(canonical, target, "")?;
+    let hash = tree_hash(target)?;
     std::fs::write(target.join(MIRROR_MARKER), hash).map_err(|source| QuayError::Io {
         path: target.display().to_string(),
         source,
@@ -568,7 +644,8 @@ fn create_copy(canonical: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+/// `rel` names entries in the Windows symlink-degrade warning only.
+fn copy_dir_recursive(src: &Path, dst: &Path, rel: &str) -> Result<()> {
     std::fs::create_dir_all(dst).map_err(|source| QuayError::Io {
         path: dst.display().to_string(),
         source,
@@ -583,8 +660,18 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         })?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+        let rel = format!("{rel}/{}", entry.file_name().to_string_lossy());
+        let ft = entry.file_type().map_err(|source| QuayError::Io {
+            path: from.display().to_string(),
+            source,
+        })?;
+        // `is_dir()` and `fs::copy` both follow links: a link to a directory
+        // would import its target, and a file link would land as a plain copy
+        // that never compares equal to canonical again.
+        if ft.is_symlink() {
+            crate::manager::copy_symlink(&from, &to, &rel)?;
+        } else if ft.is_dir() {
+            copy_dir_recursive(&from, &to, &rel)?;
         } else {
             std::fs::copy(&from, &to).map_err(|source| QuayError::Io {
                 path: to.display().to_string(),
@@ -785,6 +872,94 @@ mod tests {
 
         let err = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap_err();
         assert!(matches!(err, QuayError::MirrorConflict { .. }), "{err:?}");
+    }
+
+    /// The marker must vouch for the whole tree, not just the pushable set: a
+    /// dotfile the user added to a managed copy is theirs, and refreshing the
+    /// mirror would delete it without asking.
+    #[test]
+    fn dotfile_added_to_a_copy_mirror_blocks_the_automatic_refresh() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+        std::fs::write(mirror.join(".local-notes"), b"mine").unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+
+        let err = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap_err();
+
+        assert!(matches!(err, QuayError::MirrorConflict { .. }), "{err:?}");
+        assert_eq!(std::fs::read(mirror.join(".local-notes")).unwrap(), b"mine");
+    }
+
+    /// A symlink in canonical used to land in a copy mirror as a regular file,
+    /// so the two never compared equal and the mirror was replaced on every
+    /// run. Copied as a link, the mirror settles.
+    #[cfg(unix)]
+    #[test]
+    fn a_canonical_symlink_is_mirrored_as_a_link_and_the_mirror_settles() {
+        let dir = project_with_skill("csv-parse");
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::os::unix::fs::symlink("SKILL.md", canonical.join("alias.md")).unwrap();
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+
+        assert!(std::fs::symlink_metadata(mirror.join("alias.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let again = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        assert!(matches!(again[0], MirrorAction::NoOp), "{again:?}");
+    }
+
+    /// A pre-0.16 marker is empty. While the mirror still matches canonical
+    /// exactly, nothing in it can be the user's, so quay starts tracking it —
+    /// and the next update refreshes it instead of warning.
+    #[test]
+    fn a_legacy_marker_is_upgraded_while_the_mirror_matches() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+        std::fs::write(mirror.join(".quay-mirror"), b"").unwrap();
+
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+        let actions = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+
+        assert!(
+            matches!(actions[0], MirrorAction::Replaced { .. }),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_legacy_marker_is_not_upgraded_over_a_users_dotfile() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+        std::fs::write(mirror.join(".quay-mirror"), b"").unwrap();
+        std::fs::write(mirror.join(".local-notes"), b"mine").unwrap();
+
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+        let err = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap_err();
+
+        assert!(matches!(err, QuayError::MirrorConflict { .. }), "{err:?}");
+        assert_eq!(std::fs::read(mirror.join(".local-notes")).unwrap(), b"mine");
     }
 
     #[test]

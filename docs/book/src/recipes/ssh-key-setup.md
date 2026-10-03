@@ -58,8 +58,10 @@ An unrecognized host is treated as GitHub, so a GitLab alias without
 
 - **PRs don't use SSH.** In PR mode, quay pushes the branch over SSH, then calls
   `gh`, `glab` or `az` to open the PR — those authenticate separately
-  (`gh auth login`, `glab auth login`, `az login`). Missing that login gets you
-  a printed URL instead of an opened PR, not a failed push.
+  (`gh auth login`, `glab auth login`, `az login`). With `gh`, a missing login
+  falls back to a printed compare URL. With `glab` or `az`, the command fails
+  after the branch is already pushed — open the MR/PR by hand, or log in and
+  re-run.
 - **First-contact host keys.** quay captures git's output, so an unknown-host
   prompt from SSH is easy to miss and can stall a command. Run
   `ssh -T git@<host>` once by hand to record the key in `known_hosts`.
