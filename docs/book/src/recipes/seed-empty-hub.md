@@ -37,8 +37,8 @@ quay push csv-parse
 ```
 
 quay writes `skills/csv-parse/`, generates `registry.json` with one entry, and
-commits both — through a PR or straight to the default branch, per the remote's
-`push_mode`. In PR mode, merge it; the hub is empty to `quay add` until you do.
+commits both — through a PR, or directly to the remote's `direct_branch` (the
+default branch when that is unset), per the remote's `push_mode`. In PR mode, merge it; the hub is empty to `quay add` until you do.
 
 ```sh
 quay remote test team     # now reports registry.json and its size

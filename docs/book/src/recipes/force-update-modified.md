@@ -63,8 +63,10 @@ once for all collisions: update all, skip all, or prompt per skill.
 - **`quay update` won't help with drift — for frontmatter skills.** It acts on
   version upgrades there. A skill whose content differs at the same version —
   your edit, or a hub fix that didn't bump `version` — needs `quay add --force`.
-  Skills without a frontmatter `version` are compared by content, so for them
-  `update` does act on drift — and overwrites your edits.
+  Slash-command and freestyle skills (no YAML frontmatter) are compared by
+  content, so for them `update` does act on drift — and overwrites your edits.
+  A frontmatter skill that merely omits `version` is not: it counts as `0.0.0`
+  on both sides, so `update` skips it — use `quay add --force`.
 - **Mirrors follow.** Configured mirrors (`[install].mirrors`) are re-applied
   after the install, so `.claude/skills/csv-parse` and friends get the new copy
   too.

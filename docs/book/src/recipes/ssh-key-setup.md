@@ -2,7 +2,8 @@
 
 quay has no credentials of its own. Every clone, fetch and push is your `git`
 binary, with your environment, talking to the URL in the remote's config. If
-`git clone <url>` works in your shell, quay works. This page is the short path
+`git clone <url>` works in your shell, quay can read the hub; pushing (`quay push`)
+also needs write access to the repository, which a clone does not prove. This page is the short path
 to making that true over SSH.
 
 ## One key, one host
@@ -67,6 +68,7 @@ An unrecognized host is treated as GitHub, so a GitLab alias without
   `ssh -T git@<host>` once by hand to record the key in `known_hosts`.
 - **No agent in the session.** Keys loaded in your desktop session aren't
   necessarily visible to a CI job, a container or an IDE terminal. If
-  `ssh-add -l` lists nothing there, neither git nor quay has a key to offer.
+  `ssh-add -l` lists nothing there and no `IdentityFile` (or default key file
+  under `~/.ssh/`) is readable, neither git nor quay has a key to offer.
 - **SSH blocked entirely?** Use the HTTPS URL with a credential helper. For
   GitHub, `gh auth setup-git` wires `gh`'s token into git, and quay inherits it.

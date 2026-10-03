@@ -56,7 +56,7 @@ Exits 0 on success, non-zero on either failure with a diagnostic message identif
 ## Caveats
 
 - A `gitlab` URL that points at a GitLab Enterprise instance still works; the provider only affects PR creation, not git clone.
-- Removing the default remote leaves the profile with no default. The next push must use `--remote`.
+- Removing the default remote leaves the project config with no default (a default from your profile still applies, if it has one). Otherwise the next push must use `--remote`.
 - `test` will not catch every authentication issue (e.g. SSH known_hosts prompts) — if it succeeds but `push` fails, suspect agent forwarding / known_hosts.
 
 ## `--help` (top level)
@@ -71,5 +71,6 @@ Commands:
   test    Test connectivity to a configured remote
   list    List configured remotes
   remove  Remove a remote
+  edit    Edit an existing remote
   help    Print this message or the help of the given subcommand(s)
 ```
