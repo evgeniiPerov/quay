@@ -644,6 +644,36 @@ fn create_copy(canonical: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Recreate the link `src` at `dst` inside a copy mirror.
+///
+/// Unlike the install path (`manager::copy_symlink`), a link that cannot be
+/// created for lack of Windows symlink rights is skipped, not replaced by a copy
+/// of its target. Mirrors compare on the pushable set, which excludes links, so
+/// a skipped link costs nothing there — while a copied target would be counted,
+/// never match canonical, and get the mirror replaced on every run.
+fn mirror_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
+    let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
+        path: src.display().to_string(),
+        source,
+    })?;
+    match crate::manager::create_symlink_at(src, &link_target, dst) {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(e) if crate::manager::is_permission_class_failure(&e) => {
+            eprintln!(
+                "warning: could not recreate symlink {rel} -> {} in a copy mirror (Developer Mode \
+                 or elevation required); skipped it there",
+                link_target.display()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let _ = rel; // only named by the Windows warning above
+            Err(e)
+        }
+    }
+}
+
 /// `rel` names entries in the Windows symlink-degrade warning only.
 fn copy_dir_recursive(src: &Path, dst: &Path, rel: &str) -> Result<()> {
     std::fs::create_dir_all(dst).map_err(|source| QuayError::Io {
@@ -669,7 +699,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path, rel: &str) -> Result<()> {
         // would import its target, and a file link would land as a plain copy
         // that never compares equal to canonical again.
         if ft.is_symlink() {
-            crate::manager::copy_symlink(&from, &to, &rel)?;
+            mirror_symlink(&from, &to, &rel)?;
         } else if ft.is_dir() {
             copy_dir_recursive(&from, &to, &rel)?;
         } else {

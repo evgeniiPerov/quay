@@ -588,7 +588,7 @@ pub(crate) fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
 /// testable on every platform; the fallback behaviour it gates is
 /// Windows-only, so this is otherwise dead weight on every other target.
 #[cfg(any(windows, test))]
-fn is_permission_class_failure(e: &QuayError) -> bool {
+pub(crate) fn is_permission_class_failure(e: &QuayError) -> bool {
     const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
     matches!(
         e,
@@ -679,7 +679,7 @@ fn degrade_symlink_failure(
 }
 
 #[cfg(unix)]
-fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
     std::os::unix::fs::symlink(link_target, dst).map_err(|source| QuayError::Io {
         path: dst.display().to_string(),
         source,
@@ -687,7 +687,7 @@ fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> 
 }
 
 #[cfg(windows)]
-fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
     // Windows distinguishes a file link from a directory link. `src`'s own
     // metadata (which follows the link) tells us which; a dangling link falls
     // back to a file link.
@@ -704,7 +704,7 @@ fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
     Err(QuayError::Io {
         path: dst.display().to_string(),
         source: std::io::Error::other("symlinks are not supported on this platform"),
