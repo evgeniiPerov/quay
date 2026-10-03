@@ -120,7 +120,7 @@ fn identical_folders_report_identical() {
 
     assert_eq!(r.verdict, Verdict::Identical);
     assert_eq!(r.changed().count(), 0);
-    assert_eq!(r.local_hash, r.head_hash);
+    assert_eq!(r.local_hash, r.hub_hash);
 }
 
 #[test]

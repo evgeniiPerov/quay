@@ -265,18 +265,37 @@ where
         // put it back. Deleting first would mean a failure at exactly the wrong
         // moment leaves the skill gone entirely — worse than the in-place
         // overwrite this replaces.
-        let backup = dest_dir.exists().then(|| {
-            let mut p = dest_dir.clone();
-            p.set_file_name(format!(".{skill_name}.replaced"));
-            p
-        });
-        if let Some(backup) = &backup {
-            let _ = std::fs::remove_dir_all(backup);
-            std::fs::rename(&dest_dir, backup).map_err(|source| QuayError::Io {
-                path: dest_dir.display().to_string(),
-                source,
-            })?;
-        }
+        //
+        // The parking spot is a fresh, uniquely named dir — never a fixed name,
+        // which would mean clearing whatever already sits there first, and that
+        // could be a directory of the user's. Dot-prefixed, so a backup stranded
+        // by a crash stays out of `quay list`.
+        let backup_holder = if dest_dir.exists() {
+            let install_dir = dest_dir.parent().unwrap_or(&self.project_root);
+            let holder = tempfile::Builder::new()
+                .prefix(&format!(".{skill_name}.replaced-"))
+                .tempdir_in(install_dir)
+                .map_err(|source| QuayError::Io {
+                    path: install_dir.display().to_string(),
+                    source,
+                })?
+                // Managed by hand from here: drop must never delete the only
+                // copy of the old install while a restore may still need it.
+                .keep();
+            let parked = holder.join(skill_name);
+            if let Err(source) = std::fs::rename(&dest_dir, &parked) {
+                // Nothing moved; the holder is empty.
+                let _ = std::fs::remove_dir(&holder);
+                return Err(QuayError::Io {
+                    path: dest_dir.display().to_string(),
+                    source,
+                });
+            }
+            Some(holder)
+        } else {
+            None
+        };
+        let backup = backup_holder.as_ref().map(|h| h.join(skill_name));
 
         let staged = staging.keep();
         if let Err(source) = std::fs::rename(&staged, &dest_dir) {
@@ -304,11 +323,11 @@ where
                 source,
             });
         }
-        if let Some(backup) = &backup {
-            if let Err(e) = std::fs::remove_dir_all(backup) {
+        if let Some(holder) = &backup_holder {
+            if let Err(e) = std::fs::remove_dir_all(holder) {
                 eprintln!(
                     "warning: install succeeded but the replaced copy remains at {}: {e}",
-                    backup.display()
+                    holder.display()
                 );
             }
         }
@@ -464,6 +483,16 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
         })?;
         let src = entry.path();
         let name = entry.file_name();
+        // A non-UTF-8 name has no exact key: its lossy form can equal another
+        // file's, and a skip meant for that one would delete this one too. It
+        // is never offered (see `compute_extras`), so nothing under it is ever
+        // skipped.
+        let no_skip = BTreeSet::new();
+        let skip = if name.to_str().is_some() {
+            skip
+        } else {
+            &no_skip
+        };
         let name = name.to_string_lossy();
         let rel = if prefix.is_empty() {
             name.to_string()
@@ -681,10 +710,16 @@ fn compute_extras(dest_dir: &Path, staging: &Path) -> Result<Vec<String>> {
     let mut extras: Vec<String> = crate::skill_files::collect_skill_files(dest_dir)?
         .into_iter()
         .filter(|rel| !fetched.contains(rel))
+        // A key that does not name a real path came from a non-UTF-8 name,
+        // lossy-converted — possibly colliding with another. Such files are
+        // outside the managed set: `copy_missing_rec` always carries them.
+        .filter(|rel| dest_dir.join(rel).exists())
         .collect();
     // `collect_skill_files` hoists SKILL.md to the front; the prompt wants a
-    // plain sorted list.
+    // plain sorted list. Dedup: non-UTF-8 names lossy-converted to the same
+    // key as a real file survive the filter above as copies of that key.
     extras.sort();
+    extras.dedup();
     Ok(extras)
 }
 
@@ -989,6 +1024,99 @@ mod tests {
         assert!(
             !skill_dir.join("notes.md").exists(),
             "Delete must drop the extra file"
+        );
+    }
+
+    /// Writes two distinct non-UTF-8 names that lossy-convert to the same key,
+    /// plus a plain `notes.md` extra. Returns their paths.
+    #[cfg(target_os = "linux")]
+    fn non_utf8_pair(skill_dir: &Path) -> (PathBuf, PathBuf) {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let a = skill_dir.join(OsStr::from_bytes(b"n\xff.md"));
+        let b = skill_dir.join(OsStr::from_bytes(b"n\xfe.md"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        std::fs::write(skill_dir.join("notes.md"), b"plain extra").unwrap();
+        (a, b)
+    }
+
+    /// A lossy key names no real file, and offering it would invite a "delete"
+    /// that takes both colliding files. Names that do not survive as UTF-8 are
+    /// outside the managed set: never offered, always carried forward.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_utf8_names_are_never_offered() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let (a, b) = non_utf8_pair(&skill_dir);
+
+        let offered = RefCell::new(Vec::new());
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            offered.borrow_mut().extend_from_slice(extras);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert_eq!(*offered.borrow(), vec!["notes.md".to_string()]);
+        assert!(!skill_dir.join("notes.md").exists());
+        assert_eq!(std::fs::read(&a).unwrap(), b"a");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    }
+
+    /// A real, valid-UTF-8 file whose name equals the lossy key *is* offered.
+    /// Deleting it must not take the two non-UTF-8 files with it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deleting_a_lookalike_spares_the_non_utf8_names() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let (a, b) = non_utf8_pair(&skill_dir);
+        let lookalike = skill_dir.join("n\u{FFFD}.md");
+        std::fs::write(&lookalike, b"lookalike").unwrap();
+
+        let offered = RefCell::new(Vec::new());
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            offered.borrow_mut().extend_from_slice(extras);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert_eq!(
+            *offered.borrow(),
+            vec!["notes.md".to_string(), "n\u{FFFD}.md".to_string()]
+        );
+        assert!(!lookalike.exists(), "the offered lookalike is deleted");
+        assert_eq!(std::fs::read(&a).unwrap(), b"a");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    }
+
+    /// The swap parks the old install beside it. A directory the user happens
+    /// to have at the old fixed backup name is theirs, not a leftover.
+    #[test]
+    fn update_never_touches_a_user_dir_at_the_backup_name() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let users = dir.path().join(".agents/skills/.csv-parse.replaced");
+        std::fs::create_dir_all(&users).unwrap();
+        std::fs::write(users.join("keep.md"), b"mine").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        assert_eq!(std::fs::read(users.join("keep.md")).unwrap(), b"mine");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers.len(),
+            2,
+            "no backup may be left behind: {leftovers:?}"
         );
     }
 

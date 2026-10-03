@@ -1,4 +1,4 @@
-use crate::commands::extras::{Decider, ExtraPolicy};
+use crate::commands::extras::{is_interrupt, Decider, ExtraPolicy};
 use crate::commands::interactive::is_tty;
 use quay_core::{
     add_plan::{
@@ -325,6 +325,7 @@ pub fn run_interactive(
     let mut updated = 0usize;
     let mut skipped = 0usize;
     let mut failed = 0usize;
+    let mut interrupted = None;
 
     for (skill_name, action) in &plan {
         match action {
@@ -361,16 +362,18 @@ pub fn run_interactive(
                             installed += 1;
                         }
                     }
+                    // A cancellation stops the loop rather than re-prompting
+                    // the next skill, and fails the run below.
+                    Err(e) if is_interrupt(e.as_ref()) => {
+                        interrupted = Some(e);
+                        break;
+                    }
                     Err(e) => {
                         eprintln!("\u{2717} {}: {}", skill_name, e);
                         failed += 1;
                     }
                 }
             }
-        }
-        if decider.interrupted() {
-            eprintln!("aborted");
-            break;
         }
     }
 
@@ -400,7 +403,10 @@ pub fn run_interactive(
 
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
-    Ok(())
+    match interrupted {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Resolve the collision strategy for the bulk-add dialog.
@@ -702,14 +708,14 @@ fn prompt_resolve(report: &ReconcileReport) -> Result<ResolveAction, Box<dyn std
             .default(0)
             .interact()?;
         Ok(match idx {
-            0 => ResolveAction::Replace(report.head_bytes.clone()),
+            0 => ResolveAction::Replace(report.hub_bytes.clone()),
             1 => ResolveAction::Keep,
             _ => ResolveAction::Skip,
         })
     }
 }
 
-fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {
+pub(crate) fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {
     if cfg.install.mirrors.is_empty() {
         return;
     }

@@ -1,12 +1,23 @@
 //! `quay update` — pull latest version of installed skills from the remote registry.
 
-use crate::commands::extras::{Decider, ExtraPolicy};
+use crate::commands::add::apply_mirrors_after_install;
+use crate::commands::extras::{is_interrupt, Decider, ExtraPolicy};
 use crate::commands::interactive::is_tty;
 use quay_core::{
     outdated_for_local, CloneFetcher, Config, OutdatedEntry, QuayError, RegistryFetcher,
     SkillFileFetcher, SkillManager,
 };
+use serde::Serialize;
 use std::path::Path;
+
+/// One updated skill in `quay update --json`: the `outdated` row, plus what
+/// the update deleted — scripts that pass `--delete-extra` need a record.
+#[derive(Serialize)]
+struct Updated<'a> {
+    #[serde(flatten)]
+    entry: &'a OutdatedEntry,
+    deleted_extras: Vec<String>,
+}
 
 /// Update skills selected interactively via `dialoguer::MultiSelect`.
 ///
@@ -61,6 +72,7 @@ pub fn run_interactive(
     let mgr = SkillManager::new(&cfg, &f, &f, project.to_path_buf());
     let decider = Decider::new(policy, is_tty() && !json);
     let mut ok = 0usize;
+    let mut interrupted = None;
     for idx in &picks {
         let e = &candidates[*idx];
         match mgr.update_one_with_extras(&e.name, &|s, x| decider.decide(s, x)) {
@@ -68,17 +80,18 @@ pub fn run_interactive(
                 if !json {
                     println!("\u{2713} {} → {}", e.name, e.available);
                 }
+                apply_mirrors_after_install(&cfg, project, &e.name, json);
                 ok += 1;
+            }
+            // This loop counts failures and keeps going; a cancellation must
+            // stop it instead of re-prompting the next skill.
+            Err(err) if is_interrupt(&err) => {
+                interrupted = Some(err);
+                break;
             }
             Err(err) => {
                 eprintln!("\u{2717} {}: {}", e.name, err);
             }
-        }
-        // This loop counts failures and keeps going, so without this an
-        // interrupted prompt on one skill would re-prompt the next.
-        if decider.interrupted() {
-            eprintln!("aborted");
-            break;
         }
     }
 
@@ -87,7 +100,12 @@ pub fn run_interactive(
     }
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
-    Ok(())
+    // A script wrapping an aborted run must not see success with skills left
+    // untouched.
+    match interrupted {
+        Some(err) => Err(err.into()),
+        None => Ok(()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -152,10 +170,18 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
     }
 
     let mgr = SkillManager::new(cfg, reg_fetcher, file_fetcher, project.to_path_buf());
-    let mut updated: Vec<&OutdatedEntry> = Vec::new();
+    let mut updated: Vec<Updated> = Vec::new();
     for cand in &candidates {
         match mgr.update_one_with_extras(&cand.name, &|s, e| decider.decide(s, e)) {
-            Ok(_) => updated.push(cand),
+            Ok(_) => {
+                // Copy mirrors hold their own bytes; without this they keep the
+                // old version and any extra the update just deleted.
+                apply_mirrors_after_install(cfg, project, &cand.name, json);
+                updated.push(Updated {
+                    entry: cand,
+                    deleted_extras: decider.deleted_for(&cand.name),
+                });
+            }
             Err(QuayError::RemoteUnknown(remote)) => {
                 if !json {
                     eprintln!(
@@ -174,7 +200,7 @@ fn run_with<R: RegistryFetcher, F: SkillFileFetcher>(
         println!("(everything up to date)");
     } else {
         for r in &updated {
-            println!("updated {} to {}", r.name, r.available);
+            println!("updated {} to {}", r.entry.name, r.entry.available);
         }
     }
     Ok(())

@@ -237,6 +237,13 @@ fn check_cmd(
                         reason,
                     });
                 }
+                MirrorState::Stale => {
+                    drift.push(MirrorDrift {
+                        skill: name.clone(),
+                        mirror_path: target,
+                        reason: quay_core::linker::STALE_REASON.into(),
+                    });
+                }
                 MirrorState::Adoptable => {
                     // When the user has opted out (`auto_link = false`), an
                     // adoptable dir is an accepted state, not drift.

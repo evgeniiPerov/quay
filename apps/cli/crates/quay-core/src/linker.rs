@@ -45,6 +45,10 @@ pub enum MirrorState {
     /// An unmanaged real directory whose content is byte-identical to
     /// canonical — safe to convert to a symlink (no data at risk).
     Adoptable,
+    /// A managed copy that still holds exactly what quay last wrote into it,
+    /// while canonical has moved on (an update). Nothing in it is the user's,
+    /// so it is replaced without `--force`.
+    Stale,
     /// A directory whose content differs from canonical (managed copy or
     /// unmanaged real dir). Overwriting it would lose the user's edits.
     Diverged { reason: String },
@@ -73,24 +77,45 @@ pub fn classify(target: &Path, canonical: &Path) -> Result<MirrorState> {
             reason: "path exists and is not a directory or symlink".into(),
         });
     }
-    let managed = target.join(".quay-mirror").exists();
-    let identical = crate::skill_files::pushable_content_hash(target)?
-        == crate::skill_files::pushable_content_hash(canonical)?;
-    Ok(if !identical {
-        MirrorState::Diverged {
-            reason: "mirror content differs from canonical".into(),
-        }
-    } else if managed {
-        MirrorState::Correct
-    } else if dirs_fully_identical(target, canonical)? {
-        MirrorState::Adoptable
-    } else {
-        // pushable content matches but the tree isn't byte-for-byte equal
-        // (extra dotfile, dotdir, or symlink) — adoption would delete it.
-        MirrorState::Diverged {
-            reason: "mirror content differs from canonical".into(),
-        }
-    })
+    let marker = target.join(MIRROR_MARKER);
+    let managed = marker.exists();
+    let target_hash = crate::skill_files::pushable_content_hash(target)?;
+    let identical = target_hash == crate::skill_files::pushable_content_hash(canonical)?;
+    Ok(
+        if !identical && managed && marker_records(&marker, &target_hash) {
+            MirrorState::Stale
+        } else if !identical {
+            MirrorState::Diverged {
+                reason: "mirror content differs from canonical".into(),
+            }
+        } else if managed {
+            MirrorState::Correct
+        } else if dirs_fully_identical(target, canonical)? {
+            MirrorState::Adoptable
+        } else {
+            // pushable content matches but the tree isn't byte-for-byte equal
+            // (extra dotfile, dotdir, or symlink) — adoption would delete it.
+            MirrorState::Diverged {
+                reason: "mirror content differs from canonical".into(),
+            }
+        },
+    )
+}
+
+/// Marks a directory as a quay-managed copy mirror. Its content is the
+/// `pushable_content_hash` of the copy as quay wrote it, so a later difference
+/// from canonical can be told apart: mirror unchanged since then means canonical
+/// moved ([`MirrorState::Stale`]); mirror changed means the user edited it.
+///
+/// ponytail: the hash covers the pushable set only, like every other mirror
+/// comparison here — a dotfile hand-added to a managed copy is not protected.
+const MIRROR_MARKER: &str = ".quay-mirror";
+
+/// Whether the marker records exactly `hash`. An empty or unreadable marker
+/// (written before markers carried a hash) records nothing, so it never
+/// vouches for a mirror.
+fn marker_records(marker: &Path, hash: &str) -> bool {
+    std::fs::read_to_string(marker).is_ok_and(|m| m.trim() == hash)
 }
 
 /// True iff `a` and `b` are the same tree byte-for-byte: identical set of
@@ -172,6 +197,9 @@ fn dirs_fully_identical(a: &Path, b: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Drift reason for a [`MirrorState::Stale`] copy, shared with `quay link check`.
+pub const STALE_REASON: &str = "copy mirror out of date with canonical; run `quay link`";
+
 /// Apply a single mirror entry for one skill.
 ///
 /// When `adopt` is set, an `Adoptable` mirror — an unmanaged dir byte-identical
@@ -202,6 +230,13 @@ pub fn apply_one(
             })
         }
         MirrorState::Correct => Ok(MirrorAction::NoOp),
+        MirrorState::Stale => {
+            replace_mirror(canonical_skill_dir, &target, strategy)?;
+            Ok(MirrorAction::Replaced {
+                path: target,
+                strategy,
+            })
+        }
         MirrorState::Adoptable => {
             if adopt {
                 // content is byte-identical, so replacing with a managed mirror loses nothing
@@ -304,6 +339,11 @@ pub fn check(
                     skill: name.clone(),
                     mirror_path: target,
                     reason: "unmanaged directory; run `quay link` to adopt".into(),
+                }),
+                MirrorState::Stale => drift.push(MirrorDrift {
+                    skill: name.clone(),
+                    mirror_path: target,
+                    reason: STALE_REASON.into(),
                 }),
                 MirrorState::Correct => {
                     // Verify a symlink still points at canonical (copies already
@@ -520,7 +560,8 @@ fn create_junction(canonical: &Path, target: &Path) -> Result<()> {
 
 fn create_copy(canonical: &Path, target: &Path) -> Result<()> {
     copy_dir_recursive(canonical, target)?;
-    std::fs::write(target.join(".quay-mirror"), b"").map_err(|source| QuayError::Io {
+    let hash = crate::skill_files::pushable_content_hash(target)?;
+    std::fs::write(target.join(MIRROR_MARKER), hash).map_err(|source| QuayError::Io {
         path: target.display().to_string(),
         source,
     })?;
@@ -673,6 +714,93 @@ mod tests {
         assert!(mirror.is_dir());
         assert!(mirror.join("SKILL.md").exists());
         assert!(mirror.join(".quay-mirror").exists());
+    }
+
+    fn copy_install() -> InstallConfig {
+        InstallConfig {
+            canonical: ".agents/skills".into(),
+            mirrors: vec![MirrorConfig {
+                path: ".cursor/rules".into(),
+                strategy: MirrorStrategy::Copy,
+            }],
+            auto_link: None,
+        }
+    }
+
+    /// An update rewrites canonical; a copy mirror nobody touched since quay
+    /// wrote it is just out of date and must follow — without `--force`, which
+    /// would also flatten a mirror the user really did edit.
+    #[test]
+    fn untouched_copy_mirror_follows_canonical_without_force() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+
+        let actions = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+
+        assert!(
+            matches!(actions[0], MirrorAction::Replaced { .. }),
+            "{actions:?}"
+        );
+        let mirrored =
+            std::fs::read_to_string(dir.path().join(".cursor/rules/csv-parse/SKILL.md")).unwrap();
+        assert!(mirrored.contains("v2"), "got: {mirrored}");
+    }
+
+    #[test]
+    fn edited_copy_mirror_still_needs_force() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+        std::fs::write(mirror.join("SKILL.md"), b"my edit in the mirror").unwrap();
+
+        let err = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap_err();
+
+        assert!(matches!(err, QuayError::MirrorConflict { .. }), "{err:?}");
+        assert_eq!(
+            std::fs::read(mirror.join("SKILL.md")).unwrap(),
+            b"my edit in the mirror"
+        );
+    }
+
+    /// Mirrors written before the marker carried a hash have an empty one; with
+    /// no record of what quay wrote, a difference stays a possible user edit.
+    #[test]
+    fn legacy_empty_marker_mirror_still_needs_force() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let mirror = dir.path().join(".cursor/rules/csv-parse");
+        std::fs::write(mirror.join(".quay-mirror"), b"").unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+
+        let err = apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap_err();
+        assert!(matches!(err, QuayError::MirrorConflict { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn check_reports_a_stale_copy_mirror() {
+        let dir = project_with_skill("csv-parse");
+        apply_all(&copy_install(), dir.path(), "csv-parse", false).unwrap();
+        let canonical = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(
+            canonical.join("SKILL.md"),
+            b"---\nname: csv-parse\n---\nv2\n",
+        )
+        .unwrap();
+
+        let drift = check(&copy_install(), dir.path(), &["csv-parse".to_string()]).unwrap();
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(drift[0].reason.contains("out of date"), "{drift:?}");
     }
 
     #[test]
