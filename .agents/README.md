@@ -22,15 +22,15 @@ Anything Claude-specific lives in [`../.claude/`](../.claude/). Anything univers
 | `skills/`   | One subdirectory per skill, each containing a `SKILL.md` + assets        |
 | `rules/`    | One markdown file per concern (e.g. `code-style.md`, `testing.md`)       |
 | `commands/` | One markdown file per slash command (filename = command name)            |
-| `agents/`   | One markdown file per persona (e.g. `code-reviewer.md`, `test-runner.md`)|
+| `agents/`   | One markdown file per persona (e.g. `code-reviewer.md`, `tester.md`)|
 
-The root [`AGENTS.md`](../AGENTS.md) is the project-wide instruction file — equivalent to the historical `CLAUDE.md`, but tool-agnostic. Most modern agents (Codex, Cursor, Claude Code's `--agents-md` mode, Gemini CLI) read it automatically.
+The root [`AGENTS.md`](../AGENTS.md) is the project-wide instruction file — equivalent to the historical `CLAUDE.md`, but tool-agnostic. Most modern agents (Codex, Cursor, Claude Code, Gemini CLI) read it automatically.
 
 ## Tool integration
 
 Agents that don't natively read `.agents/` should be wired in via tool-specific configs that reference these paths:
 
-- **Claude Code** → `.claude/settings.json` for permissions/hooks; `.claude/agents/` symlinked to `../.agents/agents/`
+- **Claude Code** → `.claude/settings.json` for permissions/hooks; `.claude/agents` and `.claude/rules` plus per-skill `.claude/skills/*` are symlinks into `.agents/`
 - **Codex** → `AGENTS.md` already supported natively (no subagent equivalent yet)
 - **Cursor** → `.cursor/rules/` symlinks or imports from `.agents/rules/`
 - **Copilot** → `.github/copilot-instructions.md` references `AGENTS.md`

@@ -10,7 +10,10 @@ Holds **only** what Claude Code needs that no other assistant uses. Universal st
 ├── settings.json        # permissions, hooks, env (committed)
 ├── settings.local.json  # personal overrides (gitignored)
 ├── commands/            # Claude-only slash commands (rare — prefer .agents/commands/)
-└── hooks/               # shell scripts wired into Claude Code's hook system
+├── hooks/               # shell scripts wired into Claude Code's hook system
+├── agents -> ../.agents/agents   # symlink: subagent personas
+├── rules  -> ../.agents/rules    # symlink: Claude Code auto-loads rules (scoped and unscoped) only from .claude/rules/
+└── skills/              # per-skill symlinks into ../.agents/skills/ (skills shipped by user-level plugins — mattpocock-skills, superpowers — are not vendored)
 ```
 
 ## What goes here vs `.agents/`
@@ -27,6 +30,6 @@ If a piece of config could plausibly be reused by Codex, Cursor, or Copilot, it 
 
 - Reference `.agents/` paths from hooks where possible so behavior stays consistent across tools.
 - Keep `permissions.allow[]` minimal and project-relevant.
-- Personal overrides go in `settings.local.json` (already gitignored by Claude Code).
+- Personal overrides go in `settings.local.json` (gitignored in `/.gitignore`).
 
 See [`docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md`](../docs/superpowers/plans/2026-05-08-plan-2-agents-claude-split.md) for the rationale.

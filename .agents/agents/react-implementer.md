@@ -41,7 +41,7 @@ Writes production code in `apps/web/`. Follows `.agents/rules/web-*.md`.
 
 - [`vercel-react-best-practices`](../skills/vercel-react-best-practices/) — performance + correctness patterns
 - [`vercel-composition-patterns`](../skills/vercel-composition-patterns/) — component API design
-- [`frontend-design`](../skills/frontend-design/) — visual + UX guidance
+- `frontend-design:frontend-design` (plugin) — visual + UX guidance
 
 When the user asks for something the skill covers, **defer to the skill** rather than improvising. Read it first.
 

@@ -12,7 +12,7 @@ Cross-platform CLI for sharing AI agent skills (SKILL.md) across organizations a
 
 ## Repository Layout
 
-This is a monorepo. Minimum two packages:
+This is a monorepo. Today only `apps/cli/` exists; `apps/web/` and `packages/` are planned.
 
 ```
 quay/
@@ -23,10 +23,7 @@ quay/
 │   ├── rules/                 # modular instructions
 │   ├── commands/              # slash-command definitions
 │   └── agents/                # subagent personas
-├── .claude/                   # Claude Code-specific only (settings, hooks)
-│   ├── README.md
-│   ├── settings.json
-│   └── hooks/
+├── .claude/                   # Claude Code-only config + symlinks into .agents/ — see .claude/README.md
 ├── docs/                      # design specs, architecture, guides
 │   └── superpowers/
 │       ├── specs/             # design docs (YYYY-MM-DD-<topic>-design.md)
@@ -39,9 +36,8 @@ quay/
 │   │       ├── quay-cli/      # clap commands
 │   │       ├── quay-mcp/      # MCP server (`quay mcp`)
 │   │       └── quay/          # binary, wires above
-│   └── web/                   # Next.js + shadcn site (later phase)
-│       └── (TBD after CLI MVP)
-└── packages/                  # shared TS packages if web ever needs them
+│   └── web/                   # (planned) Next.js + shadcn site
+└── packages/                  # (planned) shared TS packages if web needs them
 ```
 
 ### `.agents/` vs `.claude/`
@@ -66,7 +62,7 @@ Rules and personas are organized by stack:
 |--------------|------------------------------------------------------------------------------|----------------------------------------------------------------|
 | Repo-wide    | `git-policy.md`, `security.md`                                               | —                                                              |
 | `apps/cli/`  | `code-style.md`, `testing.md` (path-scoped to Rust)                          | `code-reviewer`, `implementer`, `tester`                       |
-| `apps/web/`  | `web-code-style.md`, `web-testing.md`, `web-accessibility.md` (path-scoped)  | `react-implementer`, `web-reviewer`, `e2e-tester`, `a11y-auditor`, `perf-auditor` |
+| `apps/web/` (planned) | `web-code-style.md`, `web-testing.md`, `web-accessibility.md` (path-scoped)  | `react-implementer`, `web-reviewer`, `e2e-tester`, `a11y-auditor`, `perf-auditor` |
 
 Path-scoped rules (`paths:` frontmatter) apply only when files in their glob are touched. Repo-wide rules apply always.
 
@@ -88,41 +84,17 @@ Per-directory READMEs: [`.agents/README.md`](.agents/README.md) and [`.claude/RE
 
 ## Status
 
-Plans 1–7a + 6.85 + 7b + 8 + 9 + 10 + 10c + 10d + 10e + **10f** are **implemented** (**v0.2.4**). The CLI provides:
-- `init`, `remote add/list/remove` — project setup
-- `remote test <name>` — live test-connection probe (registry.json fetch via git)
-- `remote add ... --provider <kind>` — explicit provider override (github, githubenterprise, gitlab, bitbucket, azuredevops)
-- `profile list/add/remove/use/current/show/rename` — multi-org identities
-- `add`, `list`, `remove`, `info` — single-skill lifecycle
-- `search`, `outdated`, `update`, `sync` — discovery and reproducibility
-- `create`, `validate [--strict]`, `push [--push-mode pr|direct]`, `scan` — author + contribute path
-  - `scan` discovers local skills under `.agents/skills/` in any of three formats — Frontmatter (canonical YAML), SlashCommand (`# /<name>` H1), Freestyle (any markdown) — and reports each skill's status (`local`, `installed`, `installed-modified`, `pushed-local`) by cross-referencing the lockfile and `.quay/push-log.json`.
-  - `validate` is soft by default (warnings to stderr, exit 0); pass `--strict` to fail on missing frontmatter / required fields.
-  - `push` accepts skills in any of the three formats. Frontmatter skills with `--bump` are re-emitted with the new version; SlashCommand / Freestyle skills are written to the hub byte-identically. Bumping a non-Frontmatter skill is rejected with a clear error.
-  - `push` honors per-remote `push_mode` (Plan 9): `pr` (default — opens PR via `gh`/`glab`/`az`) or `direct` (commits and `git push` to the hub's default branch with no provider-CLI dependency). `--push-mode` overrides per invocation. Direct mode works on any git host. Branch-protection failures surface a clear hint pointing to `push_mode = pr`.
-- `link`, `link check/add/remove` — multi-tool mirrors
-- `mcp` — MCP server over stdio (registry ops as agent tools for MCP clients)
+Current version: see `apps/cli/Cargo.toml`; per-release history in [`CHANGELOG.md`](CHANGELOG.md). Commands (source of truth: `apps/cli/crates/quay-cli/src/args.rs`):
 
-All commands honor `--profile`, `--remote`, and `--json`.
+- Setup: `init`, `remote add/list/remove/test/edit`, `profile …` (multi-org identities)
+- Skill lifecycle: `add` (alias `ls`), `list`, `remove`, `info`, `search`, `diff`, `outdated`, `update`
+- Authoring: `scan`, `validate [--strict]`, `push [--push-mode pr|direct]`, `rebuild-registry`
+- Mirrors / interop: `link`, `agents list|link` (~80 coding agents), `lock` (vercel-compatible `skills-lock.json`)
+- `mcp` (hidden) — MCP server over stdio; `mcp install <client>` writes client config
 
-Test status: ~319 tests passing (4 ignored env-var/editor/network tests) in `apps/cli/`, 0 clippy warnings, release build succeeds. (Note: pre-existing integration test failures in `cmd_add`, `cmd_outdated`, `cmd_push`, `cmd_remote`, `cmd_search`, `cmd_update` when the user has a real `~/.config/quay/config.toml` with conflicting remote names — test isolation gap, not a Plan 10 regression.)
+All commands honor `--profile`, `--project`, `--user-config`, and `--json`.
 
-Plan 10 ships filesystem-first model: drops `skills.lock.json`, `quay sync`, `quay create`. TUI restructured (Local + Remote + Search). Multi-mirror scan (`MirrorRoot`: `.agents/`, `.claude/`, `.codex/`, `.cursor/`). **v0.2.0** — breaking; lockfile detection prints removal hint. `quay scan` adds mirrors + drift columns. `quay list` reads scanner output.
-
-Plan 10c ships bulk select: TUI `[Space]` toggle on Local/Remote screens; bulk push/pull/delete with `[u]/[U]/[a]/[A]/[d]/[D]` operate over selected rows when non-empty (single-skill flow preserved when picks empty). CLI gains `quay push|add|update -i` interactive `dialoguer::MultiSelect` checkbox prompt; non-TTY fallback exits with a clear error. **v0.2.1.**
-
-Plan 10d ships profile creation UX: `quay profile add -i` interactive wizard (name → email → remote loop → activate, via `dialoguer`); `quay profile add <name> --from-toml <path|->` TOML ingestion from file or stdin; `--remote` is now repeatable with per-remote `--provider`, `--push-mode`, `--default` flags; `ProfileDraft` + `write_to_user_config` is the single canonical persistence path shared by wizard, TOML-ingest, and TUI Onboarding. **v0.2.2.**
-
-Plan 10e adds `quay remove -i` + `--everywhere`. Bare `add`/`push`/`update`/`remove` in a TTY auto-open the multi-select picker. Non-TTY (script/pipe/CI) preserves previous behaviour. `quay update --all` is the explicit escape hatch on TTY. **v0.2.3.**
-
-Plan 10f adds the per-collision prompt to `quay add -i` and TUI Remote `[a]` bulk pull. Three-way batch dialog: **Update all** (overwrite from remote) / **Skip all** (only install new ones) / **Prompt per skill** (per-collision Update/Skip). Pure `build_plan` / `build_plan_with_prompt` functions in `quay-core::add_plan` handle the decision logic. Single-skill `quay add foo` still errors on collision (use `--force`). TUI `[A]` force-pull unchanged. **v0.2.4.**
-
-Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open follow-ups: Plan 7c (crates.io publish + crate rename), test isolation for `cmd_add.rs` (override `XDG_CONFIG_HOME` / `--user-config` per test), `quay doctor` audit + auto-fix.
-
-**Releases:** <https://github.com/evgeniiPerov/quay/releases> — six target triples (macOS x64+arm64, Linux x64+arm64+musl, Windows x64) + shell + PowerShell + Homebrew installers.
-
-### Breaking changes (Plan 7a)
-- `QUAY_PROVIDER` environment variable is no longer honored. Set `provider = "<kind>"` in the remote's TOML entry, or run `quay remote edit <name> --provider <kind>`. Valid kinds: `github`, `githubenterprise`, `gitlab`, `bitbucket`, `azuredevops`.
+Open follow-ups live in GitHub issues (`gh issue list`).
 
 ## Decisions Locked
 
@@ -136,7 +108,7 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 | Transport | Git-native (CLI shells `git clone` / `pull` / `push`) |
 | Auth | Whatever the user's git config provides (SSH keys, credential helper, gh CLI) |
 | Skill format | `SKILL.md` with YAML frontmatter (`name`, `description`, `version`, `tags`, `author`) |
-| Versioning | Per-skill semver in frontmatter; git history is the source of truth (no lockfile as of v0.2.0) |
+| Versioning | Per-skill semver in frontmatter; git history is the source of truth; `skills-lock.json` only for vercel interop (`quay lock`) |
 | Web | Phase 2, separate package, Next.js + shadcn |
 
 ## Working in This Repo
@@ -149,7 +121,7 @@ Plan 7b shipped (v0.1.1+ on GitHub Releases, Homebrew tap auto-published). Open 
 
 ## Agent skills
 
-This repo uses the [mattpocock/skills](https://github.com/mattpocock/skills) engineering toolkit (installed under `.agents/skills/`). The three files below tell those skills how *this* repo works — read the relevant one before a skill needs it.
+This repo uses the [mattpocock/skills](https://github.com/mattpocock/skills) engineering toolkit. `tdd` and `prototype` come from the `mattpocock-skills` plugin, `brainstorming` / `writing-plans` from the `superpowers` plugin (both enabled in user settings); the rest are vendored under `.agents/skills/`. The three files below tell those skills how *this* repo works — read the relevant one before a skill needs it.
 
 ### Issue tracker
 
