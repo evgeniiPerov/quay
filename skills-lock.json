@@ -1,12 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "caveman": {
-      "source": "mattpocock/skills",
-      "sourceType": "github",
-      "skillPath": "skills/productivity/caveman/SKILL.md",
-      "computedHash": "934433479903febc585bf6deb5f0cebc63137e3f86b7babe0aab1ecb94d6d7a4"
-    },
     "design-an-interface": {
       "source": "mattpocock/skills",
       "sourceType": "github",
@@ -18,12 +12,6 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/diagnose/SKILL.md",
       "computedHash": "15939a26f86edec2d4862042b8564e5a062cb81d04e047a0cea6305c8830b5f5"
-    },
-    "frontend-design": {
-      "source": "anthropics/skills",
-      "sourceType": "github",
-      "skillPath": "skills/frontend-design/SKILL.md",
-      "computedHash": "89496d5dd00f4810205f351759594fc2742bf8eea85a2f2b2d1de59f4bd91576"
     },
     "git-guardrails-claude-code": {
       "source": "mattpocock/skills",
@@ -54,12 +42,6 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
       "computedHash": "ac2c94885f34ff8492dc12aa4543182f661f32ea1722b8d6b6c2c7045af33ae3"
-    },
-    "prototype": {
-      "source": "mattpocock/skills",
-      "sourceType": "github",
-      "skillPath": "skills/engineering/prototype/SKILL.md",
-      "computedHash": "d3fc74689bd993e39c44bfae510d014eecffbeec2922764b065377fd1327c0f6"
     },
     "qa": {
       "source": "mattpocock/skills",
@@ -102,12 +84,6 @@
       "sourceType": "github",
       "skillPath": "skills/misc/setup-pre-commit/SKILL.md",
       "computedHash": "7fc7b680161a5cb834b165e36efc2378ff63a1f80df0a9efd18448d366bea98a"
-    },
-    "tdd": {
-      "source": "mattpocock/skills",
-      "sourceType": "github",
-      "skillPath": "skills/engineering/tdd/SKILL.md",
-      "computedHash": "9ce12c4a1e209e557fcf9d02086ade3d7ffdb976186018fc1b063b4164246004"
     },
     "teach": {
       "source": "mattpocock/skills",

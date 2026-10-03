@@ -13,7 +13,7 @@ Holds **only** what Claude Code needs that no other assistant uses. Universal st
 ├── hooks/               # shell scripts wired into Claude Code's hook system
 ├── agents -> ../.agents/agents   # symlink: subagent personas
 ├── rules  -> ../.agents/rules    # symlink: Claude Code loads `paths:`-scoped rules only from here
-└── skills/              # per-skill symlinks into ../.agents/skills/ (skills a globally enabled plugin already ships are left unlinked)
+└── skills/              # per-skill symlinks into ../.agents/skills/ (skills already shipped by an enabled plugin are not vendored here)
 ```
 
 ## What goes here vs `.agents/`

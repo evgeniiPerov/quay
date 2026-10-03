@@ -90,6 +90,6 @@ Target: **WCAG 2.2 AA**. Enforced by axe in CI (see [`web-testing.md`](web-testi
 
 ## See also
 
-- [`anthropics/skills@frontend-design`](../skills/frontend-design/) — design system + a11y guidance
+- `frontend-design:frontend-design` (plugin) — design system + a11y guidance
 - [`vercel-labs/agent-skills@web-design-guidelines`](../skills/) (install if needed)
 - [`chrome-devtools-mcp:a11y-debugging`](https://chromedevtools.github.io/) skill for axe debugging
