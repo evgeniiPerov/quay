@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Reviews Rust code in apps/cli/ for clippy violations, style drift, idiomatic Rust, error handling, and adherence to .agents/rules/. Read-only.
 tools: [Read, Grep, Glob, Bash]
-model: haiku
+model: sonnet
 ---
 
 # Code Reviewer (Rust CLI)

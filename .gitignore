@@ -6,6 +6,7 @@ CLAUDE.local.md
 .agents/**/*.local.json
 .claude/settings.local.json
 .claude/**/*.local.*
+.claude/worktrees/
 
 # Optional CLAUDE.md symlink for legacy Claude Code workflows.
 # If you `ln -s AGENTS.md CLAUDE.md`, don't commit the symlink.

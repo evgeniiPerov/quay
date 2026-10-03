@@ -9,8 +9,8 @@ Applies to **every** AI assistant working in this repository. No path scope — 
 
 ## Hard rules
 
-- **Assistants do not run `git commit`.** The user commits. If you've finished a logical chunk, summarize the diff and stop.
-- **Assistants do not run `git push`, `git push --force`, or `git push --force-with-lease`.** Ever.
+- **Assistants run `git commit` / `git push` only when the user explicitly asks in the session.** Otherwise summarize the diff and stop.
+- **Assistants never run `git push --force` or `git push --force-with-lease`.**
 - **Assistants do not modify `.git/config` or shell out to `git config`.**
 - **Assistants do not run destructive operations without explicit per-invocation user approval:** `git reset --hard`, `git checkout --`, `git restore .`, `git clean -f`, `git branch -D`, `git rebase -i`, `git stash drop`, `git filter-branch`, `git replace`.
 - **Assistants do not skip hooks** (`--no-verify`, `--no-gpg-sign`) unless the user has explicitly asked in the same turn.
