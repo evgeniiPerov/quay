@@ -3,7 +3,7 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
-## Unreleased
+## 0.16.0 — 2026-10-03
 
 ### Fixed
 
