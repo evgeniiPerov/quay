@@ -1,4 +1,4 @@
-use crate::commands::extras::{Decider, ExtraPolicy};
+use crate::commands::extras::{is_interrupt, Decider, ExtraPolicy};
 use crate::commands::interactive::is_tty;
 use quay_core::{
     add_plan::{
@@ -151,6 +151,7 @@ pub fn run_interactive(
     let pick_names: Vec<&str> = picks.iter().map(|&i| entries[i].0.as_str()).collect();
 
     // If force is already set, skip collision dialog.
+    let aborted = std::cell::Cell::new(false);
     let plan: Vec<(String, SkillAction)> = if force {
         pick_names
             .iter()
@@ -205,6 +206,11 @@ pub fn run_interactive(
                     );
                     let mut harbor_cache = HarborCache::new();
                     build_plan_with_prompt(&pick_names, &locals, |name, _is_modified| {
+                        // After a Ctrl-C, ask nothing more; the plan is
+                        // discarded below.
+                        if aborted.get() {
+                            return SkillAction::Skip;
+                        }
                         // Resolve which remote + registry entry owns this skill.
                         let (resolved_remote, _registry, entry) = match mgr
                             .resolve(name, Some(remote_name.as_str()))
@@ -296,6 +302,10 @@ pub fn run_interactive(
                         // Prompt user.
                         let action = match prompt_resolve(&report) {
                             Ok(a) => a,
+                            Err(e) if is_interrupt(e.as_ref()) => {
+                                aborted.set(true);
+                                return SkillAction::Skip;
+                            }
                             Err(e) => {
                                 eprintln!("warning: prompt failed for '{}': {}; skipping", name, e);
                                 return SkillAction::Skip;
@@ -317,6 +327,11 @@ pub fn run_interactive(
             }
         }
     };
+    // A cancelled collision prompt cancels the whole run: nothing installed
+    // yet, and the wrapping script must not see success.
+    if aborted.get() {
+        return Err(QuayError::Interrupted.into());
+    }
 
     // Execute plan.
     let f = CloneFetcher::new();
@@ -325,6 +340,7 @@ pub fn run_interactive(
     let mut updated = 0usize;
     let mut skipped = 0usize;
     let mut failed = 0usize;
+    let mut interrupted = None;
 
     for (skill_name, action) in &plan {
         match action {
@@ -361,16 +377,18 @@ pub fn run_interactive(
                             installed += 1;
                         }
                     }
+                    // A cancellation stops the loop rather than re-prompting
+                    // the next skill, and fails the run below.
+                    Err(e) if is_interrupt(e.as_ref()) => {
+                        interrupted = Some(e);
+                        break;
+                    }
                     Err(e) => {
                         eprintln!("\u{2717} {}: {}", skill_name, e);
                         failed += 1;
                     }
                 }
             }
-        }
-        if decider.interrupted() {
-            eprintln!("aborted");
-            break;
         }
     }
 
@@ -400,7 +418,10 @@ pub fn run_interactive(
 
     // Keep the lockfile current if this project uses one (best-effort).
     crate::commands::lock::regenerate_if_present(project);
-    Ok(())
+    match interrupted {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Resolve the collision strategy for the bulk-add dialog.
@@ -702,14 +723,14 @@ fn prompt_resolve(report: &ReconcileReport) -> Result<ResolveAction, Box<dyn std
             .default(0)
             .interact()?;
         Ok(match idx {
-            0 => ResolveAction::Replace(report.head_bytes.clone()),
+            0 => ResolveAction::Replace(report.hub_bytes.clone()),
             1 => ResolveAction::Keep,
             _ => ResolveAction::Skip,
         })
     }
 }
 
-fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {
+pub(crate) fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: bool) {
     if cfg.install.mirrors.is_empty() {
         return;
     }
@@ -733,18 +754,16 @@ fn apply_mirrors_after_install(cfg: &Config, project: &Path, skill: &str, json: 
                 }
             }
         }
+        // Warnings go to stderr even under --json: stdout stays parseable, and
+        // a mirror left stale is exactly what a script needs to hear about.
         Err(QuayError::MirrorConflict { path, reason }) => {
-            if !json {
-                eprintln!(
-                    "warning: mirror not applied at {}: {}. Run `quay link --force` to resolve.",
-                    path, reason
-                );
-            }
+            eprintln!(
+                "warning: mirror not applied at {}: {}. Run `quay link --force` to resolve.",
+                path, reason
+            );
         }
         Err(e) => {
-            if !json {
-                eprintln!("warning: mirror apply failed: {}", e);
-            }
+            eprintln!("warning: mirror apply failed: {}", e);
         }
     }
 }

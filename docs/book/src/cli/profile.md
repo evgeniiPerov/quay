@@ -19,6 +19,7 @@ Subcommands:
 | `remove` | Delete a profile (cannot remove the last one). |
 | `show` | Print full profile contents (TOML-shaped). |
 | `rename` | Rename a profile. |
+| `edit` | Change a profile in place: `--email`, `--from-toml <path\|->`, or `-i` for the wizard pre-filled with current values. |
 
 ## The three `add` modes
 
@@ -71,5 +72,6 @@ Commands:
   remove   Remove a profile (cannot remove the last one)
   show     Print full profile contents
   rename   Rename a profile
+  edit     Edit an existing profile
   help     Print this message or the help of the given subcommand(s)
 ```

@@ -52,6 +52,9 @@ quay diff csv-parse --remote team-hub
 quay diff csv-parse --json | jq '.files[] | select(.change != "same") | .path'
 ```
 
+When the verdict is `hub_newer`, the JSON also carries `commits_ahead` and
+`last_commit_date` — the same facts as the human headline.
+
 ## Flags
 
 | Flag | Effect |

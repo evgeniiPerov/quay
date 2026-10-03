@@ -3,6 +3,54 @@
 Notable changes per release. This file is also the source of the GitHub release
 notes — `dist` reads the section matching the version being tagged.
 
+## 0.16.0 — 2026-10-03
+
+### Fixed
+
+- **Cancelling a prompt now fails the run.** Ctrl-C at the extra-files prompt
+  (`update`, `add --force`) or at `add -i`'s per-skill collision prompt used to
+  skip ahead and exit 0, so a wrapping script saw success with skills left
+  untouched. It now stops and exits non-zero with `interrupted`, instead of a
+  made-up `io error at prompt`. `update -i` also exits non-zero when any
+  selected skill failed.
+- **Copy mirrors follow an update.** A copy-strategy mirror kept the old
+  version — and any file `--delete-extra` had just removed — with a warning.
+  Mirrors now record a hash of everything quay wrote into them, so one nobody
+  touched is refreshed automatically; one you changed in any way, dotfiles
+  included, is still left alone, with the warning on stderr even under
+  `--json`. `quay link check` reports an out-of-date copy. A copy mirror made
+  by an older version is picked up the first time it matches canonical; one
+  that already differs needs a single `quay link --force`.
+- **Copy mirrors keep symlinks as symlinks.** They were dereferenced into
+  plain files, so a skill containing a symlink never matched its mirror.
+- **A failed multi-skill `update` still reports what it changed.** The skills
+  updated before the failure — and their `deleted_extras` — are printed
+  before the error, instead of nothing.
+- **An update never touches a directory named `.<skill>.replaced`.** The old
+  install is parked in a fresh, uniquely named directory instead of a fixed
+  name that was cleared first.
+- **Files with non-UTF-8 names are never offered for deletion.** Two such names
+  could map to the same entry, and deleting it removed both.
+
+### Added
+
+- `quay update --json` reports `deleted_extras` per skill — what was actually
+  removed, as reported by the install itself.
+- `quay diff --json` reports `commits_ahead` and `last_commit_date` for
+  `hub_newer`.
+
+### Changed
+
+- `quay-core`: `FolderReport::head_hash` → `hub_hash`,
+  `ReconcileReport::head_bytes` → `hub_bytes`, matching the CLI's naming.
+  `SkillManager::add_with_extras` / `update_one_with_extras` return the paths
+  they deleted.
+
+### Docs
+
+- Eight recipe pages written; corrected `add`, `remote`, `profile`, `update`
+  and the GitHub tutorial where they disagreed with the CLI.
+
 ## 0.15.3 — 2026-08-03
 
 ### Performance

@@ -224,6 +224,12 @@ struct DiffReport<'a> {
     skill: &'a str,
     remote: &'a str,
     verdict: &'static str,
+    /// `hub_newer` only: how far the hub moved past the copy you have, and the
+    /// date of its latest commit — what the human headline says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commits_ahead: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_commit_date: Option<&'a str>,
     /// Absent on the hub's HEAD — deleted or renamed there.
     absent_on_hub: bool,
     /// The base-commit search hit its cap, so `changed_unknown_direction` here
@@ -263,10 +269,20 @@ fn as_json<'a>(skill: &'a str, remote: &'a str, report: &'a FolderReport) -> Dif
         skill,
         remote,
         verdict: verdict_tag(&report.verdict),
+        commits_ahead: match &report.verdict {
+            Verdict::HubNewer { commits_ahead, .. } => Some(*commits_ahead),
+            _ => None,
+        },
+        last_commit_date: match &report.verdict {
+            Verdict::HubNewer {
+                last_commit_date, ..
+            } => Some(last_commit_date.as_str()),
+            _ => None,
+        },
         absent_on_hub: report.absent_on_hub(),
         base_search_truncated: report.base_search_truncated,
         local_hash_lf: &report.local_hash,
-        hub_hash_lf: &report.head_hash,
+        hub_hash_lf: &report.hub_hash,
         files: report.files.iter().map(file_json).collect(),
     }
 }

@@ -167,6 +167,33 @@ fn json_carries_the_verdict_and_per_file_kinds() {
     assert_eq!(new_sh["change"], "only_on_hub");
 }
 
+/// The human headline says "hub is ahead by N commit(s), last <date>"; JSON
+/// used to flatten the verdict to a bare tag, leaving scripts strictly less
+/// informed than a person reading the terminal.
+#[test]
+fn json_hub_newer_carries_how_far_ahead_and_when() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let (proj, user_cfg, cfg_home) = fixture(
+        tmp.path(),
+        &[("SKILL.md", SKILL_V1), ("scripts/new.sh", "echo hi\n")],
+        &[("SKILL.md", SKILL_V1)],
+    );
+
+    let out = diff(&proj, &user_cfg, &cfg_home, &["--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+
+    assert_eq!(v["verdict"], "hub_newer");
+    // The fixture's hub is exactly one commit past the installed state.
+    assert_eq!(v["commits_ahead"], 1, "{v}");
+    let date = v["last_commit_date"].as_str().expect("a date string");
+    assert!(date.starts_with("20"), "looks like a date: {date}");
+}
+
 #[test]
 fn a_skill_deleted_upstream_keeps_the_changed_unknown_tag_and_flags_absence() {
     // The wire contract. `AbsentOnHub` shares the `changed_unknown_direction`
@@ -189,6 +216,10 @@ fn a_skill_deleted_upstream_keeps_the_changed_unknown_tag_and_flags_absence() {
 
     assert_eq!(v["verdict"], "changed_unknown_direction");
     assert_eq!(v["absent_on_hub"], true);
+    // Only `hub_newer` carries how far ahead; other verdicts omit the fields
+    // rather than emit nulls.
+    assert!(v.get("commits_ahead").is_none(), "{v}");
+    assert!(v.get("last_commit_date").is_none(), "{v}");
 }
 
 #[test]

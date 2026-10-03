@@ -64,6 +64,10 @@ pub enum QuayError {
     InvalidPushLog { path: String, reason: String },
     #[error("reconcile error: {0}")]
     Reconcile(String),
+    /// The user cancelled at a prompt (Ctrl-C). Not an I/O failure: callers
+    /// running a multi-skill loop stop on it and exit non-zero.
+    #[error("interrupted")]
+    Interrupted,
 }
 
 pub type Result<T> = std::result::Result<T, QuayError>;

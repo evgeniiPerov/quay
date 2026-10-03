@@ -143,6 +143,7 @@ where
         self.add_with_extras(skill_name, pinned_remote, force, &|_, _| {
             Ok(ExtraFiles::Keep)
         })
+        .map(drop)
     }
 
     /// Like [`add_with_force`], but `decide` chooses what happens to local files
@@ -151,13 +152,17 @@ where
     /// `decide` is called once, only when that set is non-empty, and only on the
     /// `force` path — a non-force add errors on a pre-existing directory before
     /// reaching it. Returning `Err` aborts before anything on disk changes.
+    ///
+    /// Returns the skill-relative paths it deleted, sorted: what was actually
+    /// removed once the swap committed, not what `decide` asked for — a path
+    /// it names that was never offered is ignored and not reported.
     pub fn add_with_extras(
         &self,
         skill_name: &str,
         pinned_remote: Option<&str>,
         force: bool,
         decide: DecideExtras<'_>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let (_remote_name, _registry, entry) = self.resolve(skill_name, pinned_remote)?;
         let remote_cfg = &self.config.remotes[&_remote_name];
         let hub_url = remote_cfg.url.clone();
@@ -225,6 +230,8 @@ where
             })?;
         }
 
+        let mut deleted = BTreeSet::new();
+
         // Every file landed; commit the swap.
         //
         // Re-check rather than trusting the check at the top: the fetch loop above
@@ -259,24 +266,44 @@ where
                 }
             };
             copy_missing_into(&dest_dir, staging.path(), &skip)?;
+            deleted = skip;
         }
 
         // Move the old tree aside instead of deleting it, so a failed rename can
         // put it back. Deleting first would mean a failure at exactly the wrong
         // moment leaves the skill gone entirely — worse than the in-place
         // overwrite this replaces.
-        let backup = dest_dir.exists().then(|| {
-            let mut p = dest_dir.clone();
-            p.set_file_name(format!(".{skill_name}.replaced"));
-            p
-        });
-        if let Some(backup) = &backup {
-            let _ = std::fs::remove_dir_all(backup);
-            std::fs::rename(&dest_dir, backup).map_err(|source| QuayError::Io {
-                path: dest_dir.display().to_string(),
-                source,
-            })?;
-        }
+        //
+        // The parking spot is a fresh, uniquely named dir — never a fixed name,
+        // which would mean clearing whatever already sits there first, and that
+        // could be a directory of the user's. Dot-prefixed, so a backup stranded
+        // by a crash stays out of `quay list`.
+        let backup_holder = if dest_dir.exists() {
+            let install_dir = dest_dir.parent().unwrap_or(&self.project_root);
+            let holder = tempfile::Builder::new()
+                .prefix(&format!(".{skill_name}.replaced-"))
+                .tempdir_in(install_dir)
+                .map_err(|source| QuayError::Io {
+                    path: install_dir.display().to_string(),
+                    source,
+                })?
+                // Managed by hand from here: drop must never delete the only
+                // copy of the old install while a restore may still need it.
+                .keep();
+            let parked = holder.join(skill_name);
+            if let Err(source) = std::fs::rename(&dest_dir, &parked) {
+                // Nothing moved; the holder is empty.
+                let _ = std::fs::remove_dir(&holder);
+                return Err(QuayError::Io {
+                    path: dest_dir.display().to_string(),
+                    source,
+                });
+            }
+            Some(holder)
+        } else {
+            None
+        };
+        let backup = backup_holder.as_ref().map(|h| h.join(skill_name));
 
         let staged = staging.keep();
         if let Err(source) = std::fs::rename(&staged, &dest_dir) {
@@ -284,13 +311,17 @@ where
             // the staging copy on disk. Both are best-effort, but say so when they
             // fail: the user is about to get a rename errno, and "your skill is in
             // <path>" is the difference between recoverable and not.
-            if let Some(backup) = &backup {
-                if let Err(e) = std::fs::rename(backup, &dest_dir) {
-                    eprintln!(
+            if let (Some(backup), Some(holder)) = (&backup, &backup_holder) {
+                match std::fs::rename(backup, &dest_dir) {
+                    // Restored, so the holder is empty; it is hidden either way.
+                    Ok(()) => {
+                        let _ = std::fs::remove_dir(holder);
+                    }
+                    Err(e) => eprintln!(
                         "warning: could not restore {} from {}: {e}; the previous copy is still there",
                         dest_dir.display(),
                         backup.display()
-                    );
+                    ),
                 }
             }
             if let Err(e) = std::fs::remove_dir_all(&staged) {
@@ -304,16 +335,16 @@ where
                 source,
             });
         }
-        if let Some(backup) = &backup {
-            if let Err(e) = std::fs::remove_dir_all(backup) {
+        if let Some(holder) = &backup_holder {
+            if let Err(e) = std::fs::remove_dir_all(holder) {
                 eprintln!(
                     "warning: install succeeded but the replaced copy remains at {}: {e}",
-                    backup.display()
+                    holder.display()
                 );
             }
         }
 
-        Ok(())
+        Ok(deleted.into_iter().collect())
     }
 
     /// Remove a skill from all local mirror roots.
@@ -353,19 +384,20 @@ where
     /// new version does not contain. The old content is captured in git history
     /// by the user's normal git workflow.
     pub fn update_one(&self, skill_name: &str) -> Result<bool> {
-        self.update_one_with_extras(skill_name, &|_, _| Ok(ExtraFiles::Keep))
+        self.update_one_with_extras(skill_name, &|_, _| Ok(ExtraFiles::Keep))?;
+        Ok(true)
     }
 
     /// Like [`update_one`], but `decide` chooses what happens to local files the
-    /// new version does not contain.
+    /// new version does not contain. Returns what it deleted, as
+    /// [`add_with_extras`](Self::add_with_extras) does.
     pub fn update_one_with_extras(
         &self,
         skill_name: &str,
         decide: DecideExtras<'_>,
-    ) -> Result<bool> {
+    ) -> Result<Vec<String>> {
         // Force-overwrite is always fine on update.
-        self.add_with_extras(skill_name, None, true, decide)?;
-        Ok(true)
+        self.add_with_extras(skill_name, None, true, decide)
     }
 }
 
@@ -464,6 +496,16 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
         })?;
         let src = entry.path();
         let name = entry.file_name();
+        // A non-UTF-8 name has no exact key: its lossy form can equal another
+        // file's, and a skip meant for that one would delete this one too. It
+        // is never offered (see `compute_extras`), so nothing under it is ever
+        // skipped.
+        let no_skip = BTreeSet::new();
+        let skip = if name.to_str().is_some() {
+            skip
+        } else {
+            &no_skip
+        };
         let name = name.to_string_lossy();
         let rel = if prefix.is_empty() {
             name.to_string()
@@ -515,7 +557,7 @@ fn copy_missing_rec(from: &Path, into: &Path, prefix: &str, skip: &BTreeSet<Stri
 /// `rel` exists only to name the link in the Windows degrade path's warnings
 /// (see [`degrade_symlink_failure`]); recreating a symlink never consults
 /// `skip`, since symlinks are outside the managed set entirely.
-fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
+pub(crate) fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
     let link_target = std::fs::read_link(src).map_err(|source| QuayError::Io {
         path: src.display().to_string(),
         source,
@@ -546,7 +588,7 @@ fn copy_symlink(src: &Path, dst: &Path, rel: &str) -> Result<()> {
 /// testable on every platform; the fallback behaviour it gates is
 /// Windows-only, so this is otherwise dead weight on every other target.
 #[cfg(any(windows, test))]
-fn is_permission_class_failure(e: &QuayError) -> bool {
+pub(crate) fn is_permission_class_failure(e: &QuayError) -> bool {
     const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
     matches!(
         e,
@@ -637,7 +679,7 @@ fn degrade_symlink_failure(
 }
 
 #[cfg(unix)]
-fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
     std::os::unix::fs::symlink(link_target, dst).map_err(|source| QuayError::Io {
         path: dst.display().to_string(),
         source,
@@ -645,7 +687,7 @@ fn create_symlink_at(_src: &Path, link_target: &Path, dst: &Path) -> Result<()> 
 }
 
 #[cfg(windows)]
-fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
     // Windows distinguishes a file link from a directory link. `src`'s own
     // metadata (which follows the link) tells us which; a dangling link falls
     // back to a file link.
@@ -662,7 +704,7 @@ fn create_symlink_at(src: &Path, link_target: &Path, dst: &Path) -> Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn create_symlink_at(_src: &Path, _link_target: &Path, dst: &Path) -> Result<()> {
     Err(QuayError::Io {
         path: dst.display().to_string(),
         source: std::io::Error::other("symlinks are not supported on this platform"),
@@ -678,13 +720,29 @@ fn compute_extras(dest_dir: &Path, staging: &Path) -> Result<Vec<String>> {
     let fetched: BTreeSet<String> = crate::skill_files::collect_skill_files(staging)?
         .into_iter()
         .collect();
-    let mut extras: Vec<String> = crate::skill_files::collect_skill_files(dest_dir)?
-        .into_iter()
-        .filter(|rel| !fetched.contains(rel))
-        .collect();
+    let mut extras = Vec::new();
+    for rel in crate::skill_files::collect_skill_files(dest_dir)? {
+        if fetched.contains(&rel) {
+            continue;
+        }
+        // A key that does not name a real path came from a non-UTF-8 name,
+        // lossy-converted — possibly colliding with another. Such files are
+        // outside the managed set: `copy_missing_rec` always carries them.
+        // `try_exists`, not `exists`: a permission error must fail here with
+        // its real cause, not be read as "no such path".
+        let path = dest_dir.join(&rel);
+        if path.try_exists().map_err(|source| QuayError::Io {
+            path: path.display().to_string(),
+            source,
+        })? {
+            extras.push(rel);
+        }
+    }
     // `collect_skill_files` hoists SKILL.md to the front; the prompt wants a
-    // plain sorted list.
+    // plain sorted list. Dedup: non-UTF-8 names lossy-converted to the same
+    // key as a real file survive the filter above as copies of that key.
     extras.sort();
+    extras.dedup();
     Ok(extras)
 }
 
@@ -992,6 +1050,99 @@ mod tests {
         );
     }
 
+    /// Writes two distinct non-UTF-8 names that lossy-convert to the same key,
+    /// plus a plain `notes.md` extra. Returns their paths.
+    #[cfg(target_os = "linux")]
+    fn non_utf8_pair(skill_dir: &Path) -> (PathBuf, PathBuf) {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let a = skill_dir.join(OsStr::from_bytes(b"n\xff.md"));
+        let b = skill_dir.join(OsStr::from_bytes(b"n\xfe.md"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        std::fs::write(skill_dir.join("notes.md"), b"plain extra").unwrap();
+        (a, b)
+    }
+
+    /// A lossy key names no real file, and offering it would invite a "delete"
+    /// that takes both colliding files. Names that do not survive as UTF-8 are
+    /// outside the managed set: never offered, always carried forward.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_utf8_names_are_never_offered() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let (a, b) = non_utf8_pair(&skill_dir);
+
+        let offered = RefCell::new(Vec::new());
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            offered.borrow_mut().extend_from_slice(extras);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert_eq!(*offered.borrow(), vec!["notes.md".to_string()]);
+        assert!(!skill_dir.join("notes.md").exists());
+        assert_eq!(std::fs::read(&a).unwrap(), b"a");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    }
+
+    /// A real, valid-UTF-8 file whose name equals the lossy key *is* offered.
+    /// Deleting it must not take the two non-UTF-8 files with it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deleting_a_lookalike_spares_the_non_utf8_names() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        let (a, b) = non_utf8_pair(&skill_dir);
+        let lookalike = skill_dir.join("n\u{FFFD}.md");
+        std::fs::write(&lookalike, b"lookalike").unwrap();
+
+        let offered = RefCell::new(Vec::new());
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_extras("csv-parse", None, true, &|_, extras| {
+            offered.borrow_mut().extend_from_slice(extras);
+            Ok(ExtraFiles::Delete)
+        })
+        .unwrap();
+
+        assert_eq!(
+            *offered.borrow(),
+            vec!["notes.md".to_string(), "n\u{FFFD}.md".to_string()]
+        );
+        assert!(!lookalike.exists(), "the offered lookalike is deleted");
+        assert_eq!(std::fs::read(&a).unwrap(), b"a");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    }
+
+    /// The swap parks the old install beside it. A directory the user happens
+    /// to have at the old fixed backup name is theirs, not a leftover.
+    #[test]
+    fn update_never_touches_a_user_dir_at_the_backup_name() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let users = dir.path().join(".agents/skills/.csv-parse.replaced");
+        std::fs::create_dir_all(&users).unwrap();
+        std::fs::write(users.join("keep.md"), b"mine").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        mgr.add_with_force("csv-parse", None, true).unwrap();
+
+        assert_eq!(std::fs::read(users.join("keep.md")).unwrap(), b"mine");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".agents/skills"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers.len(),
+            2,
+            "no backup may be left behind: {leftovers:?}"
+        );
+    }
+
     #[test]
     fn delete_only_deletes_just_the_named() {
         let (dir, files, regf) = installed_fixture();
@@ -1274,10 +1425,51 @@ mod tests {
         std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
 
         let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
-        mgr.update_one_with_extras("csv-parse", &|_, _| Ok(ExtraFiles::Delete))
+        let deleted = mgr
+            .update_one_with_extras("csv-parse", &|_, _| Ok(ExtraFiles::Delete))
             .unwrap();
 
         assert!(!skill_dir.join("notes.md").exists());
+        assert_eq!(deleted, vec!["notes.md".to_string()]);
+    }
+
+    /// The report must be what was removed, not what was asked for: a path the
+    /// callback names that was never offered is ignored, so it is not reported
+    /// either — `--json` would otherwise claim a deletion that never happened.
+    #[test]
+    fn reports_only_what_it_actually_deleted() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+        std::fs::write(skill_dir.join("legacy.md"), b"old").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        let deleted = mgr
+            .add_with_extras("csv-parse", None, true, &|_, _| {
+                Ok(ExtraFiles::DeleteOnly(vec![
+                    "legacy.md".to_string(),
+                    "never-offered.md".to_string(),
+                ]))
+            })
+            .unwrap();
+
+        assert_eq!(deleted, vec!["legacy.md".to_string()]);
+        assert!(skill_dir.join("notes.md").exists());
+    }
+
+    #[test]
+    fn keeping_everything_reports_nothing_deleted() {
+        let (dir, files, regf) = installed_fixture();
+        let cfg = make_cfg();
+        let skill_dir = dir.path().join(".agents/skills/csv-parse");
+        std::fs::write(skill_dir.join("notes.md"), b"mine").unwrap();
+
+        let mgr = SkillManager::new(&cfg, &regf, &files, dir.path().to_path_buf());
+        let deleted = mgr
+            .add_with_extras("csv-parse", None, true, &|_, _| Ok(ExtraFiles::Keep))
+            .unwrap();
+        assert!(deleted.is_empty());
     }
 
     /// The rename is only atomic while staging and destination share a filesystem.

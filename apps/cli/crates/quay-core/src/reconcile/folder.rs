@@ -80,11 +80,11 @@ pub struct FolderReport {
     /// not a conclusion, and callers must not present it as one.
     pub base_search_truncated: bool,
     /// Content hash of the local copy, in the LF-normalized space this report
-    /// compares in — equal to `head_hash` iff the two copies match. Not the
+    /// compares in — equal to `hub_hash` iff the two copies match. Not the
     /// digest a registry publishes; see `skill_files::content_hash_of`.
     pub local_hash: String,
-    /// Content hash of harbor HEAD's copy, same space as `local_hash`.
-    pub head_hash: String,
+    /// Content hash of the hub's copy (harbor HEAD), same space as `local_hash`.
+    pub hub_hash: String,
 }
 
 impl FolderReport {
@@ -184,7 +184,7 @@ pub fn folder_report(
         files,
         base_search_truncated,
         local_hash,
-        head_hash,
+        hub_hash: head_hash,
     })
 }
 

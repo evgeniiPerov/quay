@@ -1,6 +1,7 @@
 # `quay remote`
 
-Manage configured hub remotes inside the active profile.
+Manage the hub remotes in this project's `.quay/config.toml`. `add`, `edit` and
+`remove` write that file, so run [`quay init`](init.md) first.
 
 ## Usage
 
@@ -15,7 +16,8 @@ Subcommands:
 | `add` | Register a new remote (`<NAME> <URL>`). |
 | `list` | Show every remote with provider + push_mode + default marker. |
 | `test` | Run a connectivity probe (`git archive` or shallow clone). |
-| `remove` | Delete a remote from the active profile. |
+| `edit` | Change a remote's URL, provider, push mode, direct branch, or default flag (`<NAME>`). |
+| `remove` | Delete a remote from the project config. |
 
 ## Examples
 
@@ -31,9 +33,10 @@ quay remote remove personal
 
 | Flag | Effect |
 |---|---|
-| `--default` | Mark as the profile's default remote. |
+| `--default` | Mark as the default remote. |
 | `--provider <KIND>` | Force provider: `github` / `githubenterprise` / `gitlab` / `bitbucket` / `azuredevops`. Auto-detected from URL if omitted. |
 | `--push-mode <pr\|direct>` | Default push mode for this remote (default: `pr`). |
+| `--direct-branch <BRANCH>` | Target branch for direct-mode pushes (on `edit`, `""` clears it). |
 | `--profile`, `--user-config`, `--project`, `--json` | Standard globals. |
 
 ## When to use this vs …
@@ -53,7 +56,7 @@ Exits 0 on success, non-zero on either failure with a diagnostic message identif
 ## Caveats
 
 - A `gitlab` URL that points at a GitLab Enterprise instance still works; the provider only affects PR creation, not git clone.
-- Removing the default remote leaves the profile with no default. The next push must use `--remote`.
+- Removing the default remote leaves the project config with no default (a default from your profile still applies, if it has one). Otherwise the next push must use `--remote`.
 - `test` will not catch every authentication issue (e.g. SSH known_hosts prompts) — if it succeeds but `push` fails, suspect agent forwarding / known_hosts.
 
 ## `--help` (top level)
@@ -68,5 +71,6 @@ Commands:
   test    Test connectivity to a configured remote
   list    List configured remotes
   remove  Remove a remote
+  edit    Edit an existing remote
   help    Print this message or the help of the given subcommand(s)
 ```
