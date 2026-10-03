@@ -97,6 +97,6 @@ Next.js (App Router) + TypeScript + shadcn/ui + Tailwind. Biome for formatting +
 
 ## See also
 
-- Companion skills: [`vercel-react-best-practices`](../skills/vercel-react-best-practices/), [`vercel-composition-patterns`](../skills/vercel-composition-patterns/), [`frontend-design`](../skills/frontend-design/)
+- Companion skills: [`vercel-react-best-practices`](../skills/vercel-react-best-practices/), [`vercel-composition-patterns`](../skills/vercel-composition-patterns/), `frontend-design:frontend-design` (plugin)
 - Test rules: [`web-testing.md`](web-testing.md)
 - A11y: [`web-accessibility.md`](web-accessibility.md)

@@ -12,7 +12,7 @@ Cross-platform CLI for sharing AI agent skills (SKILL.md) across organizations a
 
 ## Repository Layout
 
-This is a monorepo. Minimum two packages:
+This is a monorepo. Today only `apps/cli/` exists; `apps/web/` and `packages/` are planned.
 
 ```
 quay/
@@ -23,10 +23,7 @@ quay/
 │   ├── rules/                 # modular instructions
 │   ├── commands/              # slash-command definitions
 │   └── agents/                # subagent personas
-├── .claude/                   # Claude Code-specific only (settings, hooks)
-│   ├── README.md
-│   ├── settings.json
-│   └── hooks/
+├── .claude/                   # Claude Code-only config + symlinks into .agents/ — see .claude/README.md
 ├── docs/                      # design specs, architecture, guides
 │   └── superpowers/
 │       ├── specs/             # design docs (YYYY-MM-DD-<topic>-design.md)
@@ -39,9 +36,8 @@ quay/
 │   │       ├── quay-cli/      # clap commands
 │   │       ├── quay-mcp/      # MCP server (`quay mcp`)
 │   │       └── quay/          # binary, wires above
-│   └── web/                   # Next.js + shadcn site (later phase)
-│       └── (TBD after CLI MVP)
-└── packages/                  # shared TS packages if web ever needs them
+│   └── web/                   # (planned) Next.js + shadcn site
+└── packages/                  # (planned) shared TS packages if web needs them
 ```
 
 ### `.agents/` vs `.claude/`
@@ -66,7 +62,7 @@ Rules and personas are organized by stack:
 |--------------|------------------------------------------------------------------------------|----------------------------------------------------------------|
 | Repo-wide    | `git-policy.md`, `security.md`                                               | —                                                              |
 | `apps/cli/`  | `code-style.md`, `testing.md` (path-scoped to Rust)                          | `code-reviewer`, `implementer`, `tester`                       |
-| `apps/web/`  | `web-code-style.md`, `web-testing.md`, `web-accessibility.md` (path-scoped)  | `react-implementer`, `web-reviewer`, `e2e-tester`, `a11y-auditor`, `perf-auditor` |
+| `apps/web/` (planned) | `web-code-style.md`, `web-testing.md`, `web-accessibility.md` (path-scoped)  | `react-implementer`, `web-reviewer`, `e2e-tester`, `a11y-auditor`, `perf-auditor` |
 
 Path-scoped rules (`paths:` frontmatter) apply only when files in their glob are touched. Repo-wide rules apply always.
 
@@ -94,7 +90,7 @@ Current version: see `apps/cli/Cargo.toml`; per-release history in [`CHANGELOG.m
 - Skill lifecycle: `add` (alias `ls`), `list`, `remove`, `info`, `search`, `diff`, `outdated`, `update`
 - Authoring: `scan`, `validate [--strict]`, `push [--push-mode pr|direct]`, `rebuild-registry`
 - Mirrors / interop: `link`, `agents list|link` (~80 coding agents), `lock` (vercel-compatible `skills-lock.json`)
-- `mcp` — MCP server over stdio
+- `mcp` (hidden) — MCP server over stdio; `mcp install <client>` writes client config
 
 All commands honor `--profile`, `--project`, `--user-config`, and `--json`.
 
@@ -125,7 +121,7 @@ Open follow-ups live in GitHub issues (`gh issue list`).
 
 ## Agent skills
 
-This repo uses the [mattpocock/skills](https://github.com/mattpocock/skills) engineering toolkit (installed under `.agents/skills/`). The three files below tell those skills how *this* repo works — read the relevant one before a skill needs it.
+This repo uses the [mattpocock/skills](https://github.com/mattpocock/skills) engineering toolkit. `tdd` and `prototype` come from the `mattpocock-skills` plugin, `brainstorming` / `writing-plans` from the `superpowers` plugin (both enabled in user settings); the rest are vendored under `.agents/skills/`. The three files below tell those skills how *this* repo works — read the relevant one before a skill needs it.
 
 ### Issue tracker
 
